@@ -177,7 +177,7 @@ def main() -> int:
         mins = int(full_duration // 60)
         print()
         print(
-            f"> ⚠️ This is a {mins}-minute video. Frame coverage is sparse at this length — "
+            f"> **Warning:** This is a {mins}-minute video. Frame coverage is sparse at this length — "
             "accuracy degrades noticeably on anything over 10 minutes. For better results, "
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a specific section."
         )

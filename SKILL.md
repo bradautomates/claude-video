@@ -16,6 +16,8 @@ You don't have a video input; this skill gives you one. A Python script download
 
 ## Step 0 — Setup preflight (runs every `/watch` invocation, silent on success)
 
+**Python interpreter:** every `python3 ...` command in this skill is for macOS/Linux. On **Windows**, substitute `python` — the `python3` command on Windows is the Microsoft Store stub and will not run the script.
+
 Before every `/watch` run, verify that dependencies and an API key are in place:
 
 ```bash

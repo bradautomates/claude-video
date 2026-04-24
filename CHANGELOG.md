@@ -2,6 +2,15 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.1.2] — 2026-04-24
+
+### Fixed
+- Windows console crash: removed the emoji from the long-video warning in `watch.py`; cp1252 consoles couldn't encode it.
+- `setup.py` now prints `winget` / `pip` install commands on Windows instead of "unsupported platform" — matches what the README already promised.
+
+### Changed
+- `SKILL.md` notes that on Windows the scripts must be invoked with `python`, not `python3` (the latter is the Microsoft Store stub on Windows).
+
 ## [0.1.1] — 2026-04-24
 
 ### Fixed

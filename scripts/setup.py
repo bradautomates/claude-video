@@ -186,6 +186,16 @@ def _install_hint_linux(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+def _install_hint_windows(missing: list[str]) -> str:
+    pkgs = _brew_pkg(missing)
+    hints = []
+    if "ffmpeg" in pkgs:
+        hints.append("winget: `winget install Gyan.FFmpeg`")
+    if "yt-dlp" in pkgs:
+        hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
+    return "\n  ".join(hints) if hints else "nothing to install"
+
+
 def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
@@ -267,6 +277,10 @@ def cmd_install() -> int:
         elif system == "Linux":
             print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
             print("  " + _install_hint_linux(missing), file=sys.stderr)
+            return 2
+        elif system == "Windows":
+            print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
+            print("  " + _install_hint_windows(missing), file=sys.stderr)
             return 2
         else:
             print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
