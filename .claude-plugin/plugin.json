@@ -1,6 +1,6 @@
 {
   "name": "watch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Whisper, and hands frames + transcript to Claude so it can answer questions about the video.",
   "author": {
     "name": "Bradley Bonanno"

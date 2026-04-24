@@ -21,11 +21,13 @@ OUT="dist/watch.skill"
 git archive --format=zip --prefix=watch/ --output="$OUT" HEAD
 
 # claude.ai's .skill bundle needs only SKILL.md + scripts/ runtime. Claude Code
-# needs hooks/ and .claude-plugin/ in the git archive (that's why they are NOT
-# in .gitattributes export-ignore), but the .skill bundle should strip them to
-# keep a single canonical SKILL.md and stay well under the 200-file cap.
+# needs hooks/, commands/, and .claude-plugin/ in the git archive (that's why
+# they are NOT in .gitattributes export-ignore), but the .skill bundle should
+# strip them to keep a single canonical SKILL.md and stay well under the
+# 200-file cap.
 zip -d "$OUT" \
   "watch/hooks/*" \
+  "watch/commands/*" \
   "watch/.claude-plugin/*" \
   > /dev/null 2>&1 || true
 
