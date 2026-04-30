@@ -59,7 +59,10 @@ def _pick_video(out_dir: Path) -> Path | None:
 
 def download_url(url: str, out_dir: Path) -> dict:
     if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+        raise SystemExit(
+            "yt-dlp is not installed. "
+            "macOS: brew install yt-dlp  |  Linux/Windows: pip install yt-dlp"
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
