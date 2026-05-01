@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from download import download, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import load_api_key, load_backend, transcribe_video  # noqa: E402
 
 
 def main() -> int:
@@ -40,9 +40,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["local", "groq", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default: prefer local, then Groq, then OpenAI.",
     )
     args = ap.parse_args()
 
@@ -117,8 +117,8 @@ def main() -> int:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
     if not transcript_segments and not args.no_whisper:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        backend, api_key = load_backend(args.whisper)
+        if backend:
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
@@ -132,14 +132,18 @@ def main() -> int:
             except SystemExit as exc:
                 print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
+            if args.whisper == "local":
+                hint = "--whisper local was set but whisper-cli or a model was not found"
+            elif args.whisper:
+                hint = f"--whisper {args.whisper} was set but the matching API key is missing"
+            else:
+                hint = (
+                    "no subtitles and no Whisper backend available "
+                    "(no whisper-cli, no API key)"
+                )
             setup_py = SCRIPT_DIR / "setup.py"
             print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+                f"[watch] {hint} — run `python3 {setup_py}` to configure",
                 file=sys.stderr,
             )
 
