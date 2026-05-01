@@ -36,8 +36,10 @@ read_key() {
 
 HAS_FFMPEG=""
 HAS_YTDLP=""
+HAS_WHISPER_CLI=""
 command -v ffmpeg >/dev/null 2>&1 && HAS_FFMPEG="yes"
 command -v yt-dlp >/dev/null 2>&1 && HAS_YTDLP="yes"
+command -v whisper-cli >/dev/null 2>&1 && HAS_WHISPER_CLI="yes"
 
 HAS_GROQ="$(read_key GROQ_API_KEY)"
 HAS_OPENAI="$(read_key OPENAI_API_KEY)"
@@ -51,8 +53,8 @@ fi
 # First-run / partially-configured → one-line hint.
 if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
   echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/scripts/setup.py\` once to install and scaffold config."
-elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
-  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
+elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" && -z "$HAS_WHISPER_CLI" ]]; then
+  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env, or install whisper-cpp (brew install whisper-cpp) to unlock Whisper fallback."
 else
   echo "/watch: ready."
 fi

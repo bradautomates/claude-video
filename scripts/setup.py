@@ -30,10 +30,22 @@ from pathlib import Path
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
-ENV_TEMPLATE = """# /watch API configuration
+ENV_TEMPLATE = """# /watch transcription configuration
 #
 # Whisper transcription fallback — used only when yt-dlp cannot get captions
 # (or when you point /watch at a local file with no subtitles).
+#
+# --- Local whisper (preferred — free, private, no network) ---
+#
+# If whisper-cli (whisper.cpp) is installed and a GGML model is found,
+# local transcription is used automatically. No API key needed.
+#   Install:  brew install whisper-cpp (macOS)
+#   Models:   auto-discovered from ~/.cache/whisper/ and other common locations.
+#
+# WHISPER_MODEL=           # explicit path to a GGML model file (optional)
+# WHISPER_LOCAL=false       # uncomment to disable local whisper
+#
+# --- API backends (fallback when local is unavailable) ---
 #
 # Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
 # and is faster in practice. OpenAI is the compatible fallback.
@@ -41,8 +53,8 @@ ENV_TEMPLATE = """# /watch API configuration
 # Get a Groq key:  https://console.groq.com/keys
 # Get an OpenAI key:  https://platform.openai.com/api-keys
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# Leave everything blank (and without whisper-cli) to disable Whisper —
+# /watch will still work, but videos without captions come back frames-only.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
@@ -95,12 +107,42 @@ def _read_env_key(name: str) -> str | None:
     return None
 
 
-def _have_api_key() -> tuple[bool, str | None]:
+def _has_local_whisper() -> bool:
+    """True if whisper-cli is installed, not disabled, and a model is found."""
+    if not _which("whisper-cli"):
+        return False
+    disabled = _read_env_key("WHISPER_LOCAL")
+    if disabled and disabled.lower() == "false":
+        return False
+    # Lightweight model check — mirrors whisper.py's _find_whisper_model().
+    model_env = os.environ.get("WHISPER_MODEL", "").strip()
+    if model_env and Path(model_env).expanduser().is_file():
+        return True
+    search_dirs = [
+        Path.home() / ".cache" / "whisper",
+    ]
+    for d in search_dirs:
+        if d.is_dir() and any(
+            f.is_file() and (f.suffix == ".bin" or "ggml" in f.name)
+            for f in d.iterdir()
+        ):
+            return True
+    return False
+
+
+def _have_whisper_backend() -> tuple[bool, str | None]:
+    """Check for any available Whisper backend: local, Groq, or OpenAI."""
+    if _has_local_whisper():
+        return True, "local"
     if _read_env_key("GROQ_API_KEY"):
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
     return False, None
+
+
+# Backward-compatible alias.
+_have_api_key = _have_whisper_backend
 
 
 def is_first_run() -> bool:
@@ -199,11 +241,13 @@ def _install_hint_windows(missing: list[str]) -> str:
 def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
-    has_key, backend = _have_api_key()
+    has_backend, backend = _have_whisper_backend()
+    has_api_key = bool(_read_env_key("GROQ_API_KEY") or _read_env_key("OPENAI_API_KEY"))
+    has_whisper_cli = bool(_which("whisper-cli"))
 
-    if not missing and has_key:
+    if not missing and has_backend:
         status = "ready"
-    elif missing and not has_key:
+    elif missing and not has_backend:
         status = "needs_install_and_key"
     elif missing:
         status = "needs_install"
@@ -215,7 +259,8 @@ def _status() -> dict:
         "first_run": is_first_run(),
         "missing_binaries": missing,
         "whisper_backend": backend,
-        "has_api_key": has_key,
+        "whisper_cli": has_whisper_cli,
+        "has_api_key": has_api_key,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -237,8 +282,8 @@ def cmd_check() -> int:
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if not s["whisper_backend"]:
+        parts.append("no Whisper backend (install whisper-cpp or set GROQ_API_KEY/OPENAI_API_KEY)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -246,7 +291,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
+    if s["missing_binaries"] and not s["whisper_backend"]:
         return 4
     if s["missing_binaries"]:
         return 2
@@ -293,8 +338,8 @@ def cmd_install() -> int:
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
-    has_key, backend = _have_api_key()
-    if has_key:
+    has_backend, backend = _have_whisper_backend()
+    if has_backend:
         _write_setup_complete()
         print(f"[setup] ready. whisper backend: {backend}")
         if installed_deps:
@@ -302,13 +347,18 @@ def cmd_install() -> int:
         return 0
 
     print("")
-    print("[setup] one step left: add a Whisper API key.")
+    print("[setup] optional: set up a Whisper backend for videos without captions.")
     print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
+    print("  Option 1 — local (free, private, no network):")
+    print("    brew install whisper-cpp")
+    print("    Place a GGML model in ~/.cache/whisper/ (or set WHISPER_MODEL in config)")
+    print("")
+    print("  Option 2 — API:")
+    print(f"    Edit {CONFIG_FILE} and set either:")
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print("  Without a backend, /watch still works but videos without captions come back frames-only.")
     return 3
 
 
