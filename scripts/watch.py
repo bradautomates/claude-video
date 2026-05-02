@@ -107,6 +107,7 @@ def main() -> int:
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
     transcript_source: str | None = None
+    transcript_failure: str | None = None
     if dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
@@ -115,33 +116,40 @@ def main() -> int:
             transcript_source = "captions"
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
+            transcript_failure = f"Subtitle parse failed: {exc}"
 
-    if not transcript_segments and not args.no_whisper:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
-            try:
-                all_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
-                transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-                transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
-            except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+    if not transcript_segments:
+        if args.no_whisper:
+            transcript_failure = transcript_failure or "Whisper disabled via --no-whisper"
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+            backend, api_key = load_api_key(args.whisper)
+            if backend and api_key:
+                try:
+                    all_segments, used_backend = transcribe_video(
+                        video_path,
+                        work / "audio.mp3",
+                        backend=backend,
+                        api_key=api_key,
+                    )
+                    transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                    transcript_text = format_transcript(transcript_segments)
+                    transcript_source = f"whisper ({used_backend})"
+                    transcript_failure = None
+                except SystemExit as exc:
+                    print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                    transcript_failure = f"Whisper ({backend}) failed: {exc}"
+            else:
+                hint = (
+                    f"--whisper {args.whisper} was set but the matching API key is missing"
+                    if args.whisper else
+                    "no subtitles and no Whisper API key found"
+                )
+                setup_py = SCRIPT_DIR / "setup.py"
+                print(
+                    f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+                    file=sys.stderr,
+                )
+                transcript_failure = hint
 
     info = dl.get("info") or {}
 
@@ -212,11 +220,10 @@ def main() -> int:
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"
+        reason = transcript_failure or "no captions available and Whisper not attempted"
         print(
-            "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
-            "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+            f"_No transcript available — proceed with frames only. {reason}. "
+            f"To configure Whisper, run `python3 {setup_py}`._"
         )
 
     print()
