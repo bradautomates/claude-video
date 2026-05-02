@@ -10,6 +10,7 @@ Pure stdlib — no `pip install groq` or `pip install openai` needed.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import mimetypes
@@ -37,6 +38,13 @@ OPENAI_MODEL = "whisper-1"
 # video. Also lets one bad chunk be skipped while the rest of the transcript
 # still gets through.
 CHUNK_DURATION_SECONDS = 600
+
+# Successful transcripts are cached to disk and looked up by
+# (source file identity, window, backend). On cache hit we skip both audio
+# extraction and the API call. Bump CACHE_VERSION whenever extract_audio's
+# encoding parameters or the segment schema change.
+CACHE_VERSION = 1
+CACHE_DIR = Path.home() / ".cache" / "watch" / "chunks"
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
@@ -341,6 +349,105 @@ def _post_for_backend(backend: str, api_key: str, audio_path: Path) -> dict:
     raise SystemExit(f"Unknown whisper backend: {backend}")
 
 
+def _cache_key(video_path: str, win_start: float, win_end: float, backend: str) -> str:
+    """Stable hash for a (source file identity, window, backend) tuple.
+
+    Includes file size + mtime so editing or replacing the source video
+    invalidates entries automatically. Encoding params are hardcoded in
+    extract_audio; bump CACHE_VERSION if those change.
+    """
+    p = Path(video_path).resolve()
+    try:
+        st = p.stat()
+    except OSError:
+        return ""
+    ident = (
+        f"v{CACHE_VERSION}|{p}|{st.st_size}|{st.st_mtime_ns}|"
+        f"{win_start:.3f}|{win_end:.3f}|{backend}"
+    )
+    return hashlib.sha256(ident.encode()).hexdigest()[:32]
+
+
+def _cache_load(key: str) -> list[dict] | None:
+    """Return cached segments for `key` if a valid entry exists, else None."""
+    if not key:
+        return None
+    path = CACHE_DIR / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("version") != CACHE_VERSION:
+        return None
+    segments = data.get("segments")
+    if not isinstance(segments, list):
+        return None
+    return segments
+
+
+def _cache_store(key: str, segments: list[dict], meta: dict) -> None:
+    """Best-effort write to the cache. Failures are silently swallowed —
+    a broken cache must never break the transcription pipeline."""
+    if not key:
+        return
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (CACHE_DIR / f"{key}.json").write_text(
+            json.dumps({"version": CACHE_VERSION, "segments": segments, "meta": meta}, indent=2)
+        )
+    except OSError:
+        pass
+
+
+def _transcribe_window(
+    video_path: str,
+    audio_path: Path,
+    backend: str,
+    api_key: str,
+    win_start: float,
+    win_end: float,
+    label: str,
+) -> list[dict]:
+    """Transcribe audio in [win_start, win_end). Returns segments with
+    timestamps already offset to source-video coordinates.
+
+    Cache-aware: a successful prior run with identical inputs (same source
+    file identity + window + backend) skips both extraction and upload.
+    """
+    key = _cache_key(video_path, win_start, win_end, backend)
+    cached = _cache_load(key)
+    if cached is not None:
+        print(
+            f"[watch] {label}: cache hit ({len(cached)} segments — skipped upload)",
+            file=sys.stderr,
+        )
+        return cached
+
+    print(f"[watch] {label}: extracting audio…", file=sys.stderr)
+    extract_audio(
+        video_path, audio_path,
+        start_seconds=win_start if win_start > 0 else None,
+        end_seconds=win_end,
+    )
+    size_kb = audio_path.stat().st_size / 1024
+    print(f"[watch] {label}: {size_kb:.0f} kB — uploading…", file=sys.stderr)
+
+    response = _post_for_backend(backend, api_key, audio_path)
+    segments = _segments_from_response(response, time_offset=win_start)
+
+    if segments:
+        _cache_store(key, segments, {
+            "video_path": str(Path(video_path).resolve()),
+            "win_start": win_start,
+            "win_end": win_end,
+            "backend": backend,
+        })
+
+    return segments
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -376,18 +483,15 @@ def transcribe_video(
     eff_start = float(start_seconds) if start_seconds is not None else 0.0
     eff_end = float(end_seconds) if end_seconds is not None else _probe_duration(video_path)
     eff_duration = max(0.0, eff_end - eff_start)
+    audio_out.parent.mkdir(parents=True, exist_ok=True)
 
     # Single-upload path — preserves prior behavior for short audio.
     if eff_duration <= CHUNK_DURATION_SECONDS:
-        scope = f" ({eff_start:.0f}s-{eff_end:.0f}s)" if (start_seconds is not None or end_seconds is not None) else ""
-        print(f"[watch] extracting audio for Whisper ({backend}){scope}…", file=sys.stderr)
-        audio_path = extract_audio(video_path, audio_out, start_seconds, end_seconds)
-        size_kb = audio_path.stat().st_size / 1024
-        print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
-
-        response = _post_for_backend(backend, api_key, audio_path)
-        offset = eff_start if eff_start > 0 else 0.0
-        segments = _segments_from_response(response, time_offset=offset)
+        focused = start_seconds is not None or end_seconds is not None
+        label = f"single ({eff_start:.0f}s-{eff_end:.0f}s)" if focused else f"single ({backend})"
+        segments = _transcribe_window(
+            video_path, audio_out, backend, api_key, eff_start, eff_end, label,
+        )
         if not segments:
             raise SystemExit("Whisper returned no transcript segments")
         print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
@@ -403,19 +507,14 @@ def transcribe_video(
 
     all_segments: list[dict] = []
     failures: list[tuple[float, float, str]] = []
-    audio_out.parent.mkdir(parents=True, exist_ok=True)
 
     for i, (chunk_start, chunk_end) in enumerate(windows, 1):
         label = f"chunk {i}/{len(windows)} ({chunk_start:.0f}s-{chunk_end:.0f}s)"
         chunk_audio = audio_out.parent / f"{audio_out.stem}_chunk_{i:03d}{audio_out.suffix}"
         try:
-            print(f"[watch] {label}: extracting audio…", file=sys.stderr)
-            extract_audio(video_path, chunk_audio, chunk_start, chunk_end)
-            size_kb = chunk_audio.stat().st_size / 1024
-            print(f"[watch] {label}: {size_kb:.0f} kB — uploading…", file=sys.stderr)
-
-            response = _post_for_backend(backend, api_key, chunk_audio)
-            chunk_segments = _segments_from_response(response, time_offset=chunk_start)
+            chunk_segments = _transcribe_window(
+                video_path, chunk_audio, backend, api_key, chunk_start, chunk_end, label,
+            )
             all_segments.extend(chunk_segments)
             print(f"[watch] {label}: {len(chunk_segments)} segments", file=sys.stderr)
         except SystemExit as exc:
