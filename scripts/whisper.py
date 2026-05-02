@@ -140,8 +140,12 @@ def _build_multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, st
     return buf.getvalue(), boundary
 
 
-MAX_ATTEMPTS = 4       # initial + 3 retries
+MAX_ATTEMPTS = 4       # initial + 3 retries (network errors only)
 MAX_429_RETRIES = 2
+MAX_5XX_RETRIES = 2    # bail after 2 server-error hits — each retry re-uploads
+                       # the full audio and counts against per-hour quota (Groq's
+                       # ASPH limit). 4× of a 40-min file = ~3 hours of "audio"
+                       # billed and exceeds the free-tier hourly cap.
 RETRY_BASE_DELAY = 2.0
 
 
@@ -163,6 +167,7 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
 
     context = ssl.create_default_context()
     rate_limit_hits = 0
+    server_error_hits = 0
     last_exc: Exception | None = None
     last_detail = ""
 
@@ -184,6 +189,11 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
                 if rate_limit_hits >= MAX_429_RETRIES:
                     raise SystemExit(f"Whisper request failed: {exc}{detail}")
                 delay = _retry_after(exc) or RETRY_BASE_DELAY * (2 ** attempt) + 1
+            elif 500 <= exc.code < 600:
+                server_error_hits += 1
+                if server_error_hits >= MAX_5XX_RETRIES:
+                    raise SystemExit(f"Whisper request failed: {exc}{detail}")
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
             else:
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
 
