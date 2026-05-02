@@ -130,6 +130,8 @@ def main() -> int:
                         work / "audio.mp3",
                         backend=backend,
                         api_key=api_key,
+                        start_seconds=start_sec,
+                        end_seconds=end_sec,
                     )
                     transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                     transcript_text = format_transcript(transcript_segments)

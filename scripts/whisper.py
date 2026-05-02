@@ -82,17 +82,36 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     return None, None
 
 
-def extract_audio(video_path: str, out_path: Path) -> Path:
-    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit."""
+def extract_audio(
+    video_path: str,
+    out_path: Path,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> Path:
+    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit.
+
+    When start_seconds/end_seconds are set, only that window is extracted —
+    the rest never reaches Whisper. This keeps focused-mode runs cheap
+    (smaller upload, less quota burn) and matches the frame extraction scope.
+    """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # -ss before -i is fast-seek (less precise) but plenty for transcription;
+    # -to is absolute end position in the source timeline.
+    seek = []
+    if start_seconds and start_seconds > 0:
+        seek += ["-ss", f"{start_seconds:.3f}"]
+    if end_seconds is not None:
+        seek += ["-to", f"{end_seconds:.3f}"]
+
     cmd = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel", "error",
         "-y",
+        *seek,
         "-i", video_path,
         "-vn",
         "-acodec", "libmp3lame",
@@ -250,23 +269,29 @@ def _retry_after(exc: urllib.error.HTTPError) -> float | None:
         return None
 
 
-def _segments_from_response(data: dict) -> list[dict]:
-    """Convert Whisper verbose_json into our {start, end, text} segment format."""
+def _segments_from_response(data: dict, time_offset: float = 0.0) -> list[dict]:
+    """Convert Whisper verbose_json into our {start, end, text} segment format.
+
+    `time_offset` is added to each segment's timestamps. Used when the audio
+    was extracted from a window starting at t > 0 — Whisper's timestamps are
+    relative to the audio file, but the rest of the pipeline expects them
+    relative to the source video.
+    """
     out: list[dict] = []
     for seg in data.get("segments") or []:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
         out.append({
-            "start": round(float(seg.get("start") or 0.0), 2),
-            "end": round(float(seg.get("end") or 0.0), 2),
+            "start": round(float(seg.get("start") or 0.0) + time_offset, 2),
+            "end": round(float(seg.get("end") or 0.0) + time_offset, 2),
             "text": text,
         })
 
     if not out:
         full = (data.get("text") or "").strip()
         if full:
-            out.append({"start": 0.0, "end": 0.0, "text": full})
+            out.append({"start": round(time_offset, 2), "end": round(time_offset, 2), "text": full})
 
     return out
 
@@ -276,8 +301,14 @@ def transcribe_video(
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio → upload → parse segments.
+
+    When start_seconds/end_seconds are given, only that window is extracted
+    and uploaded. Returned segment timestamps are normalized back to the
+    source video timeline.
 
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
@@ -294,8 +325,11 @@ def transcribe_video(
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
-    audio_path = extract_audio(video_path, audio_out)
+    scope = ""
+    if start_seconds is not None or end_seconds is not None:
+        scope = f" ({start_seconds or 0:.0f}s-{end_seconds:.0f}s)" if end_seconds else f" (from {start_seconds:.0f}s)"
+    print(f"[watch] extracting audio for Whisper ({backend}){scope}…", file=sys.stderr)
+    audio_path = extract_audio(video_path, audio_out, start_seconds, end_seconds)
     size_kb = audio_path.stat().st_size / 1024
     print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
 
@@ -306,7 +340,8 @@ def transcribe_video(
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
 
-    segments = _segments_from_response(response)
+    offset = float(start_seconds) if start_seconds and start_seconds > 0 else 0.0
+    segments = _segments_from_response(response, time_offset=offset)
     if not segments:
         raise SystemExit("Whisper returned no transcript segments")
 
