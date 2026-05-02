@@ -121,7 +121,18 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — offer to persist findings and suggest follow-ups.** Immediately after delivering your answer/summary, call `AskUserQuestion` with one multi-select question titled "What next?" and 4 concrete options:
+
+1. **Save findings** — write your full answer (with timestamps) to `<workdir>/findings.md` so the user can reread, share, or feed it back into another tool. Append on subsequent runs rather than overwriting.
+2. **Zoom into a section** — re-run with `--start`/`--end` for higher frame density on a specific moment. Pick a sensible default range based on what looked interesting (a key demo, an unclear cut, a moment the user asked about) and propose it explicitly in the option label, e.g. *"Zoom into 04:00–05:30 (the MenuGen demo)"*.
+3. **Ask a follow-up** — invite a follow-up question; you already have frames + transcript in context, so do **not** re-run the script.
+4. **Skip** — leave it as-is.
+
+Tailor the option labels to the actual video — the "zoom into" option in particular should name the timestamps and what's there. Skip this step if the user already followed up in the same turn (e.g. "and also tell me X") — answer their follow-up first, then offer.
+
+If the user picks **Save findings**, write `findings.md` BEFORE Step 6 cleanup so the file survives.
+
+**Step 6 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they picked **Save findings**, **Zoom into a section**, or **Ask a follow-up** in Step 5, leave it in place.
 
 ## Transcription
 
