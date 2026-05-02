@@ -31,6 +31,13 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+# Audio over this duration is split into chunks before upload. 10 min keeps each
+# chunk well under Groq's 25 MB per-file cap (at 64 kbps mono ≈ 4.7 MB/chunk)
+# and bounds quota burn on retry — a failing chunk costs 600s, not the full
+# video. Also lets one bad chunk be skipped while the rest of the transcript
+# still gets through.
+CHUNK_DURATION_SECONDS = 600
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
@@ -296,6 +303,44 @@ def _segments_from_response(data: dict, time_offset: float = 0.0) -> list[dict]:
     return out
 
 
+def _probe_duration(video_path: str) -> float:
+    """Return source media duration in seconds via ffprobe. Used to size chunks
+    when the caller didn't provide an explicit window."""
+    if shutil.which("ffprobe") is None:
+        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        video_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        raise SystemExit(f"ffprobe returned non-numeric duration: {result.stdout!r}")
+
+
+def _chunk_windows(start: float, end: float, chunk_seconds: float) -> list[tuple[float, float]]:
+    """Split [start, end) into windows of chunk_seconds. The last may be shorter."""
+    windows: list[tuple[float, float]] = []
+    cursor = start
+    while cursor < end:
+        windows.append((cursor, min(cursor + chunk_seconds, end)))
+        cursor += chunk_seconds
+    return windows
+
+
+def _post_for_backend(backend: str, api_key: str, audio_path: Path) -> dict:
+    if backend == "groq":
+        return _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+    if backend == "openai":
+        return _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    raise SystemExit(f"Unknown whisper backend: {backend}")
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -303,14 +348,17 @@ def transcribe_video(
     api_key: str | None = None,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
-) -> tuple[list[dict], str]:
+) -> tuple[list[dict], str, list[tuple[float, float, str]]]:
     """Run the full flow: extract audio → upload → parse segments.
 
-    When start_seconds/end_seconds are given, only that window is extracted
-    and uploaded. Returned segment timestamps are normalized back to the
-    source video timeline.
+    Audio over CHUNK_DURATION_SECONDS is split into chunks and uploaded
+    independently. A chunk that fails is reported and skipped — the caller
+    gets segments from the successful chunks plus a list of
+    (start, end, reason) tuples for the failures. Total failure (no chunks
+    succeeded) raises SystemExit.
 
-    Returns (segments, backend_used). Raises SystemExit on any failure.
+    Returns (segments, backend_used, failures). `failures` is empty on a
+    clean run.
     """
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key()
@@ -325,28 +373,71 @@ def transcribe_video(
             f"Run `python3 {setup_py}` to configure."
         )
 
-    scope = ""
-    if start_seconds is not None or end_seconds is not None:
-        scope = f" ({start_seconds or 0:.0f}s-{end_seconds:.0f}s)" if end_seconds else f" (from {start_seconds:.0f}s)"
-    print(f"[watch] extracting audio for Whisper ({backend}){scope}…", file=sys.stderr)
-    audio_path = extract_audio(video_path, audio_out, start_seconds, end_seconds)
-    size_kb = audio_path.stat().st_size / 1024
-    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
+    eff_start = float(start_seconds) if start_seconds is not None else 0.0
+    eff_end = float(end_seconds) if end_seconds is not None else _probe_duration(video_path)
+    eff_duration = max(0.0, eff_end - eff_start)
 
-    if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
-    elif backend == "openai":
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
-    else:
-        raise SystemExit(f"Unknown whisper backend: {backend}")
+    # Single-upload path — preserves prior behavior for short audio.
+    if eff_duration <= CHUNK_DURATION_SECONDS:
+        scope = f" ({eff_start:.0f}s-{eff_end:.0f}s)" if (start_seconds is not None or end_seconds is not None) else ""
+        print(f"[watch] extracting audio for Whisper ({backend}){scope}…", file=sys.stderr)
+        audio_path = extract_audio(video_path, audio_out, start_seconds, end_seconds)
+        size_kb = audio_path.stat().st_size / 1024
+        print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
 
-    offset = float(start_seconds) if start_seconds and start_seconds > 0 else 0.0
-    segments = _segments_from_response(response, time_offset=offset)
-    if not segments:
-        raise SystemExit("Whisper returned no transcript segments")
+        response = _post_for_backend(backend, api_key, audio_path)
+        offset = eff_start if eff_start > 0 else 0.0
+        segments = _segments_from_response(response, time_offset=offset)
+        if not segments:
+            raise SystemExit("Whisper returned no transcript segments")
+        print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
+        return segments, backend, []
 
-    print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
-    return segments, backend
+    # Chunked path — split audio, upload each window, stitch with offsets.
+    windows = _chunk_windows(eff_start, eff_end, CHUNK_DURATION_SECONDS)
+    print(
+        f"[watch] {eff_duration:.0f}s exceeds {CHUNK_DURATION_SECONDS}s — "
+        f"splitting into {len(windows)} chunks of ≤{CHUNK_DURATION_SECONDS}s",
+        file=sys.stderr,
+    )
+
+    all_segments: list[dict] = []
+    failures: list[tuple[float, float, str]] = []
+    audio_out.parent.mkdir(parents=True, exist_ok=True)
+
+    for i, (chunk_start, chunk_end) in enumerate(windows, 1):
+        label = f"chunk {i}/{len(windows)} ({chunk_start:.0f}s-{chunk_end:.0f}s)"
+        chunk_audio = audio_out.parent / f"{audio_out.stem}_chunk_{i:03d}{audio_out.suffix}"
+        try:
+            print(f"[watch] {label}: extracting audio…", file=sys.stderr)
+            extract_audio(video_path, chunk_audio, chunk_start, chunk_end)
+            size_kb = chunk_audio.stat().st_size / 1024
+            print(f"[watch] {label}: {size_kb:.0f} kB — uploading…", file=sys.stderr)
+
+            response = _post_for_backend(backend, api_key, chunk_audio)
+            chunk_segments = _segments_from_response(response, time_offset=chunk_start)
+            all_segments.extend(chunk_segments)
+            print(f"[watch] {label}: {len(chunk_segments)} segments", file=sys.stderr)
+        except SystemExit as exc:
+            failures.append((chunk_start, chunk_end, str(exc)))
+            print(f"[watch] {label}: FAILED — {exc}", file=sys.stderr)
+        finally:
+            try:
+                chunk_audio.unlink()
+            except OSError:
+                pass
+
+    if not all_segments:
+        details = "; ".join(f"{s:.0f}-{e:.0f}: {r[:120]}" for s, e, r in failures)
+        raise SystemExit(f"All {len(windows)} chunks failed — {details}")
+
+    succeeded = len(windows) - len(failures)
+    print(
+        f"[watch] transcribed {len(all_segments)} segments via {backend} "
+        f"({succeeded}/{len(windows)} chunks succeeded)",
+        file=sys.stderr,
+    )
+    return all_segments, backend, failures
 
 
 if __name__ == "__main__":

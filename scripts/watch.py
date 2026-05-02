@@ -125,7 +125,7 @@ def main() -> int:
             backend, api_key = load_api_key(args.whisper)
             if backend and api_key:
                 try:
-                    all_segments, used_backend = transcribe_video(
+                    all_segments, used_backend, chunk_failures = transcribe_video(
                         video_path,
                         work / "audio.mp3",
                         backend=backend,
@@ -136,7 +136,11 @@ def main() -> int:
                     transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                     transcript_text = format_transcript(transcript_segments)
                     transcript_source = f"whisper ({used_backend})"
-                    transcript_failure = None
+                    if chunk_failures:
+                        ranges = ", ".join(f"{format_time(s)}-{format_time(e)}" for s, e, _ in chunk_failures)
+                        transcript_failure = f"{len(chunk_failures)} chunk(s) failed: {ranges}"
+                    else:
+                        transcript_failure = None
                 except SystemExit as exc:
                     print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
                     transcript_failure = f"Whisper ({backend}) failed: {exc}"
@@ -214,6 +218,9 @@ def main() -> int:
             print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
         else:
             print(f"_Source: {label}._")
+        if transcript_failure:
+            print()
+            print(f"> **Partial transcript:** {transcript_failure}. Those windows are missing from the text below.")
         print()
         print("```")
         print(transcript_text)
