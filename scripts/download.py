@@ -43,8 +43,11 @@ def _pick_subtitle(out_dir: Path) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [c for c in candidates if ".en" in c.name]
-    return preferred[0] if preferred else candidates[0]
+    orig = [c for c in candidates if "-orig" in c.name]
+    if orig:
+        return orig[0]
+    en = [c for c in candidates if ".en" in c.name]
+    return en[0] if en else candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -72,7 +75,7 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en,en-US,en-GB,en-orig",
+        "--sub-langs", ".*-orig,en.*",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
