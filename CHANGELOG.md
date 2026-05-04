@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- Deepgram backend (`nova-3` with `smart_format`, `punctuate`, `utterances`, `detect_language`). Reads `DEEPGRAM_API_KEY` from env or `~/.config/watch/.env`. Force with `--whisper deepgram`. Useful for long videos because Deepgram has no per-request size limit (Groq/OpenAI cap at 25 MB).
+
+### Changed
+- Backend preference order when multiple keys are set: Groq → OpenAI → Deepgram.
+- `setup.py` scaffolds a `DEEPGRAM_API_KEY=` placeholder and accepts it as satisfying the preflight key check.
+- Docs and stderr messages refer to "transcription" / "speech-to-text" rather than "Whisper" where the broader concept applies.
+
 ## [0.1.2] — 2026-04-24
 
 ### Fixed
