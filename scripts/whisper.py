@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Transcribe a video via Groq or OpenAI Whisper API.
+"""Transcribe a video via Groq Whisper, OpenAI Whisper, or Deepgram.
 
 Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
 API has a key. Returns segments in the same shape as transcribe.parse_vtt so
 the rest of the pipeline (filter_range, format_transcript) doesn't care where
 the transcript came from.
 
-Pure stdlib — no `pip install groq` or `pip install openai` needed.
+Pure stdlib — no `pip install groq`, `openai`, or `deepgram-sdk` needed.
 """
 from __future__ import annotations
 
@@ -31,11 +31,25 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+DEEPGRAM_MODEL = "nova-3"
+# utterances=true gives us pre-segmented chunks with start/end/transcript that
+# map directly onto our {start,end,text} schema. detect_language=true keeps
+# behavior parity with Whisper's auto-language detection.
+DEEPGRAM_ENDPOINT = (
+    "https://api.deepgram.com/v1/listen"
+    f"?model={DEEPGRAM_MODEL}"
+    "&smart_format=true"
+    "&punctuate=true"
+    "&utterances=true"
+    "&detect_language=true"
+)
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+    """Return (backend, api_key). Prefers Groq, then OpenAI, then Deepgram.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    If `preferred` is "groq", "openai", or "deepgram", only that backend's
+    key is considered.
     """
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
@@ -65,7 +79,11 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    candidates = (
+        ("GROQ_API_KEY", "groq"),
+        ("OPENAI_API_KEY", "openai"),
+        ("DEEPGRAM_API_KEY", "deepgram"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
@@ -217,6 +235,78 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     )
 
 
+def _post_deepgram(api_key: str, audio_path: Path) -> dict:
+    """POST raw audio bytes to Deepgram /v1/listen.
+
+    Deepgram differs from the Whisper-shaped APIs in three ways:
+      1. Auth header is `Token <key>`, not `Bearer <key>`.
+      2. Body is the raw audio bytes — no multipart form.
+      3. Response shape is nested under results.utterances / results.channels.
+    Retry/backoff logic mirrors `_post_whisper` so transient 429/5xx behavior
+    stays consistent across backends.
+    """
+    body = audio_path.read_bytes()
+    headers = {
+        "Authorization": f"Token {api_key}",
+        "Content-Type": "audio/mpeg",
+        "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
+    }
+
+    context = ssl.create_default_context()
+    rate_limit_hits = 0
+    last_exc: Exception | None = None
+    last_detail = ""
+
+    for attempt in range(MAX_ATTEMPTS):
+        request = Request(DEEPGRAM_ENDPOINT, data=body, headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=300, context=context) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = _read_error_body(exc)
+            last_exc, last_detail = exc, detail
+
+            if 400 <= exc.code < 500 and exc.code != 429:
+                raise SystemExit(f"Deepgram request failed: {exc}{detail}")
+
+            if exc.code == 429:
+                rate_limit_hits += 1
+                if rate_limit_hits >= MAX_429_RETRIES:
+                    raise SystemExit(f"Deepgram request failed: {exc}{detail}")
+                delay = _retry_after(exc) or RETRY_BASE_DELAY * (2 ** attempt) + 1
+            else:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+
+            if attempt < MAX_ATTEMPTS - 1:
+                print(
+                    f"[watch] deepgram HTTP {exc.code} — retrying in {delay:.1f}s "
+                    f"(attempt {attempt + 2}/{MAX_ATTEMPTS})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            continue
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as exc:
+            last_exc, last_detail = exc, ""
+            if attempt < MAX_ATTEMPTS - 1:
+                delay = RETRY_BASE_DELAY * (attempt + 1)
+                print(
+                    f"[watch] deepgram network error ({type(exc).__name__}: {exc}) — "
+                    f"retrying in {delay:.1f}s (attempt {attempt + 2}/{MAX_ATTEMPTS})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            continue
+
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"Deepgram returned non-JSON response: {exc}: {payload[:200]}")
+
+    raise SystemExit(
+        f"Deepgram request failed after {MAX_ATTEMPTS} attempts: {last_exc}{last_detail}"
+    )
+
+
 def _read_error_body(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read()
@@ -261,6 +351,38 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+def _segments_from_deepgram_response(data: dict) -> list[dict]:
+    """Convert Deepgram /v1/listen response into our {start, end, text} format.
+
+    Prefers `results.utterances` (already segmented by VAD). Falls back to the
+    full alternative transcript as one segment if utterances are absent (rare,
+    but possible with very short audio or if the request omitted utterances).
+    """
+    out: list[dict] = []
+    results = data.get("results") or {}
+    for utt in results.get("utterances") or []:
+        text = (utt.get("transcript") or "").strip()
+        if not text:
+            continue
+        out.append({
+            "start": round(float(utt.get("start") or 0.0), 2),
+            "end": round(float(utt.get("end") or 0.0), 2),
+            "text": text,
+        })
+
+    if not out:
+        for channel in results.get("channels") or []:
+            for alt in channel.get("alternatives") or []:
+                full = (alt.get("transcript") or "").strip()
+                if full:
+                    out.append({"start": 0.0, "end": 0.0, "text": full})
+                    break
+            if out:
+                break
+
+    return out
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -279,26 +401,31 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
+            "No transcription API key available. Set GROQ_API_KEY (preferred), "
+            "OPENAI_API_KEY, or DEEPGRAM_API_KEY in the environment or in "
+            "~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
+    print(f"[watch] extracting audio for transcription ({backend})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     size_kb = audio_path.stat().st_size / 1024
-    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
+    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend}…", file=sys.stderr)
 
     if backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        segments = _segments_from_response(response)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        segments = _segments_from_response(response)
+    elif backend == "deepgram":
+        response = _post_deepgram(api_key, audio_path)
+        segments = _segments_from_deepgram_response(response)
     else:
-        raise SystemExit(f"Unknown whisper backend: {backend}")
+        raise SystemExit(f"Unknown transcription backend: {backend}")
 
-    segments = _segments_from_response(response)
     if not segments:
-        raise SystemExit("Whisper returned no transcript segments")
+        raise SystemExit(f"{backend} returned no transcript segments")
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend
@@ -306,7 +433,7 @@ def transcribe_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai|deepgram]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]

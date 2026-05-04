@@ -36,13 +36,16 @@ def main() -> int:
     ap.add_argument(
         "--no-whisper",
         action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
+        help="Disable transcription fallback. Report frames-only if no captions available.",
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "deepgram"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help=(
+            "Force a specific transcription backend. "
+            "Default: prefer Groq, then OpenAI, then Deepgram."
+        ),
     )
     args = ap.parse_args()
 

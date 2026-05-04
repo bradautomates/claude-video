@@ -1,12 +1,12 @@
 {
   "name": "watch",
-  "version": "0.1.2",
-  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Whisper, and hands frames + transcript to Claude so it can answer questions about the video.",
+  "version": "0.2.0",
+  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Groq/OpenAI/Deepgram speech-to-text, and hands frames + transcript to Claude so it can answer questions about the video.",
   "author": {
     "name": "Bradley Bonanno"
   },
   "homepage": "https://github.com/bradautomates/claude-video",
   "repository": "https://github.com/bradautomates/claude-video",
   "license": "MIT",
-  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames"]
+  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "deepgram", "groq", "yt-dlp", "ffmpeg", "multimodal", "frames"]
 }
