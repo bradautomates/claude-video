@@ -156,7 +156,7 @@ def main() -> int:
     print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
     if focused:
         print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
+            f"- **Focus range:** {format_time(effective_start)} - {format_time(effective_end)} "
             f"({effective_duration:.1f}s)"
         )
     if meta.get("width") and meta.get("height"):
@@ -201,7 +201,7 @@ def main() -> int:
     if transcript_text:
         label = transcript_source or "captions"
         if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
+            print(f"_Source: {label}. Filtered to {format_time(effective_start)} - {format_time(effective_end)}:_")
         else:
             print(f"_Source: {label}._")
         print()
@@ -209,7 +209,7 @@ def main() -> int:
         print(transcript_text)
         print("```")
     elif focused and dl.get("subtitle_path"):
-        print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
+        print(f"_No transcript lines fell inside {format_time(effective_start)} - {format_time(effective_end)}._")
     else:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
