@@ -50,7 +50,24 @@ OPENAI_API_KEY=
 
 
 def _which(name: str) -> str | None:
-    return shutil.which(name)
+    hit = shutil.which(name)
+    if hit:
+        return hit
+    # Windows fallback: pip may have installed yt-dlp.exe in a user Scripts
+    # directory that isn't on PATH. Probe the importable module before
+    # declaring it missing — otherwise the installer's `pip install yt-dlp`
+    # hint is a no-op for users who already have it.
+    if name == "yt-dlp":
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "yt_dlp", "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return f"{sys.executable} -m yt_dlp"
+        except Exception:
+            pass
+    return None
 
 
 def _check_binaries() -> list[str]:
