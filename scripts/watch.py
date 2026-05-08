@@ -11,6 +11,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr so the unicode characters in the report
+# (e.g. "→", "…") don't crash on Windows consoles that default to cp1252.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
