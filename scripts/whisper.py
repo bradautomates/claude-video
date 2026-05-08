@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Transcribe a video via Groq or OpenAI Whisper API.
+"""Transcribe a video via Groq, AssemblyAI, or OpenAI.
 
 Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
 API has a key. Returns segments in the same shape as transcribe.parse_vtt so
 the rest of the pipeline (filter_range, format_transcript) doesn't care where
 the transcript came from.
 
-Pure stdlib — no `pip install groq` or `pip install openai` needed.
+Pure stdlib — no SDK dependencies. AssemblyAI is async (upload → create
+job → poll) so it has its own client path; Groq and OpenAI share the
+single-shot multipart Whisper path.
+
+Priority for auto-selection (cost-ascending): Groq > AssemblyAI > OpenAI.
 """
 from __future__ import annotations
 
@@ -30,6 +34,12 @@ GROQ_MODEL = "whisper-large-v3"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
+
+ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2"
+ASSEMBLYAI_UPLOAD = f"{ASSEMBLYAI_BASE}/upload"
+ASSEMBLYAI_TRANSCRIPT = f"{ASSEMBLYAI_BASE}/transcript"
+ASSEMBLYAI_POLL_INTERVAL = 3.0
+ASSEMBLYAI_POLL_TIMEOUT = 1800.0  # 30 min — 3hr video typically completes in 10–15 min
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
@@ -65,7 +75,13 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    # Priority is cost-ascending: Groq cheapest, OpenAI most expensive.
+    # If the user has multiple keys configured, auto-select the cheapest.
+    candidates = (
+        ("GROQ_API_KEY", "groq"),
+        ("ASSEMBLYAI_API_KEY", "assemblyai"),
+        ("OPENAI_API_KEY", "openai"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
@@ -261,6 +277,149 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+def _post_assemblyai(api_key: str, audio_path: Path) -> dict:
+    """Upload audio + create transcript job + poll until completion.
+
+    AssemblyAI is a 3-step async API:
+      1. POST raw bytes to /v2/upload → returns {upload_url}
+      2. POST {audio_url} to /v2/transcript → returns {id, status: queued}
+      3. GET /v2/transcript/{id} repeatedly → status: completed | error
+
+    Auth uses bare key in `Authorization` (no `Bearer` prefix), unlike OpenAI/Groq.
+    """
+    base_headers = {
+        "Authorization": api_key,
+        # Set non-default UA on principle (Groq's WAF rejected default
+        # `Python-urllib`; AssemblyAI hasn't shown the same behavior, but
+        # identifying honestly costs nothing).
+        "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
+    }
+    context = ssl.create_default_context()
+
+    # --- Step 1: upload audio bytes ---
+    size_kb = audio_path.stat().st_size / 1024
+    print(f"[watch] uploading {size_kb:.0f} kB to AssemblyAI…", file=sys.stderr)
+    upload_req = Request(
+        ASSEMBLYAI_UPLOAD,
+        data=audio_path.read_bytes(),
+        headers={**base_headers, "Content-Type": "application/octet-stream"},
+        method="POST",
+    )
+    try:
+        with urlopen(upload_req, timeout=300, context=context) as resp:
+            upload_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"AssemblyAI upload failed: {exc}{_read_error_body(exc)}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise SystemExit(f"AssemblyAI upload network error: {type(exc).__name__}: {exc}")
+    upload_url = upload_data.get("upload_url")
+    if not upload_url:
+        raise SystemExit(f"AssemblyAI upload returned no upload_url: {upload_data}")
+
+    # --- Step 2: create transcript job ---
+    payload = {
+        "audio_url": upload_url,
+        # Auto-detect handles the EN/PT mix on this skill's typical inputs.
+        "language_detection": True,
+    }
+    create_req = Request(
+        ASSEMBLYAI_TRANSCRIPT,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={**base_headers, "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(create_req, timeout=60, context=context) as resp:
+            create_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        raise SystemExit(f"AssemblyAI transcript create failed: {exc}{_read_error_body(exc)}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise SystemExit(f"AssemblyAI create network error: {type(exc).__name__}: {exc}")
+    transcript_id = create_data.get("id")
+    if not transcript_id:
+        raise SystemExit(f"AssemblyAI returned no transcript id: {create_data}")
+
+    # --- Step 3: poll until completed or error ---
+    poll_url = f"{ASSEMBLYAI_TRANSCRIPT}/{transcript_id}"
+    print(f"[watch] AssemblyAI job {transcript_id} queued — polling…", file=sys.stderr)
+    deadline = time.monotonic() + ASSEMBLYAI_POLL_TIMEOUT
+    while time.monotonic() < deadline:
+        time.sleep(ASSEMBLYAI_POLL_INTERVAL)
+        poll_req = Request(poll_url, headers=base_headers, method="GET")
+        try:
+            with urlopen(poll_req, timeout=60, context=context) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as exc:
+            # Transient 5xx during poll — keep trying within deadline
+            if 500 <= exc.code < 600:
+                print(f"[watch] AssemblyAI poll HTTP {exc.code}, retrying", file=sys.stderr)
+                continue
+            raise SystemExit(f"AssemblyAI poll failed: {exc}{_read_error_body(exc)}")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"[watch] AssemblyAI poll network error ({type(exc).__name__}: {exc}), retrying", file=sys.stderr)
+            continue
+
+        status = data.get("status")
+        if status == "completed":
+            return data
+        if status == "error":
+            raise SystemExit(f"AssemblyAI transcription failed: {data.get('error', 'unknown')}")
+        # else: 'queued' or 'processing' — keep polling
+
+    raise SystemExit(
+        f"AssemblyAI transcription timed out after {ASSEMBLYAI_POLL_TIMEOUT:.0f}s"
+    )
+
+
+def _segments_from_assemblyai(data: dict) -> list[dict]:
+    """Convert AssemblyAI response (per-word timestamps) to {start,end,text} segments.
+
+    AssemblyAI returns `words[]` with timestamps in milliseconds. We chunk
+    into ~5s segments to mirror Whisper's typical segment length, which keeps
+    the downstream filter_range/format_transcript code uniform across backends.
+    """
+    words = data.get("words") or []
+    if not words:
+        full = (data.get("text") or "").strip()
+        if full:
+            return [{"start": 0.0, "end": 0.0, "text": full}]
+        return []
+
+    SEG_DURATION = 5.0
+    segments: list[dict] = []
+    current: list[str] = []
+    seg_start: float | None = None
+    seg_end: float = 0.0
+
+    for w in words:
+        text = (w.get("text") or "").strip()
+        if not text:
+            continue
+        start_s = float(w.get("start") or 0) / 1000.0
+        end_s = float(w.get("end") or 0) / 1000.0
+        if seg_start is None:
+            seg_start = start_s
+        seg_end = end_s
+        current.append(text)
+        if (seg_end - seg_start) >= SEG_DURATION:
+            segments.append({
+                "start": round(seg_start, 2),
+                "end": round(seg_end, 2),
+                "text": " ".join(current),
+            })
+            current = []
+            seg_start = None
+
+    if current and seg_start is not None:
+        segments.append({
+            "start": round(seg_start, 2),
+            "end": round(seg_end, 2),
+            "text": " ".join(current),
+        })
+
+    return segments
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -279,26 +438,30 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
-            f"Run `python3 {setup_py}` to configure."
+            "No transcription API key available. Set one of GROQ_API_KEY (preferred), "
+            "ASSEMBLYAI_API_KEY, or OPENAI_API_KEY in the environment or in "
+            f"~/.config/watch/.env. Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
+    print(f"[watch] extracting audio for transcription ({backend})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     size_kb = audio_path.stat().st_size / 1024
-    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
+    print(f"[watch] audio: {size_kb:.0f} kB — sending to {backend}…", file=sys.stderr)
 
     if backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        segments = _segments_from_response(response)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        segments = _segments_from_response(response)
+    elif backend == "assemblyai":
+        response = _post_assemblyai(api_key, audio_path)
+        segments = _segments_from_assemblyai(response)
     else:
-        raise SystemExit(f"Unknown whisper backend: {backend}")
+        raise SystemExit(f"Unknown transcription backend: {backend}")
 
-    segments = _segments_from_response(response)
     if not segments:
-        raise SystemExit("Whisper returned no transcript segments")
+        raise SystemExit(f"{backend} returned no transcript segments")
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend
@@ -306,7 +469,7 @@ def transcribe_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|assemblyai|openai]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]
