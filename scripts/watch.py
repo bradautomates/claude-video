@@ -12,6 +12,15 @@ import tempfile
 from pathlib import Path
 
 
+# Force UTF-8 on stdout/stderr. Windows defaults to cp1252, which crashes when
+# the script prints common output chars like the arrow (U+2192) or em-dash.
+# No-op on macOS/Linux (already UTF-8) and on streams without reconfigure().
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
