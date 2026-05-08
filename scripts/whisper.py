@@ -31,11 +31,14 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+ELEVENLABS_ENDPOINT = "https://api.elevenlabs.io/v1/speech-to-text"
+ELEVENLABS_MODEL = "scribe_v1"
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+    """Return (backend, api_key). Prefers ElevenLabs, then Groq, then OpenAI.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    If `preferred` is "elevenlabs", "groq", or "openai", only that backend's key is considered.
     """
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
@@ -65,7 +68,11 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    candidates = (
+        ("ELEVENLABS_API_KEY", "elevenlabs"),
+        ("GROQ_API_KEY", "groq"),
+        ("OPENAI_API_KEY", "openai"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
@@ -240,6 +247,123 @@ def _retry_after(exc: urllib.error.HTTPError) -> float | None:
         return None
 
 
+def _post_elevenlabs(api_key: str, audio_path: Path) -> dict:
+    fields = {
+        "model_id": ELEVENLABS_MODEL,
+        "timestamps_granularity": "word",
+    }
+    body, boundary = _build_multipart(fields, audio_path)
+    headers = {
+        "xi-api-key": api_key,
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
+    }
+
+    context = ssl.create_default_context()
+    rate_limit_hits = 0
+    last_exc: Exception | None = None
+    last_detail = ""
+
+    for attempt in range(MAX_ATTEMPTS):
+        request = Request(ELEVENLABS_ENDPOINT, data=body, headers=headers, method="POST")
+        try:
+            with urlopen(request, timeout=300, context=context) as response:
+                payload = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = _read_error_body(exc)
+            last_exc, last_detail = exc, detail
+            if 400 <= exc.code < 500 and exc.code != 429:
+                raise SystemExit(f"ElevenLabs request failed: {exc}{detail}")
+            if exc.code == 429:
+                rate_limit_hits += 1
+                if rate_limit_hits >= MAX_429_RETRIES:
+                    raise SystemExit(f"ElevenLabs request failed: {exc}{detail}")
+                delay = _retry_after(exc) or RETRY_BASE_DELAY * (2 ** attempt) + 1
+            else:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+            if attempt < MAX_ATTEMPTS - 1:
+                print(
+                    f"[watch] elevenlabs HTTP {exc.code} — retrying in {delay:.1f}s "
+                    f"(attempt {attempt + 2}/{MAX_ATTEMPTS})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            continue
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as exc:
+            last_exc, last_detail = exc, ""
+            if attempt < MAX_ATTEMPTS - 1:
+                delay = RETRY_BASE_DELAY * (attempt + 1)
+                print(
+                    f"[watch] elevenlabs network error ({type(exc).__name__}: {exc}) — "
+                    f"retrying in {delay:.1f}s (attempt {attempt + 2}/{MAX_ATTEMPTS})",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+            continue
+
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"ElevenLabs returned non-JSON response: {exc}: {payload[:200]}")
+
+    raise SystemExit(
+        f"ElevenLabs request failed after {MAX_ATTEMPTS} attempts: {last_exc}{last_detail}"
+    )
+
+
+def _segments_from_elevenlabs(data: dict, max_segment_seconds: float = 8.0) -> list[dict]:
+    """Group ElevenLabs word-level output into ~8s segments.
+
+    Response shape: {"text": str, "words": [{"text", "start", "end", "type"}], ...}
+    """
+    words = data.get("words") or []
+    out: list[dict] = []
+    cur_start: float | None = None
+    cur_end: float = 0.0
+    cur_words: list[str] = []
+
+    def _flush() -> None:
+        if cur_words and cur_start is not None:
+            text = "".join(cur_words).strip()
+            if text:
+                out.append({
+                    "start": round(cur_start, 2),
+                    "end": round(cur_end, 2),
+                    "text": text,
+                })
+
+    for w in words:
+        wtype = w.get("type") or "word"
+        wtext = w.get("text") or ""
+        wstart = float(w.get("start") or 0.0)
+        wend = float(w.get("end") or wstart)
+
+        if wtype == "spacing":
+            cur_words.append(wtext)
+            cur_end = wend or cur_end
+            continue
+
+        if cur_start is None:
+            cur_start = wstart
+        cur_words.append(wtext)
+        cur_end = wend
+        ends_sentence = wtext.rstrip().endswith((".", "!", "?"))
+        if (cur_end - cur_start) >= max_segment_seconds or ends_sentence:
+            _flush()
+            cur_start = None
+            cur_end = 0.0
+            cur_words = []
+
+    _flush()
+
+    if not out:
+        full = (data.get("text") or "").strip()
+        if full:
+            out.append({"start": 0.0, "end": 0.0, "text": full})
+
+    return out
+
+
 def _segments_from_response(data: dict) -> list[dict]:
     """Convert Whisper verbose_json into our {start, end, text} segment format."""
     out: list[dict] = []
@@ -279,26 +403,30 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
+            "No transcription API key available. Set ELEVENLABS_API_KEY (preferred), "
+            "GROQ_API_KEY, or OPENAI_API_KEY in the environment or in ~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
+    print(f"[watch] extracting audio for transcription ({backend})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     size_kb = audio_path.stat().st_size / 1024
-    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
+    print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend}…", file=sys.stderr)
 
-    if backend == "groq":
+    if backend == "elevenlabs":
+        response = _post_elevenlabs(api_key, audio_path)
+        segments = _segments_from_elevenlabs(response)
+    elif backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        segments = _segments_from_response(response)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        segments = _segments_from_response(response)
     else:
-        raise SystemExit(f"Unknown whisper backend: {backend}")
+        raise SystemExit(f"Unknown transcription backend: {backend}")
 
-    segments = _segments_from_response(response)
     if not segments:
-        raise SystemExit("Whisper returned no transcript segments")
+        raise SystemExit(f"{backend} returned no transcript segments")
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend
