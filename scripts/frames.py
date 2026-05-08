@@ -66,7 +66,7 @@ def get_metadata(video_path: str) -> dict:
             "-print_format", "json",
             "-show_format",
             "-show_streams",
-            video_path,
+            str(Path(video_path).resolve()),
         ],
         capture_output=True,
         text=True,
@@ -162,7 +162,7 @@ def extract(
         cmd += ["-to", f"{end_seconds:.3f}"]
 
     cmd += [
-        "-i", video_path,
+        "-i", str(Path(video_path).resolve()),
         "-vf", f"fps={fps},scale={resolution}:-2",
         "-frames:v", str(max_frames),
         "-q:v", "4",

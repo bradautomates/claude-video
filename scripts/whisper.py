@@ -93,13 +93,13 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-hide_banner",
         "-loglevel", "error",
         "-y",
-        "-i", video_path,
+        "-i", str(Path(video_path).resolve()),
         "-vn",
         "-acodec", "libmp3lame",
         "-ar", "16000",
         "-ac", "1",
         "-b:a", "64k",
-        str(out_path),
+        str(out_path.resolve()),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

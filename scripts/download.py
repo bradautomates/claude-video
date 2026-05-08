@@ -18,8 +18,10 @@ VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
 
 def is_url(source: str) -> bool:
+    if source.startswith("-"):
+        return False
     parsed = urlparse(source)
-    return parsed.scheme in ("http", "https")
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
 def resolve_local(path: str) -> dict:
@@ -78,6 +80,7 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
+        "--",
         url,
     ]
 
