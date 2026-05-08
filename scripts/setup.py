@@ -32,18 +32,20 @@ CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
 #
-# Whisper transcription fallback — used only when yt-dlp cannot get captions
+# Transcription fallback — used only when yt-dlp cannot get captions
 # (or when you point /watch at a local file with no subtitles).
 #
-# Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
-# and is faster in practice. OpenAI is the compatible fallback.
+# ElevenLabs Scribe is preferred (highest accuracy). Groq whisper-large-v3
+# and OpenAI whisper-1 are compatible fallbacks.
 #
-# Get a Groq key:  https://console.groq.com/keys
-# Get an OpenAI key:  https://platform.openai.com/api-keys
+# Get an ElevenLabs key:  https://elevenlabs.io/app/settings/api-keys
+# Get a Groq key:         https://console.groq.com/keys
+# Get an OpenAI key:      https://platform.openai.com/api-keys
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# Leave all blank to disable transcription — /watch will still work, but
+# videos without native captions will come back frames-only.
 
+ELEVENLABS_API_KEY=
 GROQ_API_KEY=
 OPENAI_API_KEY=
 """
@@ -96,6 +98,8 @@ def _read_env_key(name: str) -> str | None:
 
 
 def _have_api_key() -> tuple[bool, str | None]:
+    if _read_env_key("ELEVENLABS_API_KEY"):
+        return True, "elevenlabs"
     if _read_env_key("GROQ_API_KEY"):
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):

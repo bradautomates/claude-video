@@ -128,11 +128,12 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 The script gets a timestamped transcript in one of two ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
-   - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
+2. **Speech-to-Text API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever transcription API has a key configured:
+   - **ElevenLabs** — `scribe_v1`. Preferred default: highest accuracy, word-level timestamps. Get a key at elevenlabs.io/app/settings/api-keys.
+   - **Groq** — `whisper-large-v3`. Fallback. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
-Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
+Keys live in `~/.config/watch/.env`. Order of preference: ElevenLabs → Groq → OpenAI. Override with `--whisper elevenlabs|groq|openai`. Use `--no-whisper` to skip the fallback entirely.
 
 ## Failure modes and handling
 
