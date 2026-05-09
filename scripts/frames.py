@@ -19,10 +19,10 @@ MAX_FPS = 2.0
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
-    fps = min(fps, MAX_FPS)
-    target = min(max_frames, max(1, int(round(fps * duration_seconds))))
-    return fps, target
-
+	intended = int(round(fps * duration_seconds))
+	fps = min(fps, MAX_FPS)
+	target = min(max_frames, max(1, max(intended, int(round(fps * duration_seconds)))))
+	return fps, target
 
 def parse_time(value: str | float | int | None) -> float | None:
     """Parse SS, MM:SS, or HH:MM:SS (with optional .ms) into seconds."""
@@ -57,7 +57,10 @@ def format_time(seconds: float) -> str:
 
 def get_metadata(video_path: str) -> dict:
     if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+        raise SystemExit(
+            "ffprobe is not installed. "
+            "macOS: brew install ffmpeg  |  Linux: apt install ffmpeg  |  Windows: winget install ffmpeg"
+        )
 
     result = subprocess.run(
         [
@@ -111,7 +114,7 @@ def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int
 
 
 def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
-    """Denser budget for user-specified ranges — they are zooming in for detail."""
+    """Denser budget for user-specified ranges - they are zooming in for detail."""
     if duration_seconds <= 0:
         return min(MAX_FPS, 2.0), 2
 
@@ -141,7 +144,10 @@ def extract(
     end_seconds: float | None = None,
 ) -> list[dict]:
     if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+        raise SystemExit(
+            "ffmpeg is not installed. "
+            "macOS: brew install ffmpeg  |  Linux: apt install ffmpeg  |  Windows: winget install ffmpeg"
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
