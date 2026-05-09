@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.0] — 2026-05-09
+
+### Added
+- **AssemblyAI backend** as a third transcription option. Async client (upload → create job → poll up to 30 min) wired into `whisper.py`. Set `ASSEMBLYAI_API_KEY` in `~/.config/watch/.env` or env, or force with `--whisper assemblyai`. Pricing sits between Groq (~$0.04/h) and OpenAI (~$0.36/h) at ~$0.27/h, with strong PT-BR support and a much higher upload size ceiling than Groq/OpenAI's 25 MB.
+
+### Changed
+- Auto-priority for transcription is now cost-ascending: **Groq → AssemblyAI → OpenAI**. Users with only Groq or only OpenAI configured see no behavior change. Users with multiple keys configured will pick the cheapest available.
+- `setup.py` env template, `--check` error message, and installer prompts updated to mention all three backends.
+- `SKILL.md` and the privacy section list AssemblyAI alongside Groq and OpenAI.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed

@@ -40,9 +40,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "assemblyai", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific transcription backend. Default priority (cost-ascending): Groq → AssemblyAI → OpenAI.",
     )
     args = ap.parse_args()
 
