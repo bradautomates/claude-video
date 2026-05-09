@@ -28,21 +28,32 @@ from pathlib import Path
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+LOCAL_WHISPER_BINARIES = ("mlx_whisper", "whisper")
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
-ENV_TEMPLATE = """# /watch API configuration
+ENV_TEMPLATE = """# /watch configuration
 #
 # Whisper transcription fallback — used only when yt-dlp cannot get captions
 # (or when you point /watch at a local file with no subtitles).
 #
-# Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
-# and is faster in practice. OpenAI is the compatible fallback.
+# Three backends, picked in this order: explicit --whisper flag → cloud key
+# (Groq, then OpenAI) → local Whisper binary (mlx_whisper / openai-whisper).
 #
-# Get a Groq key:  https://console.groq.com/keys
-# Get an OpenAI key:  https://platform.openai.com/api-keys
+# Cloud (fastest, requires a key):
+#   Get a Groq key:    https://console.groq.com/keys
+#   Get an OpenAI key: https://platform.openai.com/api-keys
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# Local (no key, runs on-device):
+#   pip install mlx-whisper            # Apple Silicon — fastest local option
+#   pip install -U openai-whisper      # cross-platform CPU/GPU
+#
+# Optional knobs:
+#   WATCH_WHISPER_BACKEND=local        # force a backend (groq | openai | local)
+#   WATCH_LOCAL_WHISPER_BIN=/path/...  # use a specific local binary
+#   WATCH_LOCAL_WHISPER_MODEL=...      # model id for the local backend
+#
+# Leave everything blank to disable Whisper — /watch will still work, but
+# videos without native captions will come back frames-only.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
@@ -101,6 +112,22 @@ def _have_api_key() -> tuple[bool, str | None]:
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
     return False, None
+
+
+def _have_local_whisper() -> str | None:
+    """Return the path to a local Whisper binary, or None.
+
+    Honours WATCH_LOCAL_WHISPER_BIN as an override; otherwise probes for
+    mlx_whisper (Apple Silicon) and openai-whisper (cross-platform).
+    """
+    override = _read_env_key("WATCH_LOCAL_WHISPER_BIN")
+    if override:
+        return _which(override) or (override if Path(override).exists() else None)
+    for name in LOCAL_WHISPER_BINARIES:
+        path = _which(name)
+        if path:
+            return path
+    return None
 
 
 def is_first_run() -> bool:
@@ -200,10 +227,17 @@ def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
     has_key, backend = _have_api_key()
+    local_bin = _have_local_whisper()
+    has_whisper = has_key or local_bin is not None
 
-    if not missing and has_key:
+    # Pick a single backend label for the snapshot. Cloud key wins when both
+    # are present; the local binary is a silent fallback.
+    if backend is None and local_bin:
+        backend = "local"
+
+    if not missing and has_whisper:
         status = "ready"
-    elif missing and not has_key:
+    elif missing and not has_whisper:
         status = "needs_install_and_key"
     elif missing:
         status = "needs_install"
@@ -216,6 +250,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "local_whisper_bin": local_bin,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -227,18 +262,22 @@ def cmd_check() -> int:
     Exit 0 with no output when ready. On failure, print one actionable line
     to stderr and return:
       2 → binaries missing
-      3 → API key missing
+      3 → no Whisper backend (key or local binary)
       4 → both missing
     """
     s = _status()
     if s["status"] == "ready":
         return 0
 
+    no_whisper = not s["has_api_key"] and not s["local_whisper_bin"]
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if no_whisper:
+        parts.append(
+            "no Whisper backend (GROQ_API_KEY, OPENAI_API_KEY, "
+            "or local mlx_whisper / openai-whisper)"
+        )
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -246,7 +285,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
+    if s["missing_binaries"] and no_whisper:
         return 4
     if s["missing_binaries"]:
         return 2
@@ -294,21 +333,30 @@ def cmd_install() -> int:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
     has_key, backend = _have_api_key()
-    if has_key:
+    local_bin = _have_local_whisper()
+    if has_key or local_bin:
         _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
+        active = backend or ("local" if local_bin else None)
+        print(f"[setup] ready. whisper backend: {active}")
+        if local_bin and not has_key:
+            print(f"[setup] using local whisper at {local_bin}.")
         if installed_deps:
             print("[setup] installed dependencies; /watch is fully set up.")
         return 0
 
     print("")
-    print("[setup] one step left: add a Whisper API key.")
+    print("[setup] one step left: add a Whisper backend.")
     print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
+    print(f"  Cloud (fastest): edit {CONFIG_FILE} and set either:")
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print("  Local (no key, runs on-device):")
+    print("    pip install mlx-whisper          # Apple Silicon — fastest local option")
+    print("    pip install -U openai-whisper    # cross-platform CPU/GPU")
+    print("    # or set WATCH_LOCAL_WHISPER_BIN to a compatible binary")
+    print("")
+    print("  Without any backend, /watch still works but videos without captions come back frames-only.")
     return 3
 
 

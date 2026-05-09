@@ -2,6 +2,15 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- Local Whisper backend. `--whisper local` (or `WATCH_WHISPER_BACKEND=local`) shells to a local Whisper binary instead of POSTing to Groq/OpenAI — no API key needed and audio never leaves the machine. Auto-detects `mlx_whisper` (Apple Silicon) and `openai-whisper`, falling back to either when no cloud key is set. Override the binary with `WATCH_LOCAL_WHISPER_BIN` and the model with `WATCH_LOCAL_WHISPER_MODEL`.
+- `setup.py --json` and the SessionStart hook now report local Whisper availability; setup is considered "ready" when either a cloud key or a local binary is present.
+
+### Changed
+- `whisper.py` exports a new `resolve_backend(preferred)` helper that handles all three backends. The original `load_api_key` is preserved for backward compatibility but only knows about the cloud backends.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed

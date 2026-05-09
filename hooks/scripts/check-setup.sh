@@ -36,8 +36,24 @@ read_key() {
 
 HAS_FFMPEG=""
 HAS_YTDLP=""
+HAS_LOCAL_WHISPER=""
 command -v ffmpeg >/dev/null 2>&1 && HAS_FFMPEG="yes"
 command -v yt-dlp >/dev/null 2>&1 && HAS_YTDLP="yes"
+
+# Probe for a local Whisper binary in priority order (override-respecting).
+LOCAL_BIN_OVERRIDE="$(read_key WATCH_LOCAL_WHISPER_BIN)"
+if [[ -n "$LOCAL_BIN_OVERRIDE" ]]; then
+  if command -v "$LOCAL_BIN_OVERRIDE" >/dev/null 2>&1 || [[ -x "$LOCAL_BIN_OVERRIDE" ]]; then
+    HAS_LOCAL_WHISPER="yes"
+  fi
+else
+  for candidate in mlx_whisper whisper; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      HAS_LOCAL_WHISPER="yes"
+      break
+    fi
+  done
+fi
 
 HAS_GROQ="$(read_key GROQ_API_KEY)"
 HAS_OPENAI="$(read_key OPENAI_API_KEY)"
@@ -51,8 +67,8 @@ fi
 # First-run / partially-configured → one-line hint.
 if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
   echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/scripts/setup.py\` once to install and scaffold config."
-elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
-  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
+elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" && -z "$HAS_LOCAL_WHISPER" ]]; then
+  echo "/watch: ready for videos with native captions. Unlock Whisper fallback by either: setting GROQ_API_KEY / OPENAI_API_KEY in ~/.config/watch/.env, or installing mlx_whisper / openai-whisper for the local backend."
 else
   echo "/watch: ready."
 fi
