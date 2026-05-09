@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from download import download, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import resolve_backend, transcribe_video  # noqa: E402
 
 
 def main() -> int:
@@ -40,9 +40,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "local"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help=(
+            "Force a specific Whisper backend. Default: prefer Groq, then OpenAI, "
+            "then a local Whisper binary (mlx_whisper / openai-whisper). "
+            "Override via WATCH_WHISPER_BACKEND."
+        ),
     )
     args = ap.parse_args()
 
@@ -117,14 +121,14 @@ def main() -> int:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
     if not transcript_segments and not args.no_whisper:
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        backend, credential = resolve_backend(args.whisper)
+        if backend and credential:
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
                     work / "audio.mp3",
                     backend=backend,
-                    api_key=api_key,
+                    api_key=credential,
                 )
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
@@ -132,14 +136,18 @@ def main() -> int:
             except SystemExit as exc:
                 print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
+            if args.whisper == "local":
+                hint = (
+                    "--whisper local was set but no local Whisper binary was found "
+                    "(install mlx_whisper or openai-whisper, or set WATCH_LOCAL_WHISPER_BIN)"
+                )
+            elif args.whisper:
+                hint = f"--whisper {args.whisper} was set but the matching API key is missing"
+            else:
+                hint = "no subtitles, no Whisper API key, and no local Whisper binary"
             setup_py = SCRIPT_DIR / "setup.py"
             print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+                f"[watch] {hint} — run `python3 {setup_py}` to configure",
                 file=sys.stderr,
             )
 

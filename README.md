@@ -113,6 +113,7 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
 - **Windows** — prints the `winget` / `pip` commands.
 - **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
+- **Local Whisper (no key)** — if you'd rather not use a cloud API, install `mlx_whisper` (Apple Silicon) or `openai-whisper` (cross-platform) and `/watch` will pick it up automatically. Force it with `--whisper local` or `WATCH_WHISPER_BACKEND=local`.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
@@ -123,8 +124,9 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Capability | What you need | Cost |
 |------------|---------------|------|
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (cloud, preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
+| Whisper fallback (cloud, alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (local) | `pip install mlx-whisper` (Apple Silicon) or `pip install -U openai-whisper` | Free, runs on-device |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage
@@ -148,7 +150,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
-- `--whisper groq|openai` — force a specific Whisper backend.
+- `--whisper groq|openai|local` — force a specific Whisper backend. The `local` backend shells to `mlx_whisper` or `openai-whisper` on your machine — no API key, no upload. Override the binary with `WATCH_LOCAL_WHISPER_BIN` and the model with `WATCH_LOCAL_WHISPER_MODEL`.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
@@ -156,7 +158,7 @@ Other knobs (passed to `scripts/watch.py`):
 
 - **Best accuracy: under 10 minutes.** Past that the script prints a "sparse scan" warning — re-run focused on the part you actually care about with `--start`/`--end`.
 - **Hard caps: 2 fps, 100 frames.** Frame count drives token cost; the script enforces this even when the auto-fps math would imply higher.
-- **Whisper upload limit: 25 MB.** At mono 16 kHz that's about 50 minutes of audio. Longer videos need either captions or `--start`/`--end` to a smaller window.
+- **Whisper upload limit: 25 MB.** Cloud-only — applies to Groq and OpenAI. At mono 16 kHz that's about 50 minutes of audio. Longer videos need either captions, `--start`/`--end` to a smaller window, or `--whisper local` (no upload limit; bound only by your disk and patience).
 - **No private platforms.** This skill doesn't log into anything. Public URLs and local files only. If yt-dlp can't reach it without auth, neither can `/watch`.
 
 ## Structure
@@ -169,7 +171,7 @@ Other knobs (passed to `scripts/watch.py`):
 │   ├── download.py          # yt-dlp wrapper
 │   ├── frames.py            # ffmpeg frame extraction + auto-fps logic
 │   ├── transcribe.py        # VTT parsing + dedupe + Whisper orchestration
-│   ├── whisper.py           # Groq / OpenAI clients (pure stdlib)
+│   ├── whisper.py           # Groq / OpenAI / local clients (pure stdlib)
 │   ├── setup.py             # preflight + installer
 │   └── build-skill.sh       # build dist/watch.skill for claude.ai upload
 ├── hooks/                   # SessionStart status hook (Claude Code only)
