@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- `--cookies-from-browser BROWSER` flag on `watch.py` (forwarded to yt-dlp) for sources behind a login wall — Instagram Reels, private YouTube videos, some X posts. Accepts yt-dlp's full grammar (`chrome`, `firefox:default`, `safari`, etc.). yt-dlp reads the user's existing browser session transiently; no cookies are written to disk, logged, or sent anywhere except the URL's host. Off by default. `SKILL.md` updated with usage notes and a security disclosure; `Failure modes` now points at the flag as the documented retry path for login-required downloads.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed

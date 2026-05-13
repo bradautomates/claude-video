@@ -44,6 +44,19 @@ def main() -> int:
         default=None,
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
+    ap.add_argument(
+        "--cookies-from-browser",
+        type=str,
+        default=None,
+        metavar="BROWSER",
+        help=(
+            "Forwarded to yt-dlp. Use when a source is login-walled (Instagram, "
+            "private YouTube, some Twitter/X posts). Accepts the same value as "
+            "yt-dlp: BROWSER[+KEYRING][:PROFILE][::CONTAINER], e.g. 'chrome', "
+            "'firefox:default', 'safari'. yt-dlp will read your existing browser "
+            "session cookies — see SKILL.md for security notes."
+        ),
+    )
     args = ap.parse_args()
 
     max_frames = min(args.max_frames, 100)
@@ -59,7 +72,7 @@ def main() -> int:
         "[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…",
         file=sys.stderr,
     )
-    dl = download(args.source, work / "download")
+    dl = download(args.source, work / "download", cookies_from_browser=args.cookies_from_browser)
     video_path = dl["video_path"]
 
     meta = get_metadata(video_path)
