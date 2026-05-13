@@ -59,7 +59,7 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def download_url(url: str, out_dir: Path) -> dict:
+def download_url(url: str, out_dir: Path, cookies_from_browser: str | None = None) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
@@ -80,9 +80,16 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
-        "--",
-        url,
     ]
+    if cookies_from_browser:
+        # yt-dlp accepts BROWSER[+KEYRING][:PROFILE][::CONTAINER]; reject anything
+        # that looks like it could be another flag rather than a browser name.
+        if cookies_from_browser.startswith("-"):
+            raise SystemExit(
+                f"--cookies-from-browser value must be a browser name, got {cookies_from_browser!r}"
+            )
+        cmd.extend(["--cookies-from-browser", cookies_from_browser])
+    cmd.extend(["--", url])
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
@@ -117,15 +124,16 @@ def download_url(url: str, out_dir: Path) -> dict:
     }
 
 
-def download(source: str, out_dir: Path) -> dict:
+def download(source: str, out_dir: Path, cookies_from_browser: str | None = None) -> dict:
     if is_url(source):
-        return download_url(source, out_dir)
+        return download_url(source, out_dir, cookies_from_browser=cookies_from_browser)
     return resolve_local(source)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("usage: download.py <url-or-path> <out-dir>", file=sys.stderr)
+        print("usage: download.py <url-or-path> <out-dir> [<cookies-from-browser>]", file=sys.stderr)
         raise SystemExit(2)
-    result = download(sys.argv[1], Path(sys.argv[2]))
+    cookies = sys.argv[3] if len(sys.argv) > 3 else None
+    result = download(sys.argv[1], Path(sys.argv[2]), cookies_from_browser=cookies)
     print(json.dumps(result, indent=2))

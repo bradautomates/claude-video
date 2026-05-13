@@ -83,6 +83,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--cookies-from-browser BROWSER` — forward to yt-dlp. Use when a source is login-walled (Instagram Reels, private YouTube videos, some X posts). Accepts yt-dlp's full grammar: `BROWSER[+KEYRING][:PROFILE][::CONTAINER]`, e.g. `chrome`, `firefox:default`, `safari`. yt-dlp reads the existing browser session — see "Security & Permissions" below.
 
 ### Focusing on a section (higher frame rate)
 
@@ -139,7 +140,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. If it's a region-locked video, tell the user plainly; do not keep retrying. If it's login-required (Instagram Reels, private YouTube, some X posts), retry once with `--cookies-from-browser <browser>` to reuse the user's existing browser session — ask which browser they're signed in to first; do not assume.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or 25 MB upload limit on a very long video). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
@@ -155,6 +156,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does:**
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
+- When `--cookies-from-browser BROWSER` is passed, yt-dlp reads the user's existing session cookies for that browser and sends them along with the download request to the source platform. Cookies are read transiently by yt-dlp itself — they are never written to the working directory, never logged, never sent anywhere except the platform the URL points at. The user remains signed in to the platform afterwards; nothing about the browser session is changed.
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
@@ -163,7 +165,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting)
+- Does not access any platform account on its own — login session cookies are only used when `--cookies-from-browser` is explicitly passed by the user, and even then yt-dlp only sends them to the URL's host. The skill never posts, comments, follows, or modifies the user's account.
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
