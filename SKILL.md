@@ -83,6 +83,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--no-frames` — skip frame extraction entirely. Use for audio-only content (podcasts, interviews, lectures) where frames waste tokens. Transcript-only output.
 
 ### Focusing on a section (higher frame rate)
 
@@ -128,7 +129,7 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 The script gets a timestamped transcript in one of two ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured. Audio over 22 MB (roughly 45+ minutes) is automatically split at silence boundaries and transcribed serially before being restitched.
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
@@ -140,7 +141,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
-- **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or 25 MB upload limit on a very long video). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa).
+- **Whisper request fails** → the error is printed to stderr (likely: invalid key or persistent rate-limit). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa). For videos over ~52 minutes, audio is automatically split at silence boundaries into ≤22 MB chunks before upload — no 25 MB ceiling to worry about, but a 2-hour video will take ~1 minute to transcribe across 3-4 sequential chunks.
 
 ## Token efficiency
 
