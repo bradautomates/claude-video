@@ -39,6 +39,11 @@ def main() -> int:
         help="Disable Whisper fallback. Report frames-only if no captions available.",
     )
     ap.add_argument(
+        "--no-frames",
+        action="store_true",
+        help="Skip frame extraction. Useful for audio-only content (podcasts, interviews) — transcript-only output.",
+    )
+    ap.add_argument(
         "--whisper",
         choices=["groq", "openai"],
         default=None,
@@ -80,29 +85,35 @@ def main() -> int:
     effective_duration = max(0.0, effective_end - effective_start)
     focused = start_sec is not None or end_sec is not None
 
-    if focused:
-        fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
+    if args.no_frames:
+        fps = 0.0
+        target = 0
+        frames: list[dict] = []
+        print("[watch] --no-frames set — skipping frame extraction", file=sys.stderr)
     else:
-        fps, target = auto_fps(effective_duration, max_frames=max_frames)
-    if args.fps is not None:
-        fps = min(args.fps, MAX_FPS)
-        target = max(1, int(round(fps * effective_duration)))
+        if focused:
+            fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
+        else:
+            fps, target = auto_fps(effective_duration, max_frames=max_frames)
+        if args.fps is not None:
+            fps = min(args.fps, MAX_FPS)
+            target = max(1, int(round(fps * effective_duration)))
 
-    scope = (
-        f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
-        if focused else f"full {effective_duration:.1f}s"
-    )
-    print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
+        scope = (
+            f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
+            if focused else f"full {effective_duration:.1f}s"
+        )
+        print(f"[watch] extracting ~{target} frames at {fps:.3f} fps over {scope}…", file=sys.stderr)
 
-    frames = extract(
-        video_path,
-        work / "frames",
-        fps=fps,
-        resolution=args.resolution,
-        max_frames=max_frames,
-        start_seconds=start_sec,
-        end_seconds=end_sec,
-    )
+        frames = extract(
+            video_path,
+            work / "frames",
+            fps=fps,
+            resolution=args.resolution,
+            max_frames=max_frames,
+            start_seconds=start_sec,
+            end_seconds=end_sec,
+        )
 
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
@@ -161,9 +172,12 @@ def main() -> int:
         )
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
-    mode = "focused" if focused else "full"
-    print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
-    print(f"- **Frame size:** {args.resolution}px wide")
+    if args.no_frames:
+        print("- **Frames:** skipped (`--no-frames`)")
+    else:
+        mode = "focused" if focused else "full"
+        print(f"- **Frames:** {len(frames)} @ {fps:.3f} fps, {mode} mode (budget {target}, max {max_frames})")
+        print(f"- **Frame size:** {args.resolution}px wide")
     if transcript_segments:
         in_range = " in range" if focused else ""
         print(
@@ -173,7 +187,7 @@ def main() -> int:
     else:
         print("- **Transcript:** none available")
 
-    if not focused and full_duration > 600:
+    if not focused and not args.no_frames and full_duration > 600:
         mins = int(full_duration // 60)
         print()
         print(
@@ -185,15 +199,18 @@ def main() -> int:
     print()
     print("## Frames")
     print()
-    print(f"Frames live at: `{work / 'frames'}`")
-    print()
-    print(
-        "**Read each frame path below with the Read tool to view the image.** "
-        "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-    )
-    print()
-    for frame in frames:
-        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
+    if args.no_frames:
+        print("_Skipped — `--no-frames` set._")
+    else:
+        print(f"Frames live at: `{work / 'frames'}`")
+        print()
+        print(
+            "**Read each frame path below with the Read tool to view the image.** "
+            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
+        )
+        print()
+        for frame in frames:
+            print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
 
     print()
     print("## Transcript")
