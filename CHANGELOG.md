@@ -2,6 +2,12 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- Long-video support: audio over 22 MB (~45+ min) is now automatically split at silence boundaries (ffmpeg `silencedetect`, `-30dB` / `0.5s`) into ≤22 MB chunks, transcribed serially via Whisper, and restitched with timestamp offsets. Removes the previous ~52-minute upload ceiling. Adjacent identical-text segments at chunk boundaries are deduped to defend against Whisper's hallucinated start-of-clip artifact. Public `transcribe_video()` signature is unchanged.
+- `--no-frames` flag on `watch.py`: skip frame extraction entirely for audio-only content (podcasts, interviews, lectures). Symmetric to the existing `--no-whisper`.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed
