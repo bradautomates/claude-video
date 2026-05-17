@@ -44,6 +44,11 @@ def main() -> int:
         default=None,
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the full report as one JSON object on stdout instead of markdown.",
+    )
     args = ap.parse_args()
 
     max_frames = min(args.max_frames, 100)
@@ -144,6 +149,75 @@ def main() -> int:
             )
 
     info = dl.get("info") or {}
+
+    if args.json:
+        import json
+        long_unfocused = not focused and full_duration > 600
+        report = {
+            "schema_version": "1.0.0",
+            "source": {
+                "kind": "url" if is_url(args.source) else "file",
+                "raw": args.source,
+                "url": info.get("url") if is_url(args.source) else None,
+                "title": info.get("title"),
+                "uploader": info.get("uploader"),
+                "subtitle_path": dl.get("subtitle_path"),
+            },
+            "video": {
+                "path": str(video_path),
+                "duration_seconds": meta["duration_seconds"],
+                "width": meta.get("width"),
+                "height": meta.get("height"),
+                "codec": meta.get("codec"),
+                "size_bytes": meta["size_bytes"],
+                "has_audio": meta["has_audio"],
+            },
+            "focus": {
+                "applied": focused,
+                "start_seconds": effective_start if focused else None,
+                "end_seconds": effective_end if focused else None,
+                "duration_seconds": effective_duration if focused else None,
+            },
+            "frames": {
+                "count": len(frames),
+                "fps": fps,
+                "target": target,
+                "max_frames": max_frames,
+                "resolution_px": args.resolution,
+                "mode": "focused" if focused else "full",
+                "items": [
+                    {"index": f["index"], "timestamp_seconds": f["timestamp_seconds"], "path": f["path"]}
+                    for f in frames
+                ],
+            },
+            "transcript": {
+                "source": transcript_source,
+                "filtered_to_focus": bool(focused and transcript_segments),
+                "segments": [
+                    {"start_seconds": s["start"], "end_seconds": s["end"], "text": s["text"]}
+                    for s in transcript_segments
+                ],
+            },
+            "warnings": (
+                [{
+                    "code": "long_unfocused_video",
+                    "message": (
+                        f"This is a {int(full_duration // 60)}-minute video. Frame coverage is sparse "
+                        "at this length — accuracy degrades noticeably on anything over 10 minutes. "
+                        "For better results, re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom "
+                        "into a specific section."
+                    ),
+                }]
+                if long_unfocused
+                else []
+            ),
+            "work_dir": str(work),
+        }
+        sys.stdout.buffer.write(
+            (json.dumps(report, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        )
+        sys.stdout.flush()
+        return 0
 
     print()
     print("# watch: video report")
