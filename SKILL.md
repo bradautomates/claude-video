@@ -83,6 +83,46 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--json` — emit the full report as one JSON object on stdout instead of markdown (see "Structured output" below)
+
+### Structured output (`--json`)
+
+For wrapper skills or scripts that need to consume `/watch` output programmatically. When `--json` is set, stdout is a single JSON object replacing the markdown report. Status lines on stderr and exit codes are unchanged.
+
+Example (truncated):
+
+```json
+{
+  "schema_version": "1.0.0",
+  "source": { "kind": "url", "raw": "https://youtu.be/abc", "title": "...", "uploader": "...", "url": "...", "subtitle_path": null },
+  "video": { "path": "/tmp/watch-xyz/download/video.mp4", "duration_seconds": 123.4, "width": 1920, "height": 1080, "codec": "h264", "size_bytes": 12345678, "has_audio": true },
+  "focus": { "applied": false, "start_seconds": null, "end_seconds": null, "duration_seconds": null },
+  "frames": { "count": 80, "fps": 0.65, "target": 80, "max_frames": 80, "resolution_px": 512, "mode": "full", "items": [{ "index": 0, "timestamp_seconds": 0.0, "path": "/tmp/watch-xyz/frames/frame_0000.jpg" }] },
+  "transcript": { "source": "captions", "filtered_to_focus": false, "segments": [{ "start_seconds": 0.0, "end_seconds": 3.2, "text": "Welcome" }] },
+  "warnings": [],
+  "work_dir": "/tmp/watch-xyz"
+}
+```
+
+**Top-level keys:**
+
+| Key | Type | Meaning |
+|---|---|---|
+| `schema_version` | string | Semver. `"1.0.0"` today. |
+| `source` | object | Input source: `kind` (`"url"` \| `"file"`), `raw`, `url`, `title`, `uploader`, `subtitle_path`. |
+| `video` | object | File facts from ffprobe: `path`, `duration_seconds`, `width`, `height`, `codec`, `size_bytes`, `has_audio`. |
+| `focus` | object | Focus range: `applied`, `start_seconds`, `end_seconds`, `duration_seconds`. All nulls when `applied=false`. |
+| `frames` | object | `count`, `fps`, `target`, `max_frames`, `resolution_px`, `mode` (`"full"` \| `"focused"`), `items[]` with `index`, `timestamp_seconds`, `path`. |
+| `transcript` | object | `source` (`"captions"` \| `"whisper (groq)"` \| `"whisper (openai)"` \| `null`), `filtered_to_focus`, `segments[]` with `start_seconds`, `end_seconds`, `text`. |
+| `warnings` | array | Zero or more `{code, message}` items. Today: `code = "long_unfocused_video"` when an unfocused video is over 10 minutes. |
+| `work_dir` | string | Absolute path to the working directory (frames, downloaded video, transcript). |
+
+**Contract guarantees:**
+
+- Every documented key is always present. Missing data is `null` for scalars/objects and `[]` for arrays — never an omitted key.
+- All time fields use the `_seconds` suffix and contain non-negative floats. Sizes are bytes (int). Paths are absolute strings.
+- On failure, stdout is empty and the process exits non-zero. Diagnostics go to stderr in both modes.
+- Schema follows semver. Additive fields bump minor/patch; renames or removals bump major. A future major would be opt-in via a new flag.
 
 ### Focusing on a section (higher frame rate)
 
