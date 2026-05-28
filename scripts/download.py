@@ -79,6 +79,11 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--convert-subs", "vtt",
         "--no-playlist",
         "--ignore-errors",
+        # YouTube SABR + PO-token bypass: as of late 2025, the default `web`
+        # and `tv` clients return HTTP 403 on most public videos without a
+        # PO token. ios/web_safari/android still serve format 18 (360p mp4)
+        # without one. Listing tv last keeps the original behavior reachable.
+        "--extractor-args", "youtube:player_client=ios,web_safari,android,tv",
         "-o", output_template,
         "--",
         url,
