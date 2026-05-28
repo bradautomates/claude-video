@@ -140,6 +140,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **YouTube HTTP 403 / SABR streaming** → as of late 2025, YouTube returns 403 to the `web` and `tv` yt-dlp clients on most public videos unless a PO token is supplied. The skill already falls back to `ios,web_safari,android` clients which serve format 18 (360p mp4) without one. If those also fail, the video may require auth — pass `--cookies-from-browser chrome` (or `safari`) via a custom yt-dlp invocation rather than retrying inside the skill.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or 25 MB upload limit on a very long video). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
