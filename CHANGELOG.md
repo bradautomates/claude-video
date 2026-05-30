@@ -2,6 +2,15 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Frame dimensions could exceed Claude's Read tool 2000px-per-edge cap for portrait sources at higher `--resolution` values. A 1320×2868 phone recording at `--resolution 1024` previously produced 1024×2224 frames that Read silently rejected, leaving Claude unable to see them. `frames.extract` now probes source dims and computes an explicit W:H so the longer edge stays under 1998px, preserving aspect ratio. A stderr warning fires when clamping triggers so the cause isn't opaque.
+
+### Added
+- Auto-chunking for Whisper uploads in `whisper.py`. Audio files exceeding the 25 MB Whisper upload cap are split via ffmpeg's segment muxer; per-chunk transcripts are stitched with offset timestamps. Removes the hard ceiling on Whisper-fallback videos (previously ~52 min at 64 kbps mono — `SKILL.md` already calls this out as a known failure mode).
+- `--inline-transcript` flag in `watch.py` — opt-in for the legacy behavior of dumping the full transcript into the stdout report. Default now writes `transcript.json` + `transcript.md` to the work dir and prints only a head/tail preview, freeing tens of thousands of context tokens on long-video runs.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed

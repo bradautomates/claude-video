@@ -5,6 +5,11 @@ Auto-fps targets a frame budget, not a fixed rate. Token cost scales with frame
 count, so budget-by-duration keeps short videos dense and long videos capped.
 When a user-specified range is passed, focused-mode budgets denser (they are
 zooming in for detail).
+
+Frame dimensions are clamped so neither edge exceeds READ_TOOL_MAX_EDGE — the
+Read tool that Claude uses to view JPEGs rejects images with any dimension
+>2000px. Without clamping, a portrait phone screen recording (e.g. 1320×2868)
+at `--resolution 1024` would produce 1024×2224 frames that Claude can't read.
 """
 from __future__ import annotations
 
@@ -16,6 +21,12 @@ from pathlib import Path
 
 
 MAX_FPS = 2.0
+
+# Claude's Read tool rejects images whose width or height exceeds 2000px.
+# Frames above the limit are silently unread, which kills the pipeline for
+# portrait-aspect sources. Keep below the tool's actual ceiling so we're
+# robust to off-by-one rounding inside ffmpeg's scaler.
+READ_TOOL_MAX_EDGE = 1998
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -131,6 +142,49 @@ def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[floa
     return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
 
 
+def compute_target_dims(
+    src_w: int,
+    src_h: int,
+    requested_width: int,
+    max_edge: int = READ_TOOL_MAX_EDGE,
+) -> tuple[int, int, bool]:
+    """Pick output (width, height) so neither edge exceeds max_edge.
+
+    Preserves source aspect ratio. Returns (w, h, clamped) where clamped=True
+    means the requested width was reduced to keep the longer edge under
+    max_edge. Both dimensions are forced even (h264/libx264 require it).
+
+    Falls back to (requested_width, -2, False) when source dims are unknown —
+    -2 tells ffmpeg's scale filter to pick an even height matching aspect.
+    """
+    if src_w <= 0 or src_h <= 0 or requested_width <= 0:
+        return requested_width, -2, False
+
+    aspect = src_w / src_h
+    w = requested_width
+    h = int(round(w / aspect))
+
+    # Force even (h264/libx264 require it).
+    if w % 2:
+        w -= 1
+    if h % 2:
+        h -= 1
+
+    clamped = False
+    longest = max(w, h)
+    if longest > max_edge:
+        scale = max_edge / longest
+        w = int(w * scale)
+        h = int(h * scale)
+        if w % 2:
+            w -= 1
+        if h % 2:
+            h -= 1
+        clamped = True
+
+    return max(2, w), max(2, h), clamped
+
+
 def extract(
     video_path: str,
     out_dir: Path,
@@ -142,6 +196,29 @@ def extract(
 ) -> list[dict]:
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    # Probe source dims so we can compute an explicit W:H that respects the
+    # Read tool's per-edge cap. ffprobe is cheap (~100ms), worth doing again
+    # here so the function stays self-contained for CLI use.
+    try:
+        meta = get_metadata(video_path)
+        src_w = meta.get("width") or 0
+        src_h = meta.get("height") or 0
+    except SystemExit:
+        src_w, src_h = 0, 0
+
+    target_w, target_h, clamped = compute_target_dims(src_w, src_h, resolution)
+
+    if clamped:
+        # Tell the user what we did and why — Read-tool failures are silent
+        # otherwise and "Claude couldn't see the frames" is opaque.
+        natural_h = int(round(resolution / (src_w / src_h))) if src_w and src_h else 0
+        print(
+            f"[watch] source {src_w}x{src_h} at requested width {resolution} would have "
+            f"produced {resolution}x{natural_h} (Claude's Read tool rejects any edge "
+            f">{READ_TOOL_MAX_EDGE}px). Clamped to {target_w}x{target_h}.",
+            file=sys.stderr,
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
@@ -161,9 +238,14 @@ def extract(
     if end_seconds is not None:
         cmd += ["-to", f"{end_seconds:.3f}"]
 
+    scale_expr = (
+        f"scale={target_w}:{target_h}" if target_h > 0
+        else f"scale={target_w}:-2"
+    )
+
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps={fps},scale={resolution}:-2",
+        "-vf", f"fps={fps},{scale_expr}",
         "-frames:v", str(max_frames),
         "-q:v", "4",
         output_pattern,

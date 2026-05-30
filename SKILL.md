@@ -78,11 +78,16 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "<source>"
 Optional flags:
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
 - `--max-frames N` — lower the cap for tighter token budget (e.g. `--max-frames 40`)
-- `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
+- `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text). Auto-clamped so no edge exceeds 1998px (Read tool's per-dim limit) — portrait phone recordings at `--resolution 1024` will be sized down automatically.
 - `--fps F` — override auto-fps (clamped to 2 fps max)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
+- `--inline-transcript` — dump the full transcript into the report (legacy). Default now writes `transcript.json` + `transcript.md` to the work dir and prints only a head/tail preview, freeing tens of thousands of context tokens on long-video runs.
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+
+**Transcripts are always written to disk.** The work dir gets `transcript.json` (machine-readable) and `transcript.md` (timestamped, human-readable). Read `transcript.md` rather than the inline preview when you need the full text.
+
+**Whisper upload limit is handled automatically.** If extracted audio exceeds the 25 MB upload cap (any video over ~52 min at 64 kbps mono), the script splits via ffmpeg's segment muxer and stitches the resulting transcripts with offset timestamps. You don't need to do anything.
 
 ### Focusing on a section (higher frame rate)
 
@@ -140,7 +145,8 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
-- **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or 25 MB upload limit on a very long video). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa).
+- **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or a per-chunk failure). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa). The 25 MB upload limit is auto-handled via chunking.
+- **Source is portrait phone recording** → frames auto-clamp to ≤1998px per edge so Read can ingest them. If you see "Clamped to W×H" on stderr, that's the safety belt firing — accept the slightly lower resolution rather than fighting it.
 
 ## Token efficiency
 

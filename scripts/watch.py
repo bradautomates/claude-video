@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """/watch entry point: download video, extract frames, parse transcript.
 
-Prints a markdown report to stdout listing frame paths + transcript. Claude
-then Reads each frame path to see the video.
+Prints a markdown report to stdout listing frame paths + transcript metadata.
+Claude then Reads each frame path to see the video.
+
+Transcripts are always written to the working dir as `transcript.json` and
+`transcript.md`. The report shows a head/tail preview by default; pass
+`--inline-transcript` for the legacy behavior of dumping the full transcript
+into stdout.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +27,42 @@ from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
+TRANSCRIPT_HEAD_LINES = 30
+TRANSCRIPT_TAIL_LINES = 10
+
+
+def _write_transcript_files(
+    work: Path,
+    segments: list[dict],
+    transcript_source: str,
+    transcript_text: str,
+) -> tuple[Path, Path]:
+    """Write transcript.json (machine-readable) and transcript.md (human) to work dir."""
+    transcript_json = work / "transcript.json"
+    transcript_md = work / "transcript.md"
+    transcript_json.write_text(
+        json.dumps({"source": transcript_source, "segments": segments}, indent=2),
+        encoding="utf-8",
+    )
+    transcript_md.write_text(transcript_text + "\n", encoding="utf-8")
+    return transcript_json, transcript_md
+
+
+def _abbreviated_transcript(segments: list[dict]) -> str:
+    """First N + last M segments for the inline report preview."""
+    total = len(segments)
+    if total <= TRANSCRIPT_HEAD_LINES + TRANSCRIPT_TAIL_LINES + 5:
+        return format_transcript(segments)
+    head = format_transcript(segments[:TRANSCRIPT_HEAD_LINES])
+    tail = format_transcript(segments[-TRANSCRIPT_TAIL_LINES:])
+    omitted = total - TRANSCRIPT_HEAD_LINES - TRANSCRIPT_TAIL_LINES
+    return (
+        f"{head}\n"
+        f"... [{omitted} segments omitted — read transcript.md for full text] ...\n"
+        f"{tail}"
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="watch",
@@ -33,6 +75,11 @@ def main() -> int:
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
+    ap.add_argument(
+        "--inline-transcript", action="store_true",
+        help="Dump the full transcript into the report (legacy). "
+             "Default writes transcript.md to the work dir and prints only a head/tail preview.",
+    )
     ap.add_argument(
         "--no-whisper",
         action="store_true",
@@ -143,6 +190,12 @@ def main() -> int:
                 file=sys.stderr,
             )
 
+    transcript_md_path: Path | None = None
+    if transcript_segments and transcript_text is not None and transcript_source is not None:
+        _, transcript_md_path = _write_transcript_files(
+            work, transcript_segments, transcript_source, transcript_text,
+        )
+
     info = dl.get("info") or {}
 
     print()
@@ -170,6 +223,8 @@ def main() -> int:
             f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
             f"(via {transcript_source or 'captions'})"
         )
+        if transcript_md_path is not None:
+            print(f"- **Transcript file:** `{transcript_md_path}`")
     else:
         print("- **Transcript:** none available")
 
@@ -198,16 +253,31 @@ def main() -> int:
     print()
     print("## Transcript")
     print()
-    if transcript_text:
+    if transcript_text and transcript_segments:
         label = transcript_source or "captions"
-        if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
+        scope_note = (
+            f"Filtered to {format_time(effective_start)} → {format_time(effective_end)}. "
+            if focused else ""
+        )
+        if args.inline_transcript:
+            if focused:
+                print(f"_Source: {label}. {scope_note}Inline (full):_")
+            else:
+                print(f"_Source: {label}. Inline (full):_")
+            print()
+            print("```")
+            print(transcript_text)
+            print("```")
         else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
+            md_ref = f"`{transcript_md_path}`" if transcript_md_path else "transcript.md"
+            print(
+                f"_Source: {label}. {scope_note}{len(transcript_segments)} segments — "
+                f"full text in_ {md_ref}_, preview below:_"
+            )
+            print()
+            print("```")
+            print(_abbreviated_transcript(transcript_segments))
+            print("```")
     elif focused and dl.get("subtitle_path"):
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:

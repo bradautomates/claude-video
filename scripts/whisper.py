@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Transcribe a video via Groq or OpenAI Whisper API.
 
-Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
-API has a key. Returns segments in the same shape as transcribe.parse_vtt so
-the rest of the pipeline (filter_range, format_transcript) doesn't care where
-the transcript came from.
+Strategy: extract audio (mono 16kHz mp3). If the resulting file exceeds
+Whisper's 25 MB upload limit, split into chunks via ffmpeg's segment muxer
+and stitch transcripts with offset timestamps. Returns segments in the same
+shape as transcribe.parse_vtt so the rest of the pipeline (filter_range,
+format_transcript) doesn't care where the transcript came from.
 
 Pure stdlib — no `pip install groq` or `pip install openai` needed.
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import mimetypes
 import os
 import shutil
@@ -30,6 +32,11 @@ GROQ_MODEL = "whisper-large-v3"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
+
+# Whisper's upload ceiling is 25 MB; aim well below to leave headroom for the
+# multipart envelope and to keep the last chunk from creeping over after the
+# segment muxer's keyframe-snap padding.
+MAX_UPLOAD_MB = 22
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
@@ -83,7 +90,11 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
 
 
 def extract_audio(video_path: str, out_path: Path) -> Path:
-    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit."""
+    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min.
+
+    Long videos may still exceed Whisper's 25 MB upload limit (~52 min at this
+    bitrate); _post_whisper_chunked handles that case downstream.
+    """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -107,6 +118,84 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
     if not out_path.exists() or out_path.stat().st_size == 0:
         raise SystemExit("ffmpeg produced no audio — video may have no audio track")
     return out_path
+
+
+def _audio_duration_seconds(audio_path: Path) -> float:
+    """ffprobe the audio container for total duration."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "quiet",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(audio_path.resolve()),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        return float(result.stdout.strip() or 0)
+    except ValueError:
+        return 0.0
+
+
+def _split_audio_into_chunks(
+    audio_path: Path,
+    chunks_dir: Path,
+    max_chunk_mb: int = MAX_UPLOAD_MB,
+) -> list[tuple[Path, float]]:
+    """Split mp3 into ~max_chunk_mb-sized pieces.
+
+    Returns [(chunk_path, offset_seconds)]. Uses ffmpeg's segment muxer with
+    `-c copy` so the source isn't re-encoded. Segment length is computed from
+    total bytes so each chunk lands close to the cap without spilling over.
+    """
+    duration = _audio_duration_seconds(audio_path)
+    size_bytes = audio_path.stat().st_size
+    size_mb = size_bytes / (1024 * 1024)
+
+    if duration <= 0 or size_mb <= max_chunk_mb:
+        return [(audio_path, 0.0)]
+
+    num_chunks = math.ceil(size_mb / max_chunk_mb)
+    # Slight undershoot on segment length so the muxer's keyframe-snap padding
+    # doesn't push a chunk past the cap.
+    chunk_seconds = (duration / num_chunks) * 0.98
+
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    for existing in chunks_dir.glob("chunk_*.mp3"):
+        existing.unlink()
+
+    pattern = str(chunks_dir / "chunk_%03d.mp3")
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", str(audio_path.resolve()),
+        "-f", "segment",
+        "-segment_time", f"{chunk_seconds:.3f}",
+        "-c", "copy",
+        "-reset_timestamps", "1",
+        pattern,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"audio chunking failed: {result.stderr.strip()}")
+
+    chunks = sorted(chunks_dir.glob("chunk_*.mp3"))
+    if not chunks:
+        raise SystemExit("audio chunking produced no chunks")
+
+    # Compute the actual offset per chunk by summing each chunk's measured
+    # duration — relying on a uniform stride would drift if ffmpeg snaps to
+    # a key/sync frame.
+    out: list[tuple[Path, float]] = []
+    cursor = 0.0
+    for chunk in chunks:
+        out.append((chunk, round(cursor, 3)))
+        cursor += _audio_duration_seconds(chunk)
+    return out
 
 
 def _build_multipart(fields: dict[str, str], file_path: Path) -> tuple[bytes, str]:
@@ -217,6 +306,54 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     )
 
 
+def _post_whisper_chunked(
+    endpoint: str,
+    api_key: str,
+    model: str,
+    audio_path: Path,
+) -> dict:
+    """Upload audio to Whisper, auto-splitting if it exceeds the 25 MB cap.
+
+    For chunked uploads, transcripts are stitched with absolute timestamps so
+    downstream code (filter_range, format_transcript) doesn't have to know
+    chunking happened.
+    """
+    size_mb = audio_path.stat().st_size / (1024 * 1024)
+    if size_mb <= MAX_UPLOAD_MB:
+        return _post_whisper(endpoint, api_key, model, audio_path)
+
+    print(
+        f"[watch] audio is {size_mb:.0f} MB — splitting into ≤{MAX_UPLOAD_MB} MB chunks "
+        f"for Whisper upload limit",
+        file=sys.stderr,
+    )
+    chunks_dir = audio_path.parent / f"{audio_path.stem}-chunks"
+    chunks = _split_audio_into_chunks(audio_path, chunks_dir)
+
+    combined_segments: list[dict] = []
+    combined_text_parts: list[str] = []
+    for i, (chunk_path, offset) in enumerate(chunks):
+        chunk_size_mb = chunk_path.stat().st_size / (1024 * 1024)
+        print(
+            f"[watch] chunk {i+1}/{len(chunks)} "
+            f"({chunk_size_mb:.1f} MB, offset {offset:.1f}s) — uploading…",
+            file=sys.stderr,
+        )
+        result = _post_whisper(endpoint, api_key, model, chunk_path)
+        for seg in (result.get("segments") or []):
+            seg = dict(seg)
+            seg["start"] = float(seg.get("start", 0) or 0) + offset
+            seg["end"] = float(seg.get("end", 0) or 0) + offset
+            combined_segments.append(seg)
+        if result.get("text"):
+            combined_text_parts.append(result["text"])
+
+    return {
+        "segments": combined_segments,
+        "text": " ".join(combined_text_parts),
+    }
+
+
 def _read_error_body(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read()
@@ -267,7 +404,7 @@ def transcribe_video(
     backend: str | None = None,
     api_key: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Run the full flow: extract audio → upload → parse segments.
+    """Run the full flow: extract audio → upload (chunking if needed) → parse segments.
 
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
@@ -290,9 +427,9 @@ def transcribe_video(
     print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
 
     if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        response = _post_whisper_chunked(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        response = _post_whisper_chunked(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
 
