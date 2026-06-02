@@ -15,7 +15,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from download import download, is_url  # noqa: E402
+from download import DEFAULT_SUB_LANGS, download, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract, format_time, get_metadata, parse_time  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -44,6 +44,13 @@ def main() -> int:
         default=None,
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
+    ap.add_argument(
+        "--sub-lang",
+        type=str,
+        default=None,
+        help="Comma-separated subtitle languages to fetch (e.g. 'ko' or 'ja,en'). "
+        "Default: English variants. Lets non-English videos use free captions instead of Whisper.",
+    )
     args = ap.parse_args()
 
     max_frames = min(args.max_frames, 100)
@@ -59,7 +66,7 @@ def main() -> int:
         "[watch] downloading via yt-dlp…" if is_url(args.source) else "[watch] using local file…",
         file=sys.stderr,
     )
-    dl = download(args.source, work / "download")
+    dl = download(args.source, work / "download", sub_langs=args.sub_lang or DEFAULT_SUB_LANGS)
     video_path = dl["video_path"]
 
     meta = get_metadata(video_path)

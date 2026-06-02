@@ -16,6 +16,10 @@ from urllib.parse import urlparse
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
+# Default subtitle languages requested from yt-dlp. Override via download(..., sub_langs=...)
+# or watch.py's --sub-lang to let non-English videos use free captions (e.g. "ko", "ja,en").
+DEFAULT_SUB_LANGS = "en,en-US,en-GB,en-orig"
+
 
 def is_url(source: str) -> bool:
     if source.startswith("-"):
@@ -41,12 +45,16 @@ def resolve_local(path: str) -> dict:
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+def _pick_subtitle(out_dir: Path, sub_langs: str = DEFAULT_SUB_LANGS) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [c for c in candidates if ".en" in c.name]
-    return preferred[0] if preferred else candidates[0]
+    # Prefer subtitle files matching the requested languages, in priority order.
+    for lang in (l.strip() for l in sub_langs.split(",") if l.strip()):
+        for c in candidates:
+            if f".{lang}." in c.name:
+                return c
+    return candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -59,7 +67,7 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def download_url(url: str, out_dir: Path) -> dict:
+def download_url(url: str, out_dir: Path, sub_langs: str = DEFAULT_SUB_LANGS) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
@@ -74,7 +82,7 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en,en-US,en-GB,en-orig",
+        "--sub-langs", sub_langs,
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -93,7 +101,7 @@ def download_url(url: str, out_dir: Path) -> dict:
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
 
-    subtitle = _pick_subtitle(out_dir)
+    subtitle = _pick_subtitle(out_dir, sub_langs)
     info_path = out_dir / "video.info.json"
     info: dict = {}
     if info_path.exists():
@@ -117,15 +125,16 @@ def download_url(url: str, out_dir: Path) -> dict:
     }
 
 
-def download(source: str, out_dir: Path) -> dict:
+def download(source: str, out_dir: Path, sub_langs: str = DEFAULT_SUB_LANGS) -> dict:
     if is_url(source):
-        return download_url(source, out_dir)
+        return download_url(source, out_dir, sub_langs=sub_langs)
     return resolve_local(source)
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        print("usage: download.py <url-or-path> <out-dir>", file=sys.stderr)
+        print("usage: download.py <url-or-path> <out-dir> [sub-langs]", file=sys.stderr)
         raise SystemExit(2)
-    result = download(sys.argv[1], Path(sys.argv[2]))
+    cli_sub_langs = sys.argv[3] if len(sys.argv) > 3 else DEFAULT_SUB_LANGS
+    result = download(sys.argv[1], Path(sys.argv[2]), sub_langs=cli_sub_langs)
     print(json.dumps(result, indent=2))
