@@ -83,6 +83,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--sub-lang LANGS` — comma-separated subtitle languages to fetch (e.g. `ko`, `ja,en`). Default: English variants. Use for non-English videos so they pull free captions instead of falling back to Whisper.
 
 ### Focusing on a section (higher frame rate)
 

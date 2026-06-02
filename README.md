@@ -126,6 +126,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+| Non-English captions | `--sub-lang ko` | Free — pulls native captions, skips Whisper |
 
 ## Usage
 
@@ -150,6 +151,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
+- `--sub-lang LANGS` — comma-separated caption languages to fetch (e.g. `ko`, `ja,en`). Defaults to English; lets non-English videos use free captions instead of the paid Whisper fallback.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits
