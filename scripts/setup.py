@@ -95,7 +95,24 @@ def _read_env_key(name: str) -> str | None:
     return None
 
 
+LOCAL_MODEL_CANDIDATES = [
+    "/opt/homebrew/share/whisper-cpp/ggml-large-v3-turbo.bin",
+    "/opt/homebrew/share/whisper-cpp/ggml-large-v3.bin",
+    "/opt/homebrew/share/whisper-cpp/ggml-medium.bin",
+    "/usr/local/share/whisper-cpp/ggml-large-v3-turbo.bin",
+    "/usr/local/share/whisper-cpp/ggml-medium.bin",
+]
+
+
+def _have_local_whisper() -> bool:
+    if not _which("whisper-cli"):
+        return False
+    return any(Path(p).exists() for p in LOCAL_MODEL_CANDIDATES)
+
+
 def _have_api_key() -> tuple[bool, str | None]:
+    if _have_local_whisper():
+        return True, "local"
     if _read_env_key("GROQ_API_KEY"):
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):

@@ -123,9 +123,12 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Capability | What you need | Cost |
 |------------|---------------|------|
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (local) | [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) — `whisper-cli` + a `ggml-*.bin` model | Free, Metal-accelerated on macOS, no network |
+| Whisper fallback (cloud, preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
+| Whisper fallback (cloud, alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+
+Backend priority when multiple are available: **local → Groq → OpenAI**. Override with `--whisper local|groq|openai`. The local backend auto-detects a model at `/opt/homebrew/share/whisper-cpp/ggml-large-v3-turbo.bin` (Homebrew default), then falls back to `ggml-large-v3.bin` / `ggml-medium.bin` in the same directory. On macOS: `brew install whisper-cpp` ships both the binary and `ggml-large-v3-turbo.bin` ready to go.
 
 ## Usage
 

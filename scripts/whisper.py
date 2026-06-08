@@ -31,12 +31,39 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+LOCAL_MODEL_CANDIDATES = [
+    "/opt/homebrew/share/whisper-cpp/ggml-large-v3-turbo.bin",
+    "/opt/homebrew/share/whisper-cpp/ggml-large-v3.bin",
+    "/opt/homebrew/share/whisper-cpp/ggml-medium.bin",
+    "/usr/local/share/whisper-cpp/ggml-large-v3-turbo.bin",
+    "/usr/local/share/whisper-cpp/ggml-medium.bin",
+]
+
+
+def _find_local_model() -> str | None:
+    for path in LOCAL_MODEL_CANDIDATES:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def _have_local_whisper() -> bool:
+    return shutil.which("whisper-cli") is not None and _find_local_model() is not None
+
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+    """Return (backend, key). Prefers local whisper.cpp, then Groq, then OpenAI.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    For the local backend, the "key" is the model path (sentinel — no auth).
+    If `preferred` is "local"/"groq"/"openai", only that backend is considered.
     """
+    if preferred == "local" or (preferred is None and _have_local_whisper()):
+        model = _find_local_model()
+        if model and shutil.which("whisper-cli"):
+            return "local", model
+        if preferred == "local":
+            return None, None
+
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
         return value.strip() if value else None
@@ -289,19 +316,57 @@ def transcribe_video(
     size_kb = audio_path.stat().st_size / 1024
     print(f"[watch] audio: {size_kb:.0f} kB — uploading to {backend} Whisper…", file=sys.stderr)
 
-    if backend == "groq":
+    if backend == "local":
+        segments = _transcribe_local(audio_path, model_path=api_key)
+    elif backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        segments = _segments_from_response(response)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        segments = _segments_from_response(response)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
 
-    segments = _segments_from_response(response)
     if not segments:
         raise SystemExit("Whisper returned no transcript segments")
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend
+
+
+def _transcribe_local(audio_path: Path, model_path: str) -> list[dict]:
+    """Run whisper-cli (whisper.cpp) on the audio file. Metal-accelerated on macOS."""
+    out_base = audio_path.with_suffix("")
+    cmd = [
+        "whisper-cli",
+        "-m", model_path,
+        "-oj",
+        "-of", str(out_base),
+        "-l", "auto",
+        str(audio_path),
+    ]
+    print(f"[watch] running local whisper.cpp ({Path(model_path).name})…", file=sys.stderr)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"whisper-cli failed: {result.stderr.strip()[-400:]}")
+
+    json_path = Path(f"{out_base}.json")
+    if not json_path.exists():
+        raise SystemExit(f"whisper-cli produced no JSON at {json_path}")
+
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    out: list[dict] = []
+    for seg in data.get("transcription") or []:
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        offsets = seg.get("offsets") or {}
+        out.append({
+            "start": round((offsets.get("from") or 0) / 1000.0, 2),
+            "end": round((offsets.get("to") or 0) / 1000.0, 2),
+            "text": text,
+        })
+    return out
 
 
 if __name__ == "__main__":
