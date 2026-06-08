@@ -296,18 +296,14 @@ def _register(folder: Path, config: dict, dry_run: bool) -> None:
     if dry_run:
         print("[watch] MACP dry run passed")
         print(f"files: {len(non_frame)} roles, {len(manifest)} objects total")
-        print(
-            f"would POST: {config['base_url']}/api/brands/{config['brand_id']}/ingestion/sessions"
-        )
+        print("would create MACP ingestion session")
         role_summary = ", ".join(f["role"] for f in non_frame)
-        print(
-            f"would upload: {role_summary}, frame_hires × {frame_count}"
-        )
-        print("would commit: yes")
+        print(f"would upload: {role_summary}, frame_hires × {frame_count}")
+        print("would commit MACP ingestion session: yes")
         return
 
     sessions_url = f"{config['base_url']}/api/brands/{config['brand_id']}/ingestion/sessions"
-    print(f"[watch] POST {sessions_url}", file=sys.stderr)
+    print("[watch] creating MACP ingestion session…", file=sys.stderr)
     status, resp = _post_json(sessions_url, session_payload, config["token"])
 
     if status not in (200, 201):
@@ -355,7 +351,7 @@ def _register(folder: Path, config: dict, dry_run: bool) -> None:
         f"{config['base_url']}/api/brands/{config['brand_id']}"
         f"/ingestion/sessions/{session_id}/commit"
     )
-    print(f"[watch] POST {commit_url}", file=sys.stderr)
+    print("[watch] committing MACP ingestion session…", file=sys.stderr)
     c_status, c_resp = _post_json(
         commit_url,
         {"source_metadata": source_metadata, "config_snapshot": config_snapshot},
