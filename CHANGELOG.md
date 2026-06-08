@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- Local Whisper backend via `whisper-cli` (whisper.cpp). Metal-accelerated on macOS, no network, no API key. Auto-detected when `whisper-cli` is on `PATH` and a `ggml-*.bin` model is present at `/opt/homebrew/share/whisper-cpp/` (or `/usr/local/share/whisper-cpp/`). On macOS, `brew install whisper-cpp` provides both the binary and `ggml-large-v3-turbo.bin` ready to use.
+- `--whisper local` flag to force the local backend.
+
+### Changed
+- Whisper backend priority is now **local → Groq → OpenAI** (was: Groq → OpenAI). The script picks the first available backend in this order; existing setups with only a Groq or OpenAI key behave identically.
+- `setup.py --check` accepts local `whisper-cli` + a `ggml-*.bin` model as a valid backend — no API key needed if local Whisper is installed.
+
 ## [0.1.3] — 2026-05-09
 
 ### Fixed
