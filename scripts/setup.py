@@ -196,10 +196,25 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+MACP_ENV_VARS = [
+    "MACP_BASE_URL",
+    "MACP_REGISTRATION_TOKEN",
+    "MACP_BRAND_ID",
+    "MACP_CREATED_BY",
+    "MACP_EDITORIAL_BRIEF_ID",
+]
+
+
+def _check_macp_env() -> list[str]:
+    """Return names of MACP env vars that are absent or empty. Never prints values."""
+    return [name for name in MACP_ENV_VARS if not os.environ.get(name, "").strip()]
+
+
 def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
     has_key, backend = _have_api_key()
+    missing_macp = _check_macp_env()
 
     if not missing and has_key:
         status = "ready"
@@ -218,6 +233,8 @@ def _status() -> dict:
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
+        "macp_env_vars_set": [v for v in MACP_ENV_VARS if v not in missing_macp],
+        "macp_env_vars_missing": missing_macp,
     }
 
 

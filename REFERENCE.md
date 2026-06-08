@@ -303,6 +303,12 @@ Transcript is auto-filtered to the same range. Frame timestamps are absolute (re
 | `--fps F` | auto | Override fps (capped at 2) |
 | `--whisper groq\|openai` | auto | Force a Whisper backend |
 | `--no-whisper` | — | Frames only; skip transcription entirely |
+| `--macp-register` | — | Register publication assets with MACP after Step 4.5. Requires `--save-dir`. Performed by Skill after article render, not by watch.py directly |
+| `--macp-dry-run` | — | Validate MACP payload only; no network calls |
+| `--macp-base-url URL` | `$MACP_BASE_URL` | MACP base URL override |
+| `--macp-brand-id UUID` | `$MACP_BRAND_ID` | MACP brand ID override |
+| `--macp-created-by ID` | `$MACP_CREATED_BY` | MACP user ID override |
+| `--macp-editorial-brief-id ID` | `$MACP_EDITORIAL_BRIEF_ID` | Editorial brief ID override |
 
 ## Transcript sources
 
@@ -311,6 +317,51 @@ Transcript is auto-filtered to the same range. Frame timestamps are absolute (re
 3. **Whisper (OpenAI)** — second fallback; `whisper-1`
 
 Keys live in `~/.config/watch/.env` (mode `0600`). Also reads `.env` in the current working directory as fallback. Configure via `python3 <skill-dir>/scripts/setup.py`.
+
+## MACP cloud registration
+
+Register a completed UCID folder directly (Step 4.5 must be done first):
+
+```bash
+python3 scripts/macp_adapter.py register --folder "<UCID-folder>" --dry-run
+python3 scripts/macp_adapter.py register --folder "<UCID-folder>"
+```
+
+### Required env vars (by presence; values never printed)
+
+| Var | Purpose |
+|-|-|
+| `MACP_BASE_URL` | e.g. `https://macp-blond.vercel.app` |
+| `MACP_REGISTRATION_TOKEN` | Bearer token for session/commit endpoints |
+| `MACP_BRAND_ID` | Target brand UUID |
+| `MACP_CREATED_BY` | MACP user ID used as `created_by` |
+| `MACP_EDITORIAL_BRIEF_ID` | Required by commit `config_snapshot` |
+
+### Files uploaded
+
+| Role | Source path |
+|-|-|
+| `transcript_md` | `transcript.md` |
+| `article_md` | `business assets/business-article.md` |
+| `article_docx` | `business assets/business-article.docx` |
+| `article_pdf` | `business assets/business-article.pdf` |
+| `frame_hires` | `hires/frame_*.jpg` (1–100) |
+
+**Not uploaded:** `frames/` lo-res images, `download/video.mp4`, audio, captions, logs.
+
+### MACP failure modes
+
+| Condition | Behaviour |
+|-|-|
+| `business-article.REQUIRED` still present | Fail before session creation |
+| Any required file missing | Fail before session creation |
+| Text file over 1 MB | Fail before session creation |
+| 0 or >100 hi-res frames | Fail before session creation |
+| 409 manifest mismatch | Fail clearly; no upload or commit |
+| Upload non-2xx | Stop before commit; local files retained |
+| Commit 400 missing upload | Report missing role; local files retained |
+| Completed idempotent hit | Print existing IDs and admin link; no upload/commit |
+| Local file source (no webpage_url) | Skip with diagnostic |
 
 ## Security summary
 

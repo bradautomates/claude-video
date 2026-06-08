@@ -70,6 +70,26 @@ def main() -> int:
         default=None,
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
+    ap.add_argument(
+        "--macp-register",
+        action="store_true",
+        default=False,
+        help=(
+            "Request MACP cloud registration after saved output and article assets are complete. "
+            "Has no effect without --save-dir. Registration is performed by the Skill after "
+            "Step 4.5 completes — not by this script directly."
+        ),
+    )
+    ap.add_argument(
+        "--macp-dry-run",
+        action="store_true",
+        default=False,
+        help="Validate/build MACP payload only; no network calls, uploads, or commits.",
+    )
+    ap.add_argument("--macp-base-url", default=None, help="MACP base URL override")
+    ap.add_argument("--macp-brand-id", default=None, help="MACP brand ID override")
+    ap.add_argument("--macp-created-by", default=None, help="MACP created-by user ID override")
+    ap.add_argument("--macp-editorial-brief-id", default=None, help="MACP editorial brief ID override")
     args = ap.parse_args()
 
     max_frames = min(args.max_frames, 100)
@@ -127,6 +147,9 @@ def main() -> int:
         dl["subtitle_path"] = _relocate(dl.get("subtitle_path"))
         video_path = dl["video_path"]
         print(f"[watch] save-dir: {work}", file=sys.stderr)
+        if args.macp_register:
+            dry_label = " (dry-run)" if args.macp_dry_run else ""
+            print(f"[watch] macp-register intent recorded{dry_label}", file=sys.stderr)
 
         # Sentinel for Step 4.5 (humanized business article + docx + pdf render).
         # The script only runs Steps 0-4; Step 4.5 lives in the /watch Skill and
@@ -338,6 +361,21 @@ def main() -> int:
     print()
     print("---")
     print(f"_Work dir: `{work}` — delete when done._")
+    if args.macp_register and save_dir:
+        dry_label = " --dry-run" if args.macp_dry_run else ""
+        extra = ""
+        if args.macp_base_url:
+            extra += f" --base-url {args.macp_base_url}"
+        if args.macp_brand_id:
+            extra += f" --brand-id {args.macp_brand_id}"
+        if args.macp_created_by:
+            extra += f" --created-by {args.macp_created_by}"
+        if args.macp_editorial_brief_id:
+            extra += f" --editorial-brief-id {args.macp_editorial_brief_id}"
+        print(
+            f"\n_MACP registration requested. After Step 4.5 completes, the Skill must run:_\n"
+            f"`python3 scripts/macp_adapter.py register --folder \"{work}\"{dry_label}{extra}`"
+        )
 
     return 0
 

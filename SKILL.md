@@ -7,7 +7,7 @@ homepage: https://github.com/moreresults/claude-video
 repository: https://github.com/moreresults/claude-video
 author: moreresults
 license: MIT
-version: 0.4.1
+version: 0.4.2
 user-invocable: true
 ---
 
@@ -369,6 +369,41 @@ find <save-dir> -name 'business-article.REQUIRED'
 ```
 
 Empty output means every UCID folder is complete. Any path printed needs Step 4.5 re-run.
+
+### Step 4.6 — MACP cloud registration (opt-in)
+
+**Only run this step when `--macp-register` was passed to `watch.py`.**
+
+After the sentinel has been deleted (i.e., after `.md`, `.docx`, and `.pdf` all exist), run the adapter:
+
+```bash
+python3 "${CLAUDE_SKILL_DIR}/scripts/macp_adapter.py" register \
+  --folder "<UCID-folder>" [--dry-run]
+```
+
+If `--macp-dry-run` was also passed, add `--dry-run` — the adapter will validate files and print a payload summary without making any network calls.
+
+If optional overrides were passed (e.g. `--macp-brand-id`), forward them as the corresponding `--brand-id` etc. options. The exact command is printed in the `watch.py` report under the `---` separator when `--macp-register` was used.
+
+**Skip this step if any of the following are true:**
+- `--macp-register` was not passed
+- `--save-dir` was not used (no persistent UCID folder)
+- Article generation was skipped for any reason (e.g. no transcript, user opted out)
+- The business-article.REQUIRED sentinel is still present
+
+When skipping: `[watch] MACP registration skipped: <reason>`
+
+**On success**, the adapter prints:
+
+```
+[watch] MACP registration complete
+session_id: <uuid>
+campaign_id: <uuid>
+...
+admin: https://macp-blond.vercel.app/admin/ingestion/sessions/<session_id>
+```
+
+Local files are always left intact — never delete the UCID folder contents after MACP registration.
 
 ### Failure modes
 
