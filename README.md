@@ -116,6 +116,29 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
+## Two ways to parse a video
+
+By default `/watch` extracts frames and a transcript and hands them to Claude as images + text. That's great for short clips and pixel-level inspection, but every frame is an image, and image tokens add up — so accuracy and cost both degrade past ~10 minutes, and very long videos can't fit at all.
+
+`--provider twelvelabs` takes a different route: it hands the whole video to [TwelveLabs](https://twelvelabs.io) **Pegasus**, which analyzes it server-side and returns **text** — a verbatim, timestamped transcript *and* a scene-by-scene visual walkthrough. Claude reads a few KB of text instead of 80-100 JPEGs.
+
+| | `frames` (default) | `--provider twelvelabs` |
+|---|---|---|
+| What Claude receives | 80-100 frame images + transcript | A text report (transcript + visual walkthrough) |
+| Token cost | High (image tokens scale with frames) | Low (a few KB of text) |
+| Long videos | Sparse scan past 10 min | Reads the whole thing; auto-chunks past 30 min |
+| Transcription | yt-dlp captions, else Whisper API | Pegasus does its own ASR — no Whisper key |
+| Best for | Short clips, exact visual detail | Summaries, Q&A, transcripts, long videos |
+
+```bash
+# Whole 45-minute talk, no token blowup, no Whisper key:
+/watch https://youtu.be/<long-talk> --provider twelvelabs summarize the key arguments
+```
+
+Videos longer than `--chunk-minutes` (default 30) are split with `ffmpeg -c copy` and analyzed per-chunk, then merged into one report with absolute-timestamp segment headings. Chunk length also shrinks automatically to keep each upload under TwelveLabs' 200 MB direct-upload cap.
+
+> Note: Pegasus is a generative video-language model, not a dedicated ASR engine. Its transcript is excellent for summaries and Q&A (and ties speech to what's on screen), but for word-perfect, legal-grade transcription the default Whisper path may be preferable.
+
 ## Bring your own keys
 
 Captions cover the majority of public videos for free. The Whisper fallback only kicks in when a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload.
@@ -126,6 +149,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+| TwelveLabs Pegasus provider | [TwelveLabs API key](https://playground.twelvelabs.io) — `--provider twelvelabs` | Pay-as-you-go; no Whisper key needed |
 
 ## Usage
 
@@ -143,6 +167,13 @@ Focused on a specific section — denser frame budget, lower token cost:
 /watch "$URL" --start 1:12:00            # from 1h12m to end
 ```
 
+TwelveLabs Pegasus instead of frames (text report, no image tokens, long-video friendly):
+```
+/watch "$URL" --provider twelvelabs
+/watch "$URL" --provider twelvelabs --tl-prompt "what are the three takeaways?"
+/watch "$URL" --provider twelvelabs --chunk-minutes 20   # tighter chunks
+```
+
 Other knobs (passed to `scripts/watch.py`):
 
 - `--max-frames N` — lower the frame cap for a tighter token budget.
@@ -150,13 +181,16 @@ Other knobs (passed to `scripts/watch.py`):
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
+- `--provider frames|twelvelabs` — choose the parser (default `frames`).
+- `--tl-model pegasus1.5|pegasus1.2`, `--tl-prompt "<q>"`, `--tl-max-tokens N`, `--chunk-minutes N` — TwelveLabs provider tuning.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits
 
-- **Best accuracy: under 10 minutes.** Past that the script prints a "sparse scan" warning — re-run focused on the part you actually care about with `--start`/`--end`.
-- **Hard caps: 2 fps, 100 frames.** Frame count drives token cost; the script enforces this even when the auto-fps math would imply higher.
-- **Whisper upload limit: 25 MB.** At mono 16 kHz that's about 50 minutes of audio. Longer videos need either captions or `--start`/`--end` to a smaller window.
+- **Best accuracy (frames mode): under 10 minutes.** Past that the script prints a "sparse scan" warning — re-run focused with `--start`/`--end`, or switch to `--provider twelvelabs` to read the whole thing without a token blowup.
+- **Hard caps (frames mode): 2 fps, 100 frames.** Frame count drives token cost; the script enforces this even when the auto-fps math would imply higher.
+- **Whisper upload limit: 25 MB.** At mono 16 kHz that's about 50 minutes of audio. Longer videos need either captions, `--start`/`--end` to a smaller window, or the TwelveLabs provider (no Whisper).
+- **TwelveLabs provider: 360p-2160p, 4s-2h per analysis.** Videos over `--chunk-minutes` are split automatically; each chunk also stays under the 200 MB direct-upload cap. Needs a `TWELVELABS_API_KEY`.
 - **No private platforms.** This skill doesn't log into anything. Public URLs and local files only. If yt-dlp can't reach it without auth, neither can `/watch`.
 
 ## Structure
@@ -165,13 +199,16 @@ Other knobs (passed to `scripts/watch.py`):
 .
 ├── SKILL.md                 # skill contract — loaded by all three surfaces
 ├── scripts/
-│   ├── watch.py             # entry point — orchestrates download → frames → transcript
+│   ├── watch.py             # entry point — orchestrates download → (frames | twelvelabs)
 │   ├── download.py          # yt-dlp wrapper
 │   ├── frames.py            # ffmpeg frame extraction + auto-fps logic
 │   ├── transcribe.py        # VTT parsing + dedupe + Whisper orchestration
 │   ├── whisper.py           # Groq / OpenAI clients (pure stdlib)
+│   ├── twelvelabs.py        # TwelveLabs Pegasus client — asset upload + analyze (pure stdlib)
+│   ├── chunk.py             # ffmpeg segmenting + trimming for the TwelveLabs path
 │   ├── setup.py             # preflight + installer
 │   └── build-skill.sh       # build dist/watch.skill for claude.ai upload
+├── tests/                   # test_provider.py — chunk planning, offsets, prompt, parsing
 ├── hooks/                   # SessionStart status hook (Claude Code only)
 ├── .claude-plugin/          # plugin.json + marketplace.json (Claude Code)
 ├── .codex-plugin/           # codex packaging

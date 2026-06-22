@@ -31,8 +31,10 @@ On non-zero exit, follow the table:
 | Exit | Meaning | Action |
 |------|---------|--------|
 | `2` | Missing binaries (`ffmpeg` / `ffprobe` / `yt-dlp`) | Run installer |
-| `3` | No Whisper API key | Run installer to scaffold `.env`, then ask user for a key |
+| `3` | No API key at all (neither Whisper nor TwelveLabs) | Run installer to scaffold `.env`, then ask user for a key |
 | `4` | Both missing | Run installer, then ask for a key |
+
+A `TWELVELABS_API_KEY` satisfies the key check on its own — a user who only wants `--provider twelvelabs` does not need a Whisper key, and preflight will pass (exit 0) with just the TwelveLabs key.
 
 The installer is idempotent — safe to re-run:
 
@@ -42,9 +44,9 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py"
 
 On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders at `0600` perms, and writes `SETUP_COMPLETE=true` once deps + a key are in place so the next session knows this user has already been through the wizard.
 
-**If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
+**If an API key is still missing after install:** which key to ask for depends on the provider the user wants. For the default frames provider, use `AskUserQuestion` to ask whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key, and write the matching `GROQ_API_KEY=...` / `OPENAI_API_KEY=...` line into `~/.config/watch/.env`; if they don't want Whisper, proceed with `--no-whisper` (caption-less videos come back frames-only). If the user explicitly asked for `--provider twelvelabs`, ask for a `TWELVELABS_API_KEY` instead and write that — do **not** nag them for a Whisper key they don't need for that path.
 
-**Structured mode (optional):** `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --json` emits `{status, first_run, missing_binaries, whisper_backend, has_api_key, config_file, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use this when you need to branch on specifics (e.g. "is this the user's very first run?" → `first_run: true`).
+**Structured mode (optional):** `python3 "${CLAUDE_SKILL_DIR}/scripts/setup.py" --json` emits `{status, first_run, missing_binaries, whisper_backend, has_api_key, has_twelvelabs_key, config_file, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. Use this when you need to branch on specifics (e.g. "is this the user's very first run?" → `first_run: true`, or "can I use the TwelveLabs provider?" → `has_twelvelabs_key: true`).
 
 Within a single session, you can skip Step 0 on follow-up `/watch` calls — once `--check` returned 0, nothing about the environment changes between turns.
 
@@ -65,6 +67,20 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
   - \>10min → 100 frames, sparsely spaced (warning printed)
 - If the user hands you a long video, consider asking whether they want a specific section before burning tokens on a sparse scan.
 
+## Two parsers: frames (default) vs TwelveLabs Pegasus
+
+`/watch` has two backends, selected with `--provider`:
+
+- **`frames` (default)** — the pipeline above: extract JPEG frames + a transcript, which *you* Read as images. Best for short clips and precise visual inspection ("what's the exact pixel that breaks at 0:03"). Cost and context grow with frame count, so it degrades past ~10 minutes.
+- **`twelvelabs`** — hand the whole video to TwelveLabs' **Pegasus** video model, which analyzes it server-side and returns **text**: a verbatim, timestamped transcript *and* a scene-by-scene visual walkthrough. You read a few KB of text instead of 80-100 images. No per-frame image tokens, no context ceiling, and **no Whisper key** (Pegasus does its own audio ASR).
+
+**Reach for `--provider twelvelabs` when:**
+- The video is long (roughly >10 min) — instead of a sparse frame scan or asking the user to pick a section, Pegasus reads the whole thing. Videos over `--chunk-minutes` (default 30) are auto-split and analyzed in pieces, merged into one report.
+- The token budget matters, or the user wants a summary / transcript / Q&A rather than pixel-level visual detail.
+- A `TWELVELABS_API_KEY` is configured (see Step 0). If it isn't and the user wants this path, ask for one the same way you'd ask for a Whisper key, and write it to `~/.config/watch/.env`.
+
+The frames provider stays the default; only switch when one of the above applies or the user asks for it.
+
 ## How to invoke
 
 **Step 1 — parse the user input.** Separate the video source (URL or path) from any question the user asked. Example: `/watch https://youtu.be/abc what language is this in?` → source = `https://youtu.be/abc`, question = `what language is this in?`.
@@ -83,6 +99,21 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--provider twelvelabs` — use TwelveLabs Pegasus instead of frames (returns a text report; see above)
+- `--tl-prompt "<question>"` — with the TwelveLabs provider, pass the user's question so Pegasus answers it directly (still appends a transcript). Omit for a full transcript + visual walkthrough.
+- `--tl-model pegasus1.5|pegasus1.2` — TwelveLabs model (default `pegasus1.5`)
+- `--chunk-minutes N` — TwelveLabs only: split videos longer than N minutes (default 30) into chunks
+- `--tl-max-tokens N` — cap Pegasus output tokens per analysis (default 16384)
+
+When you run with `--provider twelvelabs`, the script prints a finished **text** report — there are **no frame paths to Read**. Skip Step 3 and answer the user directly from the analysis. Example:
+
+```bash
+# Long video, no token blowup — Pegasus reads the whole thing and returns text
+python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --provider twelvelabs
+
+# Targeted question on a long talk
+python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --provider twelvelabs --tl-prompt "what are the three takeaways?"
+```
 
 ### Focusing on a section (higher frame rate)
 
