@@ -46,6 +46,18 @@ ENV_TEMPLATE = """# /watch API configuration
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
+
+# TwelveLabs (optional) — only for `/watch --provider twelvelabs`.
+#
+# Pegasus analyzes the video server-side and returns a timestamped transcript +
+# visual walkthrough as TEXT, so Claude reads a few KB instead of 80-100 frame
+# images. Great for long videos and tight context budgets. This path needs NO
+# Whisper key (Pegasus does its own ASR) and is not required for the default
+# frames mode.
+#
+# Get a key: https://playground.twelvelabs.io  (Dashboard → API Key)
+
+TWELVELABS_API_KEY=
 """
 
 
@@ -200,10 +212,14 @@ def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
     has_key, backend = _have_api_key()
+    has_tl = bool(_read_env_key("TWELVELABS_API_KEY"))
+    # Either a Whisper key (frames provider) or a TwelveLabs key (twelvelabs
+    # provider) satisfies the "has a usable key" requirement.
+    key_ok = has_key or has_tl
 
-    if not missing and has_key:
+    if not missing and key_ok:
         status = "ready"
-    elif missing and not has_key:
+    elif missing and not key_ok:
         status = "needs_install_and_key"
     elif missing:
         status = "needs_install"
@@ -216,6 +232,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "has_twelvelabs_key": has_tl,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -234,11 +251,12 @@ def cmd_check() -> int:
     if s["status"] == "ready":
         return 0
 
+    has_any_key = s["has_api_key"] or s["has_twelvelabs_key"]
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if not has_any_key:
+        parts.append("no API key (GROQ_API_KEY / OPENAI_API_KEY for frames, or TWELVELABS_API_KEY)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -246,7 +264,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
+    if s["missing_binaries"] and not has_any_key:
         return 4
     if s["missing_binaries"]:
         return 2
@@ -294,19 +312,26 @@ def cmd_install() -> int:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
     has_key, backend = _have_api_key()
-    if has_key:
+    has_tl = bool(_read_env_key("TWELVELABS_API_KEY"))
+    if has_key or has_tl:
         _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
+        ready_bits = []
+        if backend:
+            ready_bits.append(f"whisper backend: {backend}")
+        if has_tl:
+            ready_bits.append("twelvelabs: configured")
+        print(f"[setup] ready. {'; '.join(ready_bits)}")
         if installed_deps:
             print("[setup] installed dependencies; /watch is fully set up.")
         return 0
 
     print("")
-    print("[setup] one step left: add a Whisper API key.")
+    print("[setup] one step left: add an API key.")
     print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
-    print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
-    print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
+    print(f"  Edit {CONFIG_FILE} and set one of:")
+    print("    GROQ_API_KEY=...        (frames provider — preferred Whisper; console.groq.com/keys)")
+    print("    OPENAI_API_KEY=...      (frames provider — Whisper fallback; platform.openai.com/api-keys)")
+    print("    TWELVELABS_API_KEY=...  (--provider twelvelabs — no Whisper needed; playground.twelvelabs.io)")
     print("")
     print("  Without a key, /watch still works but videos without captions come back frames-only.")
     return 3

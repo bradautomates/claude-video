@@ -8,5 +8,5 @@
   "homepage": "https://github.com/bradautomates/claude-video",
   "repository": "https://github.com/bradautomates/claude-video",
   "license": "MIT",
-  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames"]
+  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames", "twelvelabs", "pegasus", "video-understanding"]
 }
