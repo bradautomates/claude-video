@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **YouTube `HTTP 403: Forbidden` on the video/audio stream.** YouTube's higher-quality formats now require browser impersonation (yt-dlp's optional `curl_cffi` backend), so the default format selection 403s on many videos even though captions and metadata download fine. `download_url` now detects a YouTube URL that produced no media file and automatically retries with the `android`/`mweb`/`tv`/`ios` player clients (progressive itag 18, up to ~360p) — enough to extract frames without impersonation. The final error, if still empty, points to `pip install curl_cffi` for full-quality formats.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

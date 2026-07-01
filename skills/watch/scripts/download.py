@@ -24,6 +24,11 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _is_youtube(url: str) -> bool:
+    host = urlparse(url).netloc.lower()
+    return "youtube.com" in host or "youtu.be" in host
+
+
 def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -124,10 +129,11 @@ def download_url(
     output_template = str(out_dir / "video.%(ext)s")
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
-    cmd = [
-        "yt-dlp",
+
+    # Subtitle/metadata/output args shared by the primary attempt and the
+    # YouTube 403 fallback below.
+    common = [
         "-N", "8",
-        "-f", fmt,
         "--merge-output-format", "mp4",
         "--write-info-json",
         "--write-subs",
@@ -138,17 +144,49 @@ def download_url(
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
-        "--",
-        url,
     ]
+    cmd = ["yt-dlp", *common, "-f", fmt, "--", url]
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
+
+    # Fallback for YouTube's HTTP 403 on the media stream. YouTube's higher-quality
+    # formats increasingly require browser impersonation (yt-dlp's optional
+    # `curl_cffi` backend); without it the default selection 403s even though
+    # captions and metadata came through fine. The android/mweb/tv/ios player
+    # clients expose a progressive format (itag 18, up to ~360p) that downloads
+    # without impersonation — lower resolution, but enough to extract frames.
+    # Scoped to YouTube, and only when the first attempt produced no media file.
+    if video is None and _is_youtube(url):
+        print(
+            "[watch] media download failed (likely a YouTube 403 — higher-quality "
+            "formats need browser impersonation). Retrying via the android/mweb "
+            "player clients (progressive format, up to ~360p)…",
+            file=sys.stderr,
+        )
+        fallback_fmt = fmt if audio_only else "18/bv*[height<=720]+ba/b[height<=720]/b"
+        fallback_cmd = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player_client=android,mweb,tv,ios",
+            *common,
+            "-f", fallback_fmt,
+            "--",
+            url,
+        ]
+        result = subprocess.run(fallback_cmd, stdout=sys.stderr, stderr=sys.stderr)
+        video = _pick_video(out_dir)
+
     if video is None:
+        hint = (
+            " If this keeps happening on YouTube, install the impersonation backend "
+            "so yt-dlp can fetch higher-quality formats: `pip install curl_cffi`."
+            if _is_youtube(url) else ""
+        )
         raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})."
+            + hint
         )
 
     subtitle = _pick_subtitle(out_dir)
