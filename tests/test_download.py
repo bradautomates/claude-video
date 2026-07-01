@@ -62,3 +62,27 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+
+
+def test_youtube_403_triggers_player_client_fallback(monkeypatch, tmp_path):
+    # No real media file is produced, so _pick_video stays None. For a YouTube URL
+    # download_url should make a SECOND yt-dlp call using non-impersonating player
+    # clients (the HTTP 403 workaround) before giving up.
+    calls = _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "download")
+    assert len(calls) == 2, f"expected a fallback attempt, got {len(calls)} call(s)"
+    fallback = calls[1]
+    assert "--extractor-args" in fallback
+    extractor_args = fallback[fallback.index("--extractor-args") + 1]
+    assert "youtube:player_client=" in extractor_args
+    assert "android" in extractor_args
+    _assert_english_only(_sub_langs(fallback))  # fallback stays English-only too
+
+
+def test_non_youtube_url_has_no_fallback(monkeypatch, tmp_path):
+    # The 403 fallback is YouTube-specific — other hosts must fail on the first try.
+    calls = _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url("https://vimeo.com/76979871", tmp_path / "download")
+    assert len(calls) == 1, f"non-YouTube should not retry, got {len(calls)} call(s)"

@@ -235,6 +235,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **YouTube `HTTP 403: Forbidden` on the media stream (captions + metadata still succeed)** → YouTube's higher-quality formats require browser impersonation (yt-dlp's optional `curl_cffi` backend). `download.py` auto-retries with the `android`/`mweb` player clients, which serve a progressive format (up to ~360p) that downloads without impersonation — enough to extract frames. For full-resolution frames (e.g. reading fine on-screen text), install the backend once with `pip install curl_cffi` and re-run.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
