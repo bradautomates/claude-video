@@ -8,11 +8,37 @@ CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
 if [[ -f "$CONFIG_FILE" ]]; then
-  perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
-  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $CONFIG_FILE"
-  fi
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*)
+      # NTFS: Git Bash stat bits are synthetic (non-executable files always
+      # report 644), so a chmod-600 check can never pass here. Inspect the
+      # real ACL instead and warn only when broad-access principals hold an
+      # entry. SIDs keep this locale-independent (group names are localized
+      # on non-English Windows).
+      if command -v icacls >/dev/null 2>&1 && command -v cygpath >/dev/null 2>&1; then
+        win_path=$(cygpath -w "$CONFIG_FILE")
+        broad_sid=""
+        # S-1-1-0 Everyone · S-1-5-32-545 BUILTIN\Users · S-1-5-11 Authenticated Users
+        for sid in S-1-1-0 S-1-5-32-545 S-1-5-11; do
+          if MSYS_NO_PATHCONV=1 icacls "$win_path" /findsid "*$sid" 2>/dev/null | grep -qiF "$win_path"; then
+            broad_sid="$sid"
+            break
+          fi
+        done
+        if [[ -n "$broad_sid" ]]; then
+          echo "/watch: WARNING — $CONFIG_FILE ACL grants broad access (SID $broad_sid)."
+          echo "  Fix (Git Bash): MSYS_NO_PATHCONV=1 icacls \"\$(cygpath -w $CONFIG_FILE)\" /inheritance:r /grant:r \"\$USERNAME:(R,W)\""
+        fi
+      fi
+      ;;
+    *)
+      perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
+      if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+        echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
+        echo "  Fix: chmod 600 $CONFIG_FILE"
+      fi
+      ;;
+  esac
 fi
 
 # Load API keys from the config file without exporting them.
