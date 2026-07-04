@@ -127,6 +127,12 @@ def download_url(
     cmd = [
         "yt-dlp",
         "-N", "8",
+        # YouTube anti-bot: solve the JS "n" throttling challenge (needs deno, fetched
+        # from GitHub + cached) and impersonate a browser (needs curl_cffi). Without these,
+        # media URLs intermittently 403 and no frames get extracted. Both degrade gracefully
+        # if unavailable (yt-dlp warns and falls back to the un-solved path).
+        "--remote-components", "ejs:github",
+        "--impersonate", "chrome",
         "-f", fmt,
         "--merge-output-format", "mp4",
         "--write-info-json",
