@@ -18,7 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
-from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
+from transcribe import filter_range, format_transcript, parse_vtt, write_transcript_file  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
@@ -267,6 +267,21 @@ def main() -> int:
 
     info = dl.get("info") or {}
 
+    transcript_file: Path | None = None
+    if transcript_segments:
+        transcript_file = work / "TRANSCRIPT.md"
+        try:
+            write_transcript_file(
+                transcript_segments,
+                transcript_file,
+                source_label=transcript_source or "captions",
+                title=info.get("title"),
+                focus_range=(effective_start, effective_end) if focused else None,
+            )
+        except Exception as exc:
+            print(f"[watch] failed to write TRANSCRIPT.md: {exc}", file=sys.stderr)
+            transcript_file = None
+
     print()
     print("# watch: video report")
     print()
@@ -313,6 +328,8 @@ def main() -> int:
             f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
             f"(via {transcript_source or 'captions'})"
         )
+        if transcript_file:
+            print(f"- **Transcript file:** `{transcript_file}`")
     else:
         print("- **Transcript:** none available")
 
