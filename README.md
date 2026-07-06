@@ -16,13 +16,13 @@ npx skills add bradautomates/claude-video -g
 
 More install options (claude.ai web, manual) in the [Install](#install) section below.
 
-Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+Zero config to start — `yt-dlp`, `ffmpeg`, and `uv` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free, and when a video has none, transcription falls back to a **fully-local faster-whisper** run (via `uv`) — no API key, no audio leaving your machine.
 
 ---
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
+With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, fully-local faster-whisper as fallback — no API key), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -152,25 +152,28 @@ For claude.ai, build the `.skill` bundle from source: `bash skills/watch/scripts
 
 ## First run
 
-On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
+On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` / `uv` aren't on your PATH, it walks you through fixing it:
 
-- **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
-- **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
+- **macOS** — auto-runs `brew install ffmpeg yt-dlp uv`.
+- **Linux** — prints the exact `apt` / `dnf` / `pipx` / `uv` commands.
 - **Windows** — prints the `winget` / `pip` commands.
-- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
+- **Config** — scaffolds `~/.config/watch/.env` (mode `0600`) with `WATCH_WHISPER_MODEL` and *optional* placeholders for `GROQ_API_KEY` / `OPENAI_API_KEY` (only needed if you want a cloud backend).
 
-After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
+After setup, preflight is silent and `/watch` just works — no API key required. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
-## Bring your own keys
+## Transcription (local by default)
 
-Captions cover the majority of public videos for free. The Whisper fallback only kicks in when a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload.
+Captions cover the majority of public videos for free. When a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload — transcription falls back to a **fully-local faster-whisper** run. No API key, no network at inference: the model downloads once from HuggingFace, then runs offline on the CPU. Choose accuracy vs. speed with `--whisper-model` (or `WATCH_WHISPER_MODEL`; default `base`).
+
+Cloud Whisper stays available as an explicit opt-in if you'd rather use it:
 
 | Capability | What you need | Cost |
 |------------|---------------|------|
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
-| Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+| **Local transcription (default)** | `uv` (faster-whisper) | **Free, offline, no key** |
+| Cloud override | `--whisper groq` + [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
+| Cloud override (alt) | `--whisper openai` + [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Disable transcription | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage
 

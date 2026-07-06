@@ -1,13 +1,22 @@
-"""setup.py --json surfaces the resolved watch detail."""
+"""setup.py preflight — local-first (no API key required) contract."""
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
+
+# Most assertions here need all required binaries present (incl. uv, which drives
+# the local faster-whisper backend). Skip the binary-dependent cases when uv is
+# absent so the suite stays green on machines that haven't run setup.
+HAS_UV = shutil.which("uv") is not None
+needs_uv = pytest.mark.skipif(not HAS_UV, reason="requires uv (local ASR backend) on PATH")
 
 
 def _run(args, *, home=None, extra_env=None):
@@ -17,6 +26,7 @@ def _run(args, *, home=None, extra_env=None):
     env.pop("GROQ_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
     env.pop("SETUP_COMPLETE", None)
+    env.pop("WATCH_LOCAL_ASR", None)
     if home is not None:
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)  # Windows
@@ -43,8 +53,28 @@ def test_json_reports_watch_detail():
     assert data["watch_detail"] == "balanced"
 
 
+@needs_uv
+def test_keyless_first_run_is_ready_via_local(tmp_path):
+    """No key, no prior setup: local transcription makes this READY, not blocked.
+
+    This is the local-first contract — a Whisper API key is never required.
+    """
+    _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+    chk = _run(["--check"], home=tmp_path)
+    assert chk.returncode == 0, f"keyless first run should pass --check; got {chk.returncode}: {chk.stderr}"
+    assert chk.stdout == "" and chk.stderr == ""
+
+    js = json.loads(_run(["--json"], home=tmp_path).stdout)
+    assert js["status"] == "ready"
+    assert js["can_proceed"] is True
+    assert js["local_asr"] is True
+    assert js["whisper_backend"] == "local"
+    assert js["has_api_key"] is False
+
+
+@needs_uv
 def test_keyless_completed_setup_proceeds_silently(tmp_path):
-    """A user who finished setup without a key must NOT be nagged forever."""
+    """A user who finished setup without a key runs silently and ready."""
     _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\nSETUP_COMPLETE=true\n")
     chk = _run(["--check"], home=tmp_path)
     assert chk.returncode == 0, f"keyless-complete should pass --check; got {chk.returncode}: {chk.stderr}"
@@ -54,22 +84,12 @@ def test_keyless_completed_setup_proceeds_silently(tmp_path):
     assert js["can_proceed"] is True
     assert js["first_run"] is False
     assert js["setup_complete"] is True
-    # status still encourages a key even though we can proceed
-    assert js["status"] == "needs_key"
+    assert js["status"] == "ready"
 
 
-def test_keyless_first_run_is_encouraged(tmp_path):
-    """Genuine first run with no key: --check reports exit 3 (encourage a key)."""
-    _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
-    chk = _run(["--check"], home=tmp_path)
-    assert chk.returncode == 3, chk.stderr
-
-    js = json.loads(_run(["--json"], home=tmp_path).stdout)
-    assert js["can_proceed"] is False
-    assert js["first_run"] is True
-
-
-def test_key_present_is_ready(tmp_path):
+@needs_uv
+def test_key_present_still_defaults_to_local(tmp_path):
+    """An optional cloud key is recorded, but local stays the default backend."""
     _write_env(tmp_path, "GROQ_API_KEY=sk-test-abc\n")
     chk = _run(["--check"], home=tmp_path)
     assert chk.returncode == 0, chk.stderr
@@ -77,4 +97,11 @@ def test_key_present_is_ready(tmp_path):
     js = json.loads(_run(["--json"], home=tmp_path).stdout)
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
-    assert js["whisper_backend"] == "groq"
+    assert js["has_api_key"] is True
+    assert js["whisper_backend"] == "local"  # local-first: key is opt-in, not default
+
+
+def test_local_asr_override_disables_local():
+    """WATCH_LOCAL_ASR=0 forces the capability off (used to simulate no-uv)."""
+    js = json.loads(_run(["--json"], extra_env={"WATCH_LOCAL_ASR": "0"}).stdout)
+    assert js["local_asr"] is False

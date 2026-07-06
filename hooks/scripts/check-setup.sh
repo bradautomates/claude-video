@@ -36,23 +36,22 @@ read_key() {
 
 HAS_FFMPEG=""
 HAS_YTDLP=""
+HAS_UV=""
 command -v ffmpeg >/dev/null 2>&1 && HAS_FFMPEG="yes"
 command -v yt-dlp >/dev/null 2>&1 && HAS_YTDLP="yes"
+command -v uv >/dev/null 2>&1 && HAS_UV="yes"  # drives the local faster-whisper backend
 
-HAS_GROQ="$(read_key GROQ_API_KEY)"
-HAS_OPENAI="$(read_key OPENAI_API_KEY)"
 SETUP_COMPLETE="$(read_key SETUP_COMPLETE)"
 
 # Fully configured → silent (Claude can surface status on demand via --check).
-if [[ "$SETUP_COMPLETE" == "true" && -n "$HAS_FFMPEG" && -n "$HAS_YTDLP" ]]; then
+# No API key is required: transcription runs fully local via faster-whisper.
+if [[ "$SETUP_COMPLETE" == "true" && -n "$HAS_FFMPEG" && -n "$HAS_YTDLP" && -n "$HAS_UV" ]]; then
   exit 0
 fi
 
 # First-run / partially-configured → one-line hint.
-if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
-  echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/skills/watch/scripts/setup.py\` once to install and scaffold config."
-elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
-  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
+if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" || -z "$HAS_UV" ]]; then
+  echo "/watch: needs ffmpeg + yt-dlp + uv. Run \`python3 \$CLAUDE_PLUGIN_ROOT/skills/watch/scripts/setup.py\` once to install and scaffold config."
 else
-  echo "/watch: ready."
+  echo "/watch: ready. Transcription runs fully local (faster-whisper, no API key needed)."
 fi

@@ -7,6 +7,9 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -20,6 +23,38 @@ from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+def transcribe_local(video_path: str, model: str | None) -> list[dict]:
+    """Run the fully-local faster-whisper backend via `uv run local_asr.py`.
+
+    Returns segments in the {start, end, text} schema. Raises SystemExit on
+    failure so the caller can fall through to an API backend or frames-only.
+    """
+    if shutil.which("uv") is None:
+        raise SystemExit(
+            "uv is not installed — needed for the local transcription backend. "
+            "Install it from https://astral.sh/uv, or pass --whisper groq|openai."
+        )
+    script = SCRIPT_DIR / "local_asr.py"
+    cmd = ["uv", "run", str(script), str(video_path)]
+    if model:
+        cmd += ["--model", model]
+    print("[watch] transcribing locally (faster-whisper, no API key)…", file=sys.stderr)
+    # stderr streams progress to the user; stdout carries the JSON payload.
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stderr:
+        print(result.stderr.rstrip(), file=sys.stderr)
+    if result.returncode != 0:
+        raise SystemExit(f"local transcription failed (exit {result.returncode})")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"local transcription returned non-JSON output: {exc}")
+    segments = data.get("segments") or []
+    if not segments:
+        raise SystemExit("local transcription produced no segments")
+    return segments
 
 
 def main() -> int:
@@ -56,9 +91,18 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["local", "groq", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help=(
+            "Force a transcription backend. Default: fully-local faster-whisper "
+            "(no API key). 'groq'/'openai' use the cloud APIs if a key is set."
+        ),
+    )
+    ap.add_argument(
+        "--whisper-model",
+        default=None,
+        help="Local faster-whisper model: tiny|base|small|medium|large-v3 "
+             "(default: base, or $WATCH_WHISPER_MODEL). Only used by the local backend.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -237,31 +281,43 @@ def main() -> int:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        # Local-first: with no explicit backend, or --whisper local, transcribe
+        # fully on-device with faster-whisper — no API key, no network.
+        if args.whisper in (None, "local"):
             try:
-                all_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
+                all_segments = transcribe_local(video_path, args.whisper_model)
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
+                model_label = args.whisper_model or "base"
+                transcript_source = f"whisper (local: {model_label})"
             except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
-        else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+                print(f"[watch] local transcription failed: {exc}", file=sys.stderr)
+                # If the user pinned --whisper local, respect it: stay frames-only.
+
+        # Cloud APIs: used only when explicitly requested (--whisper groq|openai),
+        # or as a last resort after an unpinned local attempt failed and a key exists.
+        want_cloud = args.whisper in ("groq", "openai")
+        if not transcript_segments and (want_cloud or args.whisper is None):
+            backend, api_key = load_api_key(args.whisper if want_cloud else None)
+            if backend and api_key:
+                try:
+                    all_segments, used_backend = transcribe_video(
+                        video_path,
+                        work / "audio.mp3",
+                        backend=backend,
+                        api_key=api_key,
+                    )
+                    transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                    transcript_text = format_transcript(transcript_segments)
+                    transcript_source = f"whisper ({used_backend})"
+                except SystemExit as exc:
+                    print(f"[watch] whisper API fallback failed: {exc}", file=sys.stderr)
+            elif want_cloud:
+                print(
+                    f"[watch] --whisper {args.whisper} was set but the matching API key is missing "
+                    "— set it in ~/.config/watch/.env, or drop the flag to use local transcription",
+                    file=sys.stderr,
+                )
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
@@ -377,9 +433,9 @@ def main() -> int:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
             "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
-            "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+            "Captions were missing and transcription did not run "
+            "(local faster-whisper failed, `--no-whisper` was used, or there was no audio). "
+            f"Ensure `uv` is installed (`python3 {setup_py}`) and re-run._"
         )
 
     print()

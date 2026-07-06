@@ -2,6 +2,18 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.1] — 2026-07-06
+
+### Added
+- **Fully-local transcription backend (default, no API key).** New `scripts/local_asr.py` runs faster-whisper (CTranslate2, CPU/int8) via `uv run` and emits the same `{start, end, text}` segment schema as captions/cloud Whisper. When captions are missing, /watch now transcribes **on-device** — no audio leaves the machine, no Groq/OpenAI key required. The model downloads once from HuggingFace, then runs offline.
+- **`--whisper local`** (now the default backend) and **`--whisper-model tiny|base|small|medium|large-v3`** (also via `WATCH_WHISPER_MODEL`; default `base`).
+- `setup.py --json` now reports `local_asr` (capability) and `WATCH_LOCAL_ASR` env override for testing.
+
+### Changed
+- **A Whisper API key is no longer required or encouraged.** `setup.py` treats `uv` as a required binary (it drives local ASR) and drops the key-nag exit codes — `--check` now returns only `0` (ready) or `2` (missing binaries). Groq/OpenAI remain available as explicit opt-in backends (`--whisper groq|openai`).
+- Backend order for an unpinned run: local first; a configured cloud key is used only as a last-resort fallback if local fails.
+- SessionStart hook, `SKILL.md`, and the `.env` template updated for the local-first, keyless workflow.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
