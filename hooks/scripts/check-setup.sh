@@ -6,8 +6,19 @@ set -euo pipefail
 
 CONFIG_FILE="$HOME/.config/watch/.env"
 
-# Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# Detect Windows (MSYS/Git-Bash/Cygwin). There, POSIX file modes are synthetic:
+# C: is typically mounted without ACL->mode translation, so `stat` reports a
+# fixed 644 for any regular file and neither `chmod 600` nor `icacls` can change
+# what it reports. The Unix permission check below would then be a permanent
+# false positive that nags every session, so skip it on Windows. (Lock the
+# secrets file down with `icacls` if you want owner-only access.)
+case "${OSTYPE:-}:${MSYSTEM:-}" in
+  msys*:*|cygwin*:*|*:MINGW*|*:MSYS*) IS_WINDOWS=1 ;;
+  *) IS_WINDOWS=0 ;;
+esac
+
+# Warn if the secrets file has loose permissions (skipped on Windows — see above).
+if [[ "$IS_WINDOWS" != "1" && -f "$CONFIG_FILE" ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
