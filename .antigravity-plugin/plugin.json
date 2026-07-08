@@ -1,0 +1,13 @@
+{
+  "name": "watch",
+  "version": "0.2.0",
+  "description": "Let Antigravity watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Whisper, and hands frames + transcript to Antigravity.",
+  "author": {
+    "name": "Bradley Bonanno"
+  },
+  "homepage": "https://github.com/bradautomates/claude-video",
+  "repository": "https://github.com/bradautomates/claude-video",
+  "license": "MIT",
+  "keywords": ["video", "watch", "youtube", "vimeo", "tiktok", "transcription", "whisper", "yt-dlp", "ffmpeg", "multimodal", "frames"],
+  "skills": "./skills/"
+}

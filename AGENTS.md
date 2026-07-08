@@ -11,6 +11,7 @@ Agent Skills package that gives an agent a video input. Installable across Claud
 - `hooks/` — Claude Code SessionStart setup-status hook (Claude Code only).
 - `.claude-plugin/` — `plugin.json` + `marketplace.json` (Claude Code plugin + local marketplace).
 - `.codex-plugin/plugin.json` — Codex/agents manifest; `"skills": "./skills/"` points the Agent Skills CLI at the self-contained skill folder.
+- `.antigravity-plugin/plugin.json` — Antigravity CLI (agy) plugin manifest.
 - `.agents/plugins/marketplace.json` — agents marketplace listing pointing at the repo-root plugin.
 - `CLAUDE.md` → `@AGENTS.md` — generic-agent entry point.
 - `tests/` — pytest suite (ffmpeg-synthesized clips; no network).
@@ -28,6 +29,7 @@ Agent Skills package that gives an agent a video input. Installable across Claud
 |---------|---------|
 | Claude Code | `/plugin marketplace add bradautomates/claude-video` then `/plugin install watch@claude-video` |
 | Codex / Cursor / Copilot / +50 | `npx skills add bradautomates/claude-video -g` |
+| Antigravity CLI (`agy`) | Copy or symlink `skills/watch` into `~/.gemini/skills/watch` |
 | claude.ai (web) | upload `dist/watch.skill` (built by `skills/watch/scripts/build-skill.sh`) |
 
 ## Commands
@@ -45,6 +47,6 @@ bash skills/watch/scripts/build-skill.sh   # → dist/watch.skill
 
 ## Rules
 
-- Keep the version in sync across `skills/watch/SKILL.md` (frontmatter), `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` when cutting a release.
+- Keep the version in sync across `skills/watch/SKILL.md` (frontmatter), `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `.antigravity-plugin/plugin.json` when cutting a release.
 - Releasing: tag `vX.Y.Z` and push the tag; `.github/workflows/release.yml` builds `dist/watch.skill` and attaches it to the GitHub release.
 - Never commit real API keys or `.env` contents; keys live in `~/.config/watch/.env` (mode `0600`) at runtime.

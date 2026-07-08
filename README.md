@@ -8,7 +8,7 @@ Claude Code (recommended — auto-updates via marketplace):
 /plugin install watch@claude-video
 ```
 
-Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:
+Codex, Cursor, Copilot, Antigravity CLI (agy), or any of 50+ [Agent Skills](https://agentskills.io) hosts:
 ```bash
 npx skills add bradautomates/claude-video -g
 ```
@@ -100,7 +100,7 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 | Surface | Install |
 |---------|---------|
 | **Claude Code** | `/plugin marketplace add bradautomates/claude-video` then `/plugin install watch@claude-video` |
-| **Codex, Cursor, Copilot, Gemini CLI, +50 more** | `npx skills add bradautomates/claude-video -g` |
+| **Codex, Cursor, Copilot, Antigravity CLI, +50 more** | `npx skills add bradautomates/claude-video -g` |
 | **claude.ai** (web) | [Download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) → Settings → Capabilities → Skills → `+` |
 | **Manual / dev** | `git clone` then symlink `skills/watch` into your host's skills dir (see below) |
 
@@ -113,7 +113,7 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 
 Update later with `/plugin update watch@claude-video`.
 
-### Codex, Cursor, Copilot, Gemini CLI, and 50+ other hosts
+### Codex, Cursor, Copilot, Antigravity CLI (agy), and 50+ other hosts
 
 The [Agent Skills](https://agentskills.io) CLI installs the skill into whatever agents it detects:
 
@@ -223,6 +223,7 @@ Other knobs (passed to `scripts/watch.py`):
 ├── hooks/                        # SessionStart status hook (Claude Code only)
 ├── .claude-plugin/               # plugin.json + marketplace.json (Claude Code)
 ├── .codex-plugin/                # plugin.json — Codex/agents manifest ("skills": "./skills/")
+├── .antigravity-plugin/          # plugin.json — Antigravity CLI manifest
 ├── .agents/plugins/              # marketplace.json — Agent Skills marketplace listing
 ├── AGENTS.md → CLAUDE.md         # generic-agent entry point
 ├── tests/                        # pytest suite (ffmpeg-synthesized clips, no network)
@@ -239,7 +240,7 @@ python3 -m pytest -q
 bash skills/watch/scripts/build-skill.sh      # → dist/watch.skill
 ```
 
-Releasing: tag `vX.Y.Z`, push the tag. The workflow builds `dist/watch.skill` and attaches it to the GitHub release. Keep the version in sync across `skills/watch/SKILL.md`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json`.
+Releasing: tag `vX.Y.Z`, push the tag. The workflow builds `dist/watch.skill` and attaches it to the GitHub release. Keep the version in sync across `skills/watch/SKILL.md`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, and `.antigravity-plugin/plugin.json`.
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
