@@ -121,6 +121,19 @@ def _have_api_key() -> tuple[bool, str | None]:
     return False, None
 
 
+def _ytdlp_age_days() -> int | None:
+    """yt-dlp versions are dates (YYYY.MM.DD). A stale yt-dlp is the #1 real-world
+    breakage ('Precondition check failed' / HTTP 400 on YouTube). Network-free check."""
+    import datetime
+    try:
+        out = subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True, timeout=10)
+        v = out.stdout.strip().split(".")
+        released = datetime.date(int(v[0]), int(v[1]), int(v[2].split()[0]))
+        return (datetime.date.today() - released).days
+    except Exception:
+        return None
+
+
 def is_first_run() -> bool:
     """True if the installer hasn't completed successfully yet."""
     return _read_env_key("SETUP_COMPLETE") != "true"
@@ -242,6 +255,7 @@ def _status() -> dict:
     can_proceed = (not missing) and (has_key or setup_complete)
 
     cfg = get_config()
+    ytdlp_age = _ytdlp_age_days() if "yt-dlp" not in missing else None
     return {
         "status": status,
         "can_proceed": can_proceed,
@@ -250,6 +264,8 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "ytdlp_age_days": ytdlp_age,
+        "ytdlp_stale": bool(ytdlp_age is not None and ytdlp_age > 120),
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -330,6 +346,12 @@ def cmd_install() -> int:
         print(f"[setup] created config: {CONFIG_FILE}")
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
+
+    age = _ytdlp_age_days()
+    if age is not None and age > 120:
+        print(f"[setup] WARNING: yt-dlp is {age} days old — YouTube breaks stale versions "
+              "('Precondition check failed' / HTTP 400). Upgrade with the pip/brew that owns it, "
+              "e.g.: pip3 install -U yt-dlp", file=sys.stderr)
 
     has_key, backend = _have_api_key()
     if has_key:
