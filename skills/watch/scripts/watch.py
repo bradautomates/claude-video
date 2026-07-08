@@ -12,6 +12,16 @@ import tempfile
 from pathlib import Path
 
 
+# Windows consoles default to cp1252; the report contains non-ASCII (→, …, box
+# glyphs) that would raise UnicodeEncodeError on print(). Force UTF-8 on the
+# text streams (no-op where they already are, or where reconfigure is absent).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
