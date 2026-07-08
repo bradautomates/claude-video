@@ -69,6 +69,17 @@ def test_keyless_first_run_is_encouraged(tmp_path):
     assert js["first_run"] is True
 
 
+def test_ytdlp_staleness_fields_present():
+    """Staleness of yt-dlp (the #1 real-world breakage) is always surfaced in --json."""
+    proc = _run(["--json"])
+    assert proc.returncode == 0, proc.stderr
+    data = json.loads(proc.stdout)
+    assert "ytdlp_age_days" in data
+    assert "ytdlp_stale" in data
+    if data["ytdlp_age_days"] is not None:
+        assert isinstance(data["ytdlp_stale"], bool)
+
+
 def test_key_present_is_ready(tmp_path):
     _write_env(tmp_path, "GROQ_API_KEY=sk-test-abc\n")
     chk = _run(["--check"], home=tmp_path)
