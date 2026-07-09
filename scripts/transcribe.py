@@ -84,7 +84,10 @@ def format_transcript(segments: list[dict]) -> str:
     lines = []
     for seg in segments:
         start = int(seg["start"])
-        stamp = f"[{start // 60:02d}:{start % 60:02d}]"
+        if start >= 3600:
+            stamp = f"[{start // 3600}:{start % 3600 // 60:02d}:{start % 60:02d}]"
+        else:
+            stamp = f"[{start // 60:02d}:{start % 60:02d}]"
         lines.append(f"{stamp} {seg['text']}")
     return "\n".join(lines)
 
