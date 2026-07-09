@@ -1,6 +1,6 @@
 ---
 name: watch
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts scene-aware frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video. Supports a multi-pass deep analysis mode for complete coverage of long videos.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
 homepage: https://github.com/bradautomates/claude-video
@@ -13,6 +13,10 @@ user-invocable: true
 # /watch — Claude watches a video
 
 You don't have a video input; this skill gives you one. A Python script downloads the video, extracts frames as JPEGs, gets a timestamped transcript (native captions first, then Whisper API as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+
+Frame selection is **scene-aware by default**: a detection pass finds visual change points (cuts, slide flips, UI actions), the frame budget is spent on the strongest changes first, and leftover slots split the largest temporal gaps so quiet stretches still get floor coverage. Every frame carries new information instead of sampling a talking head 40 times. Frame timestamps are exact seek points — no drift.
+
+Downloads, frames, and Whisper transcripts are **cached persistently** under `~/.cache/watch/`. Re-running on the same video — including focused zooms with different ranges — skips the download and often the extraction entirely. This makes multi-pass analysis cheap by design.
 
 ## Step 0 — Setup preflight (runs every `/watch` invocation, silent on success)
 
@@ -83,6 +87,8 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--sampling scene|uniform` — frame selection strategy (default `scene`; falls back to uniform automatically when no changes are detected). Passing `--fps` forces uniform.
+- `--no-cache` — bypass the persistent cache; download and extract into the temp work dir
 
 ### Focusing on a section (higher frame rate)
 
@@ -121,7 +127,28 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place. **Never delete anything under `~/.cache/watch/`** — that is the persistent cache (videos, frames, transcripts) that makes re-runs and focused zooms near-instant. If the user wants to reclaim disk space, they can clear it themselves with `rm -rf ~/.cache/watch`.
+
+## Deep analysis mode (multi-pass, complete coverage)
+
+A single pass is capped at 100 frames in one context — fine for Q&A, lossy for a 30-minute lesson. Deep mode removes that ceiling by chaptering the video and giving each chapter its own pass in its own subagent context.
+
+**When to use:** the user asks for a deep/complete/detailed analysis, wants to document a workflow or course lesson, says "don't lose details", or asks an exhaustive question about a video longer than ~10 minutes. For short videos (<10 min) a single scene-aware pass is usually enough — don't multi-pass unless asked.
+
+**Warn once about cost:** deep mode spends N chapters × ~60-100 frames of image tokens across subagents. Say roughly what it will cost ("~6 chapters, each a dense pass") before launching, unless the user already opted in.
+
+**The protocol:**
+
+1. **Pass 1 — scan.** Run the script normally on the full video. Read the sparse frames and the full transcript. This pass is mostly for the transcript and the shape of the video; it also warms the cache (download + transcript are now free for every later pass).
+2. **Chapter the video.** From transcript topic shifts and what you saw in the sparse frames, split the timeline into chapters of roughly 3-6 minutes with a one-line description each. Align boundaries to natural transitions (topic change, new demo, new slide section), not arbitrary round numbers.
+3. **Pass 2 — one subagent per chapter, in parallel.** Launch one general-purpose subagent per chapter (all in a single message so they run concurrently). Each subagent's prompt must include: the video source, its chapter range, the chapter description, what the user wants, and these instructions:
+   - Run `python3 "${CLAUDE_SKILL_DIR}/scripts/watch.py" "<source>" --start <chapter-start> --end <chapter-end>` (add `--resolution 768` if the chapter shows screen content: slides, UI, code, drawing software).
+   - Read every frame, read the transcript section, and return exhaustive timestamped notes: what is shown, what is said, every technique/step/setting/tool visible, notable quotes. Return raw detailed notes, not a polished summary — synthesis happens later.
+   - The download and transcript come from cache; the subagent only pays for its own frames.
+4. **Synthesize.** Merge the chapter notes into one structured document ordered by timeline. Preserve timestamps, keep every concrete detail (tool names, settings, techniques, quotes), and flag anything a subagent reported as unclear so the user can zoom in further.
+5. **Follow-ups are cheap.** Everything is cached — if the user asks about a moment, re-run focused on that range at high resolution instead of guessing from the notes.
+
+**Chapter sizing:** 3-6 minutes keeps each focused pass dense (~0.3-0.6 fps scene-aware budget). Shorter chapters for visually busy content (drawing demos, fast UI work), longer for talking-head sections.
 
 ## Transcription
 
@@ -149,7 +176,7 @@ This skill burns tokens primarily on frames. Order of magnitude:
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
 - Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
 
-If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
+If you already watched a video this session and the user asks a follow-up you can answer from context, answer from what you have. But if the follow-up needs detail you don't have (a moment that fell between frames, on-screen text too small at 512px), re-running focused is cheap: the download and transcript are cached, so a `--start/--end` zoom only pays for the new frames.
 
 ## Security & Permissions
 
@@ -158,7 +185,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
-- Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
+- Writes the downloaded video, extracted frames, and Whisper transcripts to a persistent cache under `~/.cache/watch/` (keyed by URL / file identity + extraction params) so re-runs skip the network; audio and other intermediates go to a working directory under the system temp dir (or `--out-dir` if specified). `--no-cache` keeps everything in the temp working directory instead
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
@@ -166,7 +193,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not access any platform account (no login, no session cookies, no posting)
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
-- Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
+- Does not persist anything outside the working directory, the `~/.cache/watch/` cache, and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5), but leave the cache alone
 
 **Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
 
