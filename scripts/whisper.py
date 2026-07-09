@@ -39,11 +39,24 @@ OPENAI_MODEL = "whisper-1"
 # still gets through.
 CHUNK_DURATION_SECONDS = 600
 
+# Consecutive chunks overlap so a sentence straddling the cut is heard whole by
+# at least one chunk. At merge time the overlap region is split at its midpoint:
+# the earlier chunk keeps segments starting before it, the later chunk keeps the
+# rest — no duplicated text, no mid-word mangling at the seam.
+CHUNK_OVERLAP_SECONDS = 8.0
+
+# Whisper's prompt biases recognition. Two uses here: caller-supplied vocab
+# (proper nouns that would otherwise be garbled) and continuity — each chunk
+# gets the tail of the previous chunk's text so recognition doesn't restart
+# cold at every boundary (keeps names spelled consistently across chunks).
+# The APIs only read the final ~224 tokens of the prompt, so the tail is capped.
+PROMPT_TAIL_CHARS = 400
+
 # Successful transcripts are cached to disk and looked up by
-# (source file identity, window, backend). On cache hit we skip both audio
-# extraction and the API call. Bump CACHE_VERSION whenever extract_audio's
-# encoding parameters or the segment schema change.
-CACHE_VERSION = 1
+# (source file identity, window, backend, prompt). On cache hit we skip both
+# audio extraction and the API call. Bump CACHE_VERSION whenever extract_audio's
+# encoding parameters, the chunk window scheme, or the segment schema change.
+CACHE_VERSION = 2
 CACHE_DIR = Path.home() / ".cache" / "watch" / "chunks"
 
 
@@ -183,12 +196,16 @@ MAX_5XX_RETRIES = 2    # bail after 2 server-error hits — each retry re-upload
 RETRY_BASE_DELAY = 2.0
 
 
-def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> dict:
+def _post_whisper(
+    endpoint: str, api_key: str, model: str, audio_path: Path, prompt: str | None = None
+) -> dict:
     fields = {
         "model": model,
         "response_format": "verbose_json",
         "temperature": "0",
     }
+    if prompt:
+        fields["prompt"] = prompt
     body, boundary = _build_multipart(fields, audio_path)
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -331,30 +348,42 @@ def _probe_duration(video_path: str) -> float:
         raise SystemExit(f"ffprobe returned non-numeric duration: {result.stdout!r}")
 
 
-def _chunk_windows(start: float, end: float, chunk_seconds: float) -> list[tuple[float, float]]:
-    """Split [start, end) into windows of chunk_seconds. The last may be shorter."""
+def _chunk_windows(
+    start: float, end: float, chunk_seconds: float, overlap: float = CHUNK_OVERLAP_SECONDS
+) -> list[tuple[float, float]]:
+    """Split [start, end) into windows of chunk_seconds, each starting `overlap`
+    seconds before the previous one ended. The last may be shorter."""
+    step = max(1.0, chunk_seconds - overlap)
     windows: list[tuple[float, float]] = []
     cursor = start
     while cursor < end:
         windows.append((cursor, min(cursor + chunk_seconds, end)))
-        cursor += chunk_seconds
+        if cursor + chunk_seconds >= end:
+            break
+        cursor += step
     return windows
 
 
-def _post_for_backend(backend: str, api_key: str, audio_path: Path) -> dict:
+def _post_for_backend(
+    backend: str, api_key: str, audio_path: Path, prompt: str | None = None
+) -> dict:
     if backend == "groq":
-        return _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        return _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path, prompt)
     if backend == "openai":
-        return _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        return _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path, prompt)
     raise SystemExit(f"Unknown whisper backend: {backend}")
 
 
-def _cache_key(video_path: str, win_start: float, win_end: float, backend: str) -> str:
-    """Stable hash for a (source file identity, window, backend) tuple.
+def _cache_key(
+    video_path: str, win_start: float, win_end: float, backend: str, prompt: str | None = None
+) -> str:
+    """Stable hash for a (source file identity, window, backend, prompt) tuple.
 
     Includes file size + mtime so editing or replacing the source video
-    invalidates entries automatically. Encoding params are hardcoded in
-    extract_audio; bump CACHE_VERSION if those change.
+    invalidates entries automatically. The prompt is part of the key because it
+    changes the output — a continuity tail is deterministic across re-runs
+    (same prior chunks → same tail), so cached chunks still hit. Encoding
+    params are hardcoded in extract_audio; bump CACHE_VERSION if those change.
     """
     p = Path(video_path).resolve()
     try:
@@ -363,7 +392,7 @@ def _cache_key(video_path: str, win_start: float, win_end: float, backend: str) 
         return ""
     ident = (
         f"v{CACHE_VERSION}|{p}|{st.st_size}|{st.st_mtime_ns}|"
-        f"{win_start:.3f}|{win_end:.3f}|{backend}"
+        f"{win_start:.3f}|{win_end:.3f}|{backend}|{prompt or ''}"
     )
     return hashlib.sha256(ident.encode()).hexdigest()[:32]
 
@@ -409,14 +438,15 @@ def _transcribe_window(
     win_start: float,
     win_end: float,
     label: str,
+    prompt: str | None = None,
 ) -> list[dict]:
     """Transcribe audio in [win_start, win_end). Returns segments with
     timestamps already offset to source-video coordinates.
 
     Cache-aware: a successful prior run with identical inputs (same source
-    file identity + window + backend) skips both extraction and upload.
+    file identity + window + backend + prompt) skips both extraction and upload.
     """
-    key = _cache_key(video_path, win_start, win_end, backend)
+    key = _cache_key(video_path, win_start, win_end, backend, prompt)
     cached = _cache_load(key)
     if cached is not None:
         print(
@@ -434,7 +464,7 @@ def _transcribe_window(
     size_kb = audio_path.stat().st_size / 1024
     print(f"[watch] {label}: {size_kb:.0f} kB — uploading…", file=sys.stderr)
 
-    response = _post_for_backend(backend, api_key, audio_path)
+    response = _post_for_backend(backend, api_key, audio_path, prompt)
     segments = _segments_from_response(response, time_offset=win_start)
 
     if segments:
@@ -448,6 +478,13 @@ def _transcribe_window(
     return segments
 
 
+def _combine_prompt(vocab: str | None, tail: str | None) -> str | None:
+    """Vocab terms + continuity tail, tail last (the APIs weight the end of
+    the prompt most and truncate from the front)."""
+    parts = [p for p in (vocab, tail) if p]
+    return " ".join(parts) if parts else None
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -455,14 +492,22 @@ def transcribe_video(
     api_key: str | None = None,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    vocab: str | None = None,
 ) -> tuple[list[dict], str, list[tuple[float, float, str]]]:
     """Run the full flow: extract audio → upload → parse segments.
 
-    Audio over CHUNK_DURATION_SECONDS is split into chunks and uploaded
-    independently. A chunk that fails is reported and skipped — the caller
-    gets segments from the successful chunks plus a list of
-    (start, end, reason) tuples for the failures. Total failure (no chunks
-    succeeded) raises SystemExit.
+    `vocab` is free text (typically comma-separated proper nouns) passed as
+    the Whisper prompt to bias spelling — product names, people, tools that
+    would otherwise be garbled.
+
+    Audio over CHUNK_DURATION_SECONDS is split into overlapping chunks and
+    uploaded independently; at each seam the overlap is split at its midpoint
+    so no text duplicates and no sentence is cut cold. Each chunk also gets
+    the tail of the previous chunk's text as prompt context, so recognition
+    (and name spelling) stays consistent across boundaries. A chunk that
+    fails is reported and skipped — the caller gets segments from the
+    successful chunks plus a list of (start, end, reason) tuples for the
+    failures. Total failure (no chunks succeeded) raises SystemExit.
 
     Returns (segments, backend_used, failures). `failures` is empty on a
     clean run.
@@ -491,22 +536,27 @@ def transcribe_video(
         label = f"single ({eff_start:.0f}s-{eff_end:.0f}s)" if focused else f"single ({backend})"
         segments = _transcribe_window(
             video_path, audio_out, backend, api_key, eff_start, eff_end, label,
+            prompt=_combine_prompt(vocab, None),
         )
         if not segments:
             raise SystemExit("Whisper returned no transcript segments")
         print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
         return segments, backend, []
 
-    # Chunked path — split audio, upload each window, stitch with offsets.
+    # Chunked path — split audio into overlapping windows, upload each,
+    # stitch at overlap midpoints.
     windows = _chunk_windows(eff_start, eff_end, CHUNK_DURATION_SECONDS)
     print(
         f"[watch] {eff_duration:.0f}s exceeds {CHUNK_DURATION_SECONDS}s — "
-        f"splitting into {len(windows)} chunks of ≤{CHUNK_DURATION_SECONDS}s",
+        f"splitting into {len(windows)} chunks of ≤{CHUNK_DURATION_SECONDS}s "
+        f"({CHUNK_OVERLAP_SECONDS:.0f}s overlap)",
         file=sys.stderr,
     )
 
     all_segments: list[dict] = []
     failures: list[tuple[float, float, str]] = []
+    prev_tail: str | None = None
+    prev_succeeded = False
 
     for i, (chunk_start, chunk_end) in enumerate(windows, 1):
         label = f"chunk {i}/{len(windows)} ({chunk_start:.0f}s-{chunk_end:.0f}s)"
@@ -514,11 +564,23 @@ def transcribe_video(
         try:
             chunk_segments = _transcribe_window(
                 video_path, chunk_audio, backend, api_key, chunk_start, chunk_end, label,
+                prompt=_combine_prompt(vocab, prev_tail),
             )
+            if i > 1 and prev_succeeded:
+                # Both sides heard the overlap; hand off at its midpoint.
+                boundary = chunk_start + CHUNK_OVERLAP_SECONDS / 2
+                all_segments = [s for s in all_segments if s["start"] < boundary]
+                chunk_segments = [s for s in chunk_segments if s["start"] >= boundary]
             all_segments.extend(chunk_segments)
+            chunk_text = " ".join(s["text"] for s in chunk_segments)
+            prev_tail = chunk_text[-PROMPT_TAIL_CHARS:] if chunk_text else None
+            prev_succeeded = True
             print(f"[watch] {label}: {len(chunk_segments)} segments", file=sys.stderr)
         except SystemExit as exc:
             failures.append((chunk_start, chunk_end, str(exc)))
+            # No continuity across a hole — the next chunk starts cold.
+            prev_tail = None
+            prev_succeeded = False
             print(f"[watch] {label}: FAILED — {exc}", file=sys.stderr)
         finally:
             try:
@@ -541,7 +603,10 @@ def transcribe_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print(
+            "usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai] [--vocab \"terms\"]",
+            file=sys.stderr,
+        )
         raise SystemExit(2)
 
     video = sys.argv[1]
@@ -549,6 +614,11 @@ if __name__ == "__main__":
     backend_override = None
     if "--backend" in sys.argv:
         backend_override = sys.argv[sys.argv.index("--backend") + 1]
+    vocab_arg = None
+    if "--vocab" in sys.argv:
+        vocab_arg = sys.argv[sys.argv.index("--vocab") + 1]
 
-    segments, backend, failures = transcribe_video(video, audio_out, backend=backend_override)
+    segments, backend, failures = transcribe_video(
+        video, audio_out, backend=backend_override, vocab=vocab_arg,
+    )
     print(json.dumps({"backend": backend, "segments": segments, "failures": failures}, indent=2))
