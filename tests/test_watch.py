@@ -22,6 +22,17 @@ def _run(clip: Path, *args: str, env_extra: dict | None = None) -> str:
     return proc.stdout
 
 
+def _run_proc(clip: Path, *args: str, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env.pop("WATCH_DETAIL", None)
+    if env_extra:
+        env.update(env_extra)
+    return subprocess.run(
+        [sys.executable, str(WATCH), str(clip), "--no-whisper", *args],
+        capture_output=True, text=True, env=env,
+    )
+
+
 def test_efficient_uses_keyframe_engine(cut_clip: Path):
     out = _run(cut_clip, "--detail", "efficient")
     assert "(keyframe" in out
@@ -70,7 +81,7 @@ def test_timestamps_with_transcript_detail_is_cue_only(cut_clip: Path):
 
 
 def _frame_lines(out: str) -> int:
-    return sum(1 for line in out.splitlines() if "/frames/frame_" in line and "(t=" in line)
+    return sum(1 for line in out.splitlines() if "frame_" in line and "(t=" in line)
 
 
 def test_dedup_collapses_static_by_default(static_clip: Path):
@@ -83,3 +94,29 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     out = _run(static_clip, "--no-dedup")
     assert "near-duplicate" not in out
     assert _frame_lines(out) > 1
+
+
+def test_end_must_be_after_range_start(cut_clip: Path):
+    proc = _run_proc(cut_clip, "--end", "0")
+    assert proc.returncode != 0
+    assert "--end must be greater than --start" in proc.stderr
+
+
+def test_end_past_duration_clamps_to_video_end(cut_clip: Path):
+    proc = _run_proc(cut_clip, "--detail", "transcript", "--end", "600")
+    assert proc.returncode == 0, proc.stderr
+    assert "clamping to video end" in proc.stderr
+    assert "-> 00:06" in proc.stdout
+    assert "10:00" not in proc.stdout
+
+
+def test_focused_output_is_safe_for_legacy_windows_stdout(cut_clip: Path):
+    proc = _run_proc(
+        cut_clip,
+        "--detail", "transcript",
+        "--start", "0",
+        "--end", "1",
+        env_extra={"PYTHONIOENCODING": "cp1251"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "->" in proc.stdout

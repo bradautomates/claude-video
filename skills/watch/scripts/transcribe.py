@@ -6,19 +6,21 @@ scrolls). We dedupe consecutive identical cues and merge their time ranges.
 """
 from __future__ import annotations
 
+import html
 import re
 import sys
 from pathlib import Path
 
 
 TS_RE = re.compile(
-    r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
+    r"(?:(\d{2}):)?(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+"
+    r"(?:(\d{2}):)?(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+def _to_seconds(h: str | None, m: str, s: str, ms: str) -> float:
+    return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
 def parse_vtt(path: str) -> list[dict]:
@@ -39,7 +41,7 @@ def parse_vtt(path: str) -> list[dict]:
 
         cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip():
-            cleaned = TAG_RE.sub("", lines[i]).strip()
+            cleaned = html.unescape(TAG_RE.sub("", lines[i])).strip()
             if cleaned:
                 cue_lines.append(cleaned)
             i += 1
@@ -80,12 +82,19 @@ def filter_range(
     return [seg for seg in segments if seg["end"] >= lo and seg["start"] <= hi]
 
 
+def _format_stamp(seconds: float) -> str:
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, sec = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{sec:02d}"
+    return f"{minutes:02d}:{sec:02d}"
+
+
 def format_transcript(segments: list[dict]) -> str:
     lines = []
     for seg in segments:
-        start = int(seg["start"])
-        stamp = f"[{start // 60:02d}:{start % 60:02d}]"
-        lines.append(f"{stamp} {seg['text']}")
+        lines.append(f"[{_format_stamp(seg['start'])}] {seg['text']}")
     return "\n".join(lines)
 
 

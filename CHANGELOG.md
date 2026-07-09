@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Frame extraction now uses `ffmpeg -fps_mode vfr`, fixing scene/keyframe extraction on ffmpeg builds that reject deprecated `-vsync vfr`.
+- Reused `--out-dir` runs no longer pick stale `video.*` downloads, captions, or metadata after a failed/new source.
+- Whisper backend overrides now require the matching provider key, so `--whisper openai` cannot accidentally use a Groq key (or vice versa).
+- Focused runs clamp `--end` past the media duration, reject non-finite/empty ranges cleanly, and keep runtime focus output ASCII-safe for legacy Windows consoles.
+- WebVTT parsing now accepts `MM:SS.mmm` cue timings, unescapes caption entities, and formats transcript timestamps past one hour as `H:MM:SS`.
+- Claude Code SessionStart hook paths now quote `CLAUDE_PLUGIN_ROOT`, so plugin cache paths containing spaces still run setup checks.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

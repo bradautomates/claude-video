@@ -73,6 +73,8 @@ _PERM_WARNED: set[str] = set()
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
     world/group readable."""
+    if os.name != "posix":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return

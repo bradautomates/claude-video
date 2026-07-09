@@ -62,12 +62,21 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
+def _clear_known_artifacts(out_dir: Path) -> None:
+    for candidate in out_dir.glob("video.*"):
+        try:
+            candidate.unlink()
+        except OSError:
+            pass
+
+
 def fetch_captions(url: str, out_dir: Path) -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_known_artifacts(out_dir)
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
         "yt-dlp",
@@ -79,6 +88,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
+        "--ignore-config",
         "--ignore-errors",
         "-o", output_template,
         "--",
@@ -121,6 +131,7 @@ def download_url(
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    _clear_known_artifacts(out_dir)
     output_template = str(out_dir / "video.%(ext)s")
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
@@ -136,6 +147,7 @@ def download_url(
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
+        "--ignore-config",
         "--ignore-errors",
         "-o", output_template,
         "--",
