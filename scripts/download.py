@@ -3,9 +3,16 @@
 
 Also fetches subtitles (manual first, then auto-generated) in VTT format so
 transcribe.py can parse them without needing Whisper.
+
+Downloads are cache-aware: when the output directory already holds a completed
+download (marked by COMPLETE_MARKER, written only after yt-dlp succeeds), the
+video, subtitles, and info json are reused without touching the network. This
+is what makes multi-pass analysis cheap — the video downloads once, every
+focused re-run after that is local.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -15,6 +22,16 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# Written after a fully successful download; a directory without it (e.g. an
+# interrupted yt-dlp run) is never treated as a cache hit.
+COMPLETE_MARKER = ".watch-download-complete"
+
+
+def url_cache_dir(url: str, cache_root: Path) -> Path:
+    """Stable per-URL download directory under the persistent cache."""
+    key = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return cache_root / "videos" / key
 
 
 def is_url(source: str) -> bool:
@@ -57,7 +74,43 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
+def _load_info(out_dir: Path, url: str) -> dict:
+    info_path = out_dir / "video.info.json"
+    if info_path.exists():
+        try:
+            raw = json.loads(info_path.read_text())
+            return {
+                "title": raw.get("title"),
+                "uploader": raw.get("uploader") or raw.get("channel"),
+                "duration": raw.get("duration"),
+                "url": raw.get("webpage_url") or url,
+            }
+        except Exception:
+            pass
+    return {"url": url}
+
+
+def _cached_download(url: str, out_dir: Path) -> dict | None:
+    if not (out_dir / COMPLETE_MARKER).exists():
+        return None
+    video = _pick_video(out_dir)
+    if video is None:
+        return None
+    print(f"[watch] download cache hit: {video.name} in {out_dir}", file=sys.stderr)
+    subtitle = _pick_subtitle(out_dir)
+    return {
+        "video_path": str(video),
+        "subtitle_path": str(subtitle) if subtitle else None,
+        "info": _load_info(out_dir, url),
+        "downloaded": False,
+    }
+
+
 def download_url(url: str, out_dir: Path) -> dict:
+    cached = _cached_download(url, out_dir)
+    if cached is not None:
+        return cached
+
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
@@ -91,24 +144,15 @@ def download_url(url: str, out_dir: Path) -> dict:
         )
 
     subtitle = _pick_subtitle(out_dir)
-    info_path = out_dir / "video.info.json"
-    info: dict = {}
-    if info_path.exists():
-        try:
-            raw = json.loads(info_path.read_text())
-            info = {
-                "title": raw.get("title"),
-                "uploader": raw.get("uploader") or raw.get("channel"),
-                "duration": raw.get("duration"),
-                "url": raw.get("webpage_url") or url,
-            }
-        except Exception:
-            info = {"url": url}
+    try:
+        (out_dir / COMPLETE_MARKER).touch()
+    except OSError:
+        pass
 
     return {
         "video_path": str(video),
         "subtitle_path": str(subtitle) if subtitle else None,
-        "info": info or {"url": url},
+        "info": _load_info(out_dir, url),
         "downloaded": True,
     }
 

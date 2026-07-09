@@ -550,5 +550,5 @@ if __name__ == "__main__":
     if "--backend" in sys.argv:
         backend_override = sys.argv[sys.argv.index("--backend") + 1]
 
-    segments, backend = transcribe_video(video, audio_out, backend=backend_override)
-    print(json.dumps({"backend": backend, "segments": segments}, indent=2))
+    segments, backend, failures = transcribe_video(video, audio_out, backend=backend_override)
+    print(json.dumps({"backend": backend, "segments": segments, "failures": failures}, indent=2))

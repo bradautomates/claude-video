@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""Probe video metadata and extract frames at an auto-scaled fps.
+"""Probe video metadata and extract frames on a fixed budget.
 
-Auto-fps targets a frame budget, not a fixed rate. Token cost scales with frame
-count, so budget-by-duration keeps short videos dense and long videos capped.
-When a user-specified range is passed, focused-mode budgets denser (they are
-zooming in for detail).
+Two sampling strategies share the same duration-based frame budget:
+
+- scene (default): a detection pass finds visual change points, the budget is
+  spent on the strongest changes first, and remaining slots split the largest
+  temporal gaps so coverage never collapses. Every frame carries new
+  information — slide flips and cuts land exactly on a frame instead of
+  between two uniform samples, and talking-head stretches stop eating the
+  budget with near-identical frames.
+- uniform: constant-fps sampling (the pre-scene behavior). Used as automatic
+  fallback when detection finds nothing, and forced when the caller pins an
+  explicit --fps.
+
+Token cost scales with frame count, so budget-by-duration keeps short videos
+dense and long videos capped. When a user-specified range is passed,
+focused-mode budgets denser (they are zooming in for detail).
 """
 from __future__ import annotations
 
@@ -12,10 +23,22 @@ import json
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
 MAX_FPS = 2.0
+
+# Scene detection: a low threshold collects *candidates* (slide changes and UI
+# actions score far below hard cuts); plan_timestamps then ranks by score, so
+# noise candidates only win slots after every stronger change already has one.
+SCENE_THRESHOLD = 0.04
+# Detection decodes the whole range once; scoring at 160px is ~identical to
+# full-res for change detection and several times faster.
+SCENE_DETECT_WIDTH = 160
+# Two selected frames closer than this are near-duplicates — skip the weaker.
+MIN_FRAME_GAP = 0.5
+EXTRACT_WORKERS = 8
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -129,6 +152,184 @@ def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[floa
         target = max_frames
 
     return _clamp_fps(target / duration_seconds, duration_seconds, max_frames)
+
+
+def detect_scenes(
+    video_path: str,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    threshold: float = SCENE_THRESHOLD,
+) -> list[tuple[float, float]]:
+    """Return (timestamp, score) scene-change candidates on the absolute timeline.
+
+    Runs one decode pass over the requested range with ffmpeg's scene filter.
+    An empty result (no changes, or ffmpeg failure) tells the caller to fall
+    back to uniform sampling.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    seek: list[str] = []
+    offset = 0.0
+    if start_seconds is not None and start_seconds > 0:
+        seek += ["-ss", f"{start_seconds:.3f}"]
+        offset = start_seconds
+    if end_seconds is not None:
+        seek += ["-to", f"{end_seconds:.3f}"]
+
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-nostats",
+        *seek,
+        "-i", video_path,
+        "-vf",
+        f"scale={SCENE_DETECT_WIDTH}:-2,select='gt(scene,{threshold})',metadata=print:file=-",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[watch] scene detection failed: {result.stderr.strip()[:200]}", file=sys.stderr)
+        return []
+
+    # metadata=print emits pairs of lines per selected frame:
+    #   frame:12  pts:307200  pts_time:4.096
+    #   lavfi.scene_score=0.086520
+    scenes: list[tuple[float, float]] = []
+    pts_time: float | None = None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("frame:") and "pts_time:" in line:
+            try:
+                pts_time = float(line.rsplit("pts_time:", 1)[1].split()[0])
+            except (ValueError, IndexError):
+                pts_time = None
+        elif line.startswith("lavfi.scene_score=") and pts_time is not None:
+            try:
+                score = float(line.split("=", 1)[1])
+            except ValueError:
+                score = threshold
+            scenes.append((round(offset + pts_time, 3), score))
+            pts_time = None
+    return scenes
+
+
+def plan_timestamps(
+    scenes: list[tuple[float, float]],
+    start: float,
+    end: float,
+    target: int,
+    min_gap: float = MIN_FRAME_GAP,
+) -> list[float]:
+    """Pick up to `target` timestamps in [start, end): strongest scene changes
+    first, then split the largest remaining temporal gaps so quiet stretches
+    still get floor coverage."""
+    duration = end - start
+    if duration <= 0 or target < 1:
+        return []
+
+    selected: list[float] = [start]
+
+    def far_enough(t: float) -> bool:
+        return all(abs(t - s) >= min_gap for s in selected)
+
+    for t, _score in sorted(scenes, key=lambda x: -x[1]):
+        if len(selected) >= target:
+            break
+        if start <= t < end and far_enough(t):
+            selected.append(t)
+
+    while len(selected) < target:
+        points = sorted(selected) + [end]
+        gap, lo = max((points[i + 1] - points[i], points[i]) for i in range(len(points) - 1))
+        if gap < 2 * min_gap:
+            break
+        selected.append(lo + gap / 2)
+
+    return sorted(selected)
+
+
+def extract_at_timestamps(
+    video_path: str,
+    out_dir: Path,
+    timestamps: list[float],
+    resolution: int = 512,
+) -> list[dict]:
+    """Grab one frame per timestamp with an accurate seek. Timestamps in the
+    report are the requested seek points, exact by construction — no i/fps
+    drift. A seek that lands past the last frame is dropped, not fatal."""
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("frame_*.jpg"):
+        existing.unlink()
+
+    def grab(item: tuple[int, float]) -> dict | None:
+        i, t = item
+        out = out_dir / f"frame_{i:04d}.jpg"
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-y",
+            "-ss", f"{t:.3f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-vf", f"scale={resolution}:-2",
+            "-q:v", "4",
+            str(out),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+            return None
+        return {"index": i, "timestamp_seconds": round(t, 2), "path": str(out)}
+
+    with ThreadPoolExecutor(max_workers=EXTRACT_WORKERS) as pool:
+        results = list(pool.map(grab, enumerate(timestamps)))
+    return [f for f in results if f is not None]
+
+
+def extract_smart(
+    video_path: str,
+    out_dir: Path,
+    target: int,
+    resolution: int = 512,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+    duration: float | None = None,
+) -> tuple[list[dict], str]:
+    """Scene-aware extraction with uniform fallback. Returns (frames, mode)
+    where mode describes how the budget was spent, e.g. "scene (23 cuts + 57 fill)"."""
+    eff_start = start_seconds if start_seconds is not None else 0.0
+    if end_seconds is not None:
+        eff_end = end_seconds
+    elif duration is not None:
+        eff_end = duration
+    else:
+        eff_end = get_metadata(video_path)["duration_seconds"]
+
+    scenes = detect_scenes(video_path, start_seconds, end_seconds)
+    if scenes:
+        timestamps = plan_timestamps(scenes, eff_start, eff_end, target)
+        frames = extract_at_timestamps(video_path, out_dir, timestamps, resolution)
+        if frames:
+            scene_ts = {t for t, _ in scenes}
+            n_cuts = sum(1 for f in frames if any(abs(f["timestamp_seconds"] - t) < 0.01 for t in scene_ts))
+            return frames, f"scene ({n_cuts} changes + {len(frames) - n_cuts} fill)"
+
+    eff_duration = max(0.0, eff_end - eff_start)
+    fps = min(MAX_FPS, target / eff_duration) if eff_duration > 0 else 1.0
+    frames = extract(
+        video_path, out_dir,
+        fps=fps,
+        resolution=resolution,
+        max_frames=target,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+    )
+    return frames, "uniform (no scene changes detected)"
 
 
 def extract(

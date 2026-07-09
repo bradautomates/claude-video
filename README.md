@@ -47,11 +47,13 @@ Claude is great at reading and synthesizing — but until now, video was the one
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` downloads it.** For URLs, into a temp working directory. For local files, no download — just probed in place.
-3. **`ffmpeg` extracts frames at an auto-scaled rate.** The frame budget is duration-aware: ≤30s gets ~30 frames, 30-60s gets ~40, 1-3min gets ~60, 3-10min gets ~80, longer gets 100 sparsely. Hard ceilings: 2 fps, 100 frames. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text.
+3. **`ffmpeg` extracts scene-aware frames on a duration-based budget.** A detection pass finds visual change points (cuts, slide flips, UI actions); the budget goes to the strongest changes first, and leftover slots split the largest gaps so quiet stretches keep floor coverage. Talking-head sections stop wasting frames; a 30-slide section gets all 30 slides. The budget is duration-aware: ≤30s gets ~30 frames, 30-60s gets ~40, 1-3min gets ~60, 3-10min gets ~80, longer gets 100. Hard ceiling: 100 frames per pass. JPEGs at 512px wide by default — bump with `--resolution 1024` if Claude needs to read on-screen text. `--sampling uniform` restores constant-rate sampling.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz audio clip and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
+7. **Everything is cached.** Downloads, frames, and Whisper transcripts persist under `~/.cache/watch/`, keyed by video identity and extraction params. Watching the same video again — or zooming into a section — skips the download and usually the extraction. The temp working directory is still cleaned up; the cache is not.
+
+For long videos where you want complete coverage, the skill has a **deep analysis mode**: a scan pass builds a chapter map from the transcript, then one subagent per chapter runs a dense focused pass in parallel, and the results are synthesized into a single timestamped analysis document. The cache is what makes those N passes affordable — the video downloads once.
 
 ## Frame budget — why it matters
 
@@ -150,6 +152,8 @@ Other knobs (passed to `scripts/watch.py`):
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
+- `--sampling scene|uniform` — frame selection strategy (default `scene`; auto-falls-back to uniform when no changes are detected).
+- `--no-cache` — bypass the persistent cache (`~/.cache/watch`).
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
 ## Limits
