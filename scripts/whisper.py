@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Transcribe a video via Groq or OpenAI Whisper API.
 
-Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
-API has a key. Returns segments in the same shape as transcribe.parse_vtt so
+Strategy: extract audio (mono 16kHz, Opus for Groq / MP3 for OpenAI — tiny
+payload), upload to whichever API has a key. Returns segments in the same shape as transcribe.parse_vtt so
 the rest of the pipeline (filter_range, format_transcript) doesn't care where
 the transcript came from.
 
@@ -32,12 +32,31 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
-# Audio over this duration is split into chunks before upload. 10 min keeps each
-# chunk well under Groq's 25 MB per-file cap (at 64 kbps mono ≈ 4.7 MB/chunk)
-# and bounds quota burn on retry — a failing chunk costs 600s, not the full
-# video. Also lets one bad chunk be skipped while the rest of the transcript
-# still gets through.
-CHUNK_DURATION_SECONDS = 600
+# Per-backend upload encoding. Opus at 24 kbps mono is transparent to Whisper
+# for 16 kHz speech and ~2.7x smaller than 64 kbps MP3 (verified against Groq
+# on real speech: identical transcript). OpenAI keeps MP3 — its Opus/ogg
+# acceptance is unverified here. bytes_per_second sizes the upload budget math.
+AUDIO_FORMATS = {
+    "groq": {"suffix": ".ogg", "codec": ["-c:a", "libopus", "-b:a", "24k"], "bytes_per_second": 3000},
+    "openai": {"suffix": ".mp3", "codec": ["-acodec", "libmp3lame", "-b:a", "64k"], "bytes_per_second": 8000},
+}
+
+# Chunk duration derives from the encoded bitrate against a safe upload budget
+# (the APIs cap files at 25 MB) instead of a fixed 600s — most content becomes
+# ONE seamless upload with zero stitch seams. The hour cap bounds how much of
+# the per-hour audio quota a single failed-and-retried request can re-bill,
+# and keeps server-side processing well inside the request timeout.
+SAFE_UPLOAD_BYTES = 20 * 1024 * 1024
+MAX_CHUNK_SECONDS = 3600.0
+
+# Failure recovery is bisection, not pre-chunking: when an upload fails after
+# in-request retries, the span splits in half and each half retries
+# independently, recursively down to a floor. The common path pays zero seams;
+# the failure path isolates the bad region instead of losing the whole span.
+# Depth-capped so a persistent failure can't cascade into unbounded re-billing
+# (worst case ≤ MAX_BISECT_DEPTH extra passes over the failing span).
+BISECT_FLOOR_SECONDS = 120.0
+MAX_BISECT_DEPTH = 2
 
 # Consecutive chunks overlap so a sentence straddling the cut is heard whole by
 # at least one chunk. At merge time the overlap region is split at its midpoint:
@@ -56,8 +75,14 @@ PROMPT_TAIL_CHARS = 400
 # (source file identity, window, backend, prompt). On cache hit we skip both
 # audio extraction and the API call. Bump CACHE_VERSION whenever extract_audio's
 # encoding parameters, the chunk window scheme, or the segment schema change.
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_DIR = Path.home() / ".cache" / "watch" / "chunks"
+
+
+def _max_chunk_seconds(backend: str) -> float:
+    """Longest span whose encoded audio stays inside the upload budget."""
+    fmt = AUDIO_FORMATS.get(backend) or AUDIO_FORMATS["openai"]
+    return min(MAX_CHUNK_SECONDS, SAFE_UPLOAD_BYTES / fmt["bytes_per_second"])
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
@@ -115,8 +140,11 @@ def extract_audio(
     out_path: Path,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    backend: str = "openai",
 ) -> Path:
-    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit.
+    """Extract mono 16kHz speech audio in the backend's upload format
+    (Opus ~180 kB/min for Groq, MP3 ~480 kB/min for OpenAI). The returned
+    path carries the format's suffix — it may differ from `out_path`.
 
     When start_seconds/end_seconds are set, only that window is extracted —
     the rest never reaches Whisper. This keeps focused-mode runs cheap
@@ -125,6 +153,8 @@ def extract_audio(
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
+    fmt = AUDIO_FORMATS.get(backend) or AUDIO_FORMATS["openai"]
+    out_path = out_path.with_suffix(fmt["suffix"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # -ss before -i is fast-seek (less precise) but plenty for transcription;
     # -to is absolute end position in the source timeline.
@@ -142,10 +172,9 @@ def extract_audio(
         *seek,
         "-i", video_path,
         "-vn",
-        "-acodec", "libmp3lame",
+        *fmt["codec"],
         "-ar", "16000",
         "-ac", "1",
-        "-b:a", "64k",
         str(out_path),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -456,15 +485,22 @@ def _transcribe_window(
         return cached
 
     print(f"[watch] {label}: extracting audio…", file=sys.stderr)
-    extract_audio(
+    audio_path = extract_audio(
         video_path, audio_path,
         start_seconds=win_start if win_start > 0 else None,
         end_seconds=win_end,
+        backend=backend,
     )
     size_kb = audio_path.stat().st_size / 1024
     print(f"[watch] {label}: {size_kb:.0f} kB — uploading…", file=sys.stderr)
 
-    response = _post_for_backend(backend, api_key, audio_path, prompt)
+    try:
+        response = _post_for_backend(backend, api_key, audio_path, prompt)
+    finally:
+        try:
+            audio_path.unlink()
+        except OSError:
+            pass
     segments = _segments_from_response(response, time_offset=win_start)
 
     if segments:
@@ -485,6 +521,71 @@ def _combine_prompt(vocab: str | None, tail: str | None) -> str | None:
     return " ".join(parts) if parts else None
 
 
+def _stitch(left: list[dict], right: list[dict], boundary: float) -> tuple[list[dict], list[dict]]:
+    """Split ownership of an overlap region at `boundary`: both sides heard
+    it, so each segment goes to the side its MIDPOINT falls on. Midpoints
+    rather than starts — a segment straddling the boundary survives on
+    exactly one side, so coverage can never gap (at worst a couple of
+    seconds of speech appear on both sides when segment cuts align badly,
+    which beats losing them)."""
+    keep_left = [s for s in left if (s["start"] + s["end"]) / 2 < boundary]
+    keep_right = [s for s in right if (s["start"] + s["end"]) / 2 >= boundary]
+    return keep_left, keep_right
+
+
+def _transcribe_span(
+    video_path: str,
+    audio_dir: Path,
+    backend: str,
+    api_key: str,
+    start: float,
+    end: float,
+    vocab: str | None,
+    incoming_tail: str | None,
+    depth: int = 0,
+) -> tuple[list[dict], list[tuple[float, float, str]], str | None]:
+    """Transcribe [start, end), bisecting on failure.
+
+    A failed upload (after _post_whisper's own in-request retries) splits the
+    span at its midpoint — with CHUNK_OVERLAP_SECONDS shared across the cut so
+    the seam can be stitched — and retries each half, recursively down to
+    BISECT_FLOOR_SECONDS / MAX_BISECT_DEPTH. Rate-limit failures (429) are
+    never bisected: more, smaller requests only digs the hole deeper.
+
+    Returns (segments, failures, tail) where `tail` is the last
+    PROMPT_TAIL_CHARS of the span's text for the next span's continuity
+    prompt, or None if the span's end is a failure hole.
+    """
+    label = f"span {start:.0f}s-{end:.0f}s" + (f" [bisect {depth}]" if depth else "")
+    audio_path = audio_dir / f"span_{int(start)}_{int(end)}.tmp"
+    try:
+        segments = _transcribe_window(
+            video_path, audio_path, backend, api_key, start, end, label,
+            prompt=_combine_prompt(vocab, incoming_tail),
+        )
+        text = " ".join(s["text"] for s in segments)
+        return segments, [], (text[-PROMPT_TAIL_CHARS:] if text else None)
+    except SystemExit as exc:
+        reason = str(exc)
+        if depth >= MAX_BISECT_DEPTH or (end - start) <= BISECT_FLOOR_SECONDS or "429" in reason:
+            print(f"[watch] {label}: FAILED — {reason}", file=sys.stderr)
+            return [], [(start, end, reason)], None
+
+        mid = (start + end) / 2
+        half_ov = CHUNK_OVERLAP_SECONDS / 2
+        print(f"[watch] {label}: failed ({reason[:80]}) — bisecting", file=sys.stderr)
+        left_segs, left_fails, left_tail = _transcribe_span(
+            video_path, audio_dir, backend, api_key,
+            start, min(end, mid + half_ov), vocab, incoming_tail, depth + 1,
+        )
+        right_segs, right_fails, right_tail = _transcribe_span(
+            video_path, audio_dir, backend, api_key,
+            max(start, mid - half_ov), end, vocab, left_tail, depth + 1,
+        )
+        left_segs, right_segs = _stitch(left_segs, right_segs, mid)
+        return left_segs + right_segs, left_fails + right_fails, right_tail
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
@@ -500,14 +601,14 @@ def transcribe_video(
     the Whisper prompt to bias spelling — product names, people, tools that
     would otherwise be garbled.
 
-    Audio over CHUNK_DURATION_SECONDS is split into overlapping chunks and
-    uploaded independently; at each seam the overlap is split at its midpoint
-    so no text duplicates and no sentence is cut cold. Each chunk also gets
-    the tail of the previous chunk's text as prompt context, so recognition
-    (and name spelling) stays consistent across boundaries. A chunk that
-    fails is reported and skipped — the caller gets segments from the
-    successful chunks plus a list of (start, end, reason) tuples for the
-    failures. Total failure (no chunks succeeded) raises SystemExit.
+    Upload strategy: the chunk duration is derived from the encoded bitrate
+    against the 25 MB API cap, so most content goes up as ONE seamless
+    request. Only audio longer than that is pre-split into overlapping
+    windows stitched at overlap midpoints, each primed with the previous
+    window's text tail. Failures recover by bisection (see _transcribe_span)
+    — a bad region is isolated and reported as a (start, end, reason) tuple
+    while the rest of the transcript survives. Total failure (no audio
+    transcribed) raises SystemExit.
 
     Returns (segments, backend_used, failures). `failures` is empty on a
     clean run.
@@ -530,72 +631,54 @@ def transcribe_video(
     eff_duration = max(0.0, eff_end - eff_start)
     audio_out.parent.mkdir(parents=True, exist_ok=True)
 
-    # Single-upload path — preserves prior behavior for short audio.
-    if eff_duration <= CHUNK_DURATION_SECONDS:
-        focused = start_seconds is not None or end_seconds is not None
-        label = f"single ({eff_start:.0f}s-{eff_end:.0f}s)" if focused else f"single ({backend})"
-        segments = _transcribe_window(
-            video_path, audio_out, backend, api_key, eff_start, eff_end, label,
-            prompt=_combine_prompt(vocab, None),
+    max_chunk = _max_chunk_seconds(backend)
+
+    # Common path: everything fits one upload — zero seams, one request.
+    # Bisection inside _transcribe_span still recovers partial transcripts
+    # if that single upload fails.
+    if eff_duration <= max_chunk:
+        segments, failures, _tail = _transcribe_span(
+            video_path, audio_out.parent, backend, api_key, eff_start, eff_end, vocab, None,
         )
         if not segments:
-            raise SystemExit("Whisper returned no transcript segments")
+            details = "; ".join(f"{s:.0f}-{e:.0f}: {r[:120]}" for s, e, r in failures)
+            raise SystemExit(details or "Whisper returned no transcript segments")
         print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
-        return segments, backend, []
+        return segments, backend, failures
 
-    # Chunked path — split audio into overlapping windows, upload each,
-    # stitch at overlap midpoints.
-    windows = _chunk_windows(eff_start, eff_end, CHUNK_DURATION_SECONDS)
+    # Pre-split only when a single upload would blow the size budget.
+    windows = _chunk_windows(eff_start, eff_end, max_chunk)
     print(
-        f"[watch] {eff_duration:.0f}s exceeds {CHUNK_DURATION_SECONDS}s — "
-        f"splitting into {len(windows)} chunks of ≤{CHUNK_DURATION_SECONDS}s "
-        f"({CHUNK_OVERLAP_SECONDS:.0f}s overlap)",
+        f"[watch] {eff_duration:.0f}s exceeds the {max_chunk:.0f}s upload budget — "
+        f"splitting into {len(windows)} windows ({CHUNK_OVERLAP_SECONDS:.0f}s overlap)",
         file=sys.stderr,
     )
 
     all_segments: list[dict] = []
     failures: list[tuple[float, float, str]] = []
     prev_tail: str | None = None
-    prev_succeeded = False
+    prev_produced = False
 
-    for i, (chunk_start, chunk_end) in enumerate(windows, 1):
-        label = f"chunk {i}/{len(windows)} ({chunk_start:.0f}s-{chunk_end:.0f}s)"
-        chunk_audio = audio_out.parent / f"{audio_out.stem}_chunk_{i:03d}{audio_out.suffix}"
-        try:
-            chunk_segments = _transcribe_window(
-                video_path, chunk_audio, backend, api_key, chunk_start, chunk_end, label,
-                prompt=_combine_prompt(vocab, prev_tail),
-            )
-            if i > 1 and prev_succeeded:
-                # Both sides heard the overlap; hand off at its midpoint.
-                boundary = chunk_start + CHUNK_OVERLAP_SECONDS / 2
-                all_segments = [s for s in all_segments if s["start"] < boundary]
-                chunk_segments = [s for s in chunk_segments if s["start"] >= boundary]
-            all_segments.extend(chunk_segments)
-            chunk_text = " ".join(s["text"] for s in chunk_segments)
-            prev_tail = chunk_text[-PROMPT_TAIL_CHARS:] if chunk_text else None
-            prev_succeeded = True
-            print(f"[watch] {label}: {len(chunk_segments)} segments", file=sys.stderr)
-        except SystemExit as exc:
-            failures.append((chunk_start, chunk_end, str(exc)))
-            # No continuity across a hole — the next chunk starts cold.
-            prev_tail = None
-            prev_succeeded = False
-            print(f"[watch] {label}: FAILED — {exc}", file=sys.stderr)
-        finally:
-            try:
-                chunk_audio.unlink()
-            except OSError:
-                pass
+    for i, (win_start, win_end) in enumerate(windows, 1):
+        win_segments, win_failures, win_tail = _transcribe_span(
+            video_path, audio_out.parent, backend, api_key,
+            win_start, win_end, vocab, prev_tail,
+        )
+        if i > 1 and prev_produced and win_segments:
+            boundary = win_start + CHUNK_OVERLAP_SECONDS / 2
+            all_segments, win_segments = _stitch(all_segments, win_segments, boundary)
+        all_segments.extend(win_segments)
+        failures.extend(win_failures)
+        prev_tail = win_tail
+        prev_produced = bool(win_segments)
 
     if not all_segments:
         details = "; ".join(f"{s:.0f}-{e:.0f}: {r[:120]}" for s, e, r in failures)
-        raise SystemExit(f"All {len(windows)} chunks failed — {details}")
+        raise SystemExit(f"All {len(windows)} windows failed — {details}")
 
-    succeeded = len(windows) - len(failures)
     print(
-        f"[watch] transcribed {len(all_segments)} segments via {backend} "
-        f"({succeeded}/{len(windows)} chunks succeeded)",
+        f"[watch] transcribed {len(all_segments)} segments via {backend}"
+        + (f" ({len(failures)} failed region(s))" if failures else ""),
         file=sys.stderr,
     )
     return all_segments, backend, failures
