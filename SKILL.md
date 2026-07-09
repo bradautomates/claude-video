@@ -56,6 +56,7 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 
 - User pastes a video URL (YouTube, Vimeo, X, TikTok, Twitch clip, most yt-dlp-supported sites) and asks about it.
 - User points at a local video file (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) and asks about it.
+- User points at an **audio file** (`.m4a`, `.mp3`, `.wav`, `.ogg`, etc.) — voice notes, podcasts, meeting recordings. The script detects the missing video stream and produces a transcript-only report; everything else works the same.
 - User types `/watch <url-or-path> [question]`.
 
 ## Recommended limits
@@ -89,6 +90,7 @@ Optional flags:
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--sampling scene|uniform` — frame selection strategy (default `scene`; falls back to uniform automatically when no changes are detected). Passing `--fps` forces uniform.
 - `--no-cache` — bypass the persistent cache; download and extract into the temp work dir
+- `--vocab "term1, term2, …"` — proper nouns/terms expected in the audio, passed as the Whisper prompt to bias spelling. **Use this proactively**: when the context tells you which product names, people, or tools will be spoken (from the user's question, the video title, or the conversation), pass them — otherwise Whisper garbles them ("ComfyUI" → "Confiby", "Weavy" → "webby"). Only affects Whisper runs, not caption pulls.
 
 ### Focusing on a section (higher frame rate)
 
@@ -154,10 +156,12 @@ A single pass is capped at 100 frames in one context — fine for Q&A, lossy for
 
 The script gets a timestamped transcript in one of two ways:
 
-1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
+1. **Native captions (free, preferred).** yt-dlp pulls English subtitles from the source platform if available. When no English track exists, the script checks what the source actually has and fetches the best alternative — manual captions in any language beat auto-generated ones, and the original language beats translations. The report labels what it got, e.g. `captions (manual, es)` or `captions (auto, en)`. **Treat auto-generated captions as lower quality** — no punctuation, frequent mishearings; if the user wants deep/accurate analysis and a Whisper key exists, consider re-running with Whisper.
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
+
+   Long audio is split into overlapping chunks (8s overlap, stitched at the overlap midpoint) so sentences straddling a boundary aren't mangled, and each chunk receives the tail of the previous chunk's text as prompt context so recognition stays consistent across seams. Pass `--vocab` to bias spelling of proper nouns (see flags above).
 
 Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
 
