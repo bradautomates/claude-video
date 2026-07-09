@@ -127,6 +127,13 @@ def main() -> int:
         action="store_true",
         help="Bypass the persistent cache (~/.cache/watch) — download and extract into the temp work dir.",
     )
+    ap.add_argument(
+        "--vocab",
+        type=str,
+        default=None,
+        help="Comma-separated proper nouns/terms expected in the audio (product names, "
+        "people, tools). Passed as the Whisper prompt to bias spelling.",
+    )
     args = ap.parse_args()
 
     max_frames = min(args.max_frames, 100)
@@ -150,6 +157,9 @@ def main() -> int:
 
     meta = get_metadata(video_path)
     full_duration = meta["duration_seconds"]
+    has_video = bool(meta.get("width"))
+    if not has_video and not meta.get("has_audio"):
+        raise SystemExit(f"{args.source} has neither a video nor an audio stream")
 
     start_sec = parse_time(args.start)
     end_sec = parse_time(args.end)
@@ -166,58 +176,65 @@ def main() -> int:
     effective_duration = max(0.0, effective_end - effective_start)
     focused = start_sec is not None or end_sec is not None
 
-    if focused:
-        fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
-    else:
-        fps, target = auto_fps(effective_duration, max_frames=max_frames)
-    fps_override: float | None = None
-    sampling = args.sampling
-    if args.fps is not None:
-        fps_override = min(args.fps, MAX_FPS)
-        fps = fps_override
-        target = max(1, int(round(fps * effective_duration)))
-        sampling = "uniform"  # an explicit rate is a uniform-sampling request
-
-    scope = (
-        f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
-        if focused else f"full {effective_duration:.1f}s"
-    )
-
-    cache_key = _frame_cache_key(
-        video_path, sampling, fps_override, target, args.resolution, start_sec, end_sec,
-    ) if use_cache else ""
-    frames_dir = CACHE_ROOT / "frames" / cache_key if cache_key else work / "frames"
-
-    cached_frames = _frame_cache_load(frames_dir) if cache_key else None
-    if cached_frames is not None:
-        frames, sampling_mode = cached_frames
-        print(f"[watch] frame cache hit: {len(frames)} frames in {frames_dir}", file=sys.stderr)
-    else:
-        print(f"[watch] extracting ~{target} frames ({sampling} sampling) over {scope}…", file=sys.stderr)
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        if sampling == "scene":
-            frames, sampling_mode = extract_smart(
-                video_path,
-                frames_dir,
-                target=target,
-                resolution=args.resolution,
-                start_seconds=start_sec,
-                end_seconds=end_sec,
-                duration=full_duration,
-            )
+    frames: list[dict] = []
+    sampling_mode = "none (audio-only source)"
+    frames_dir: Path | None = None
+    target = 0
+    if has_video:
+        if focused:
+            fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
         else:
-            frames = extract(
-                video_path,
-                frames_dir,
-                fps=fps,
-                resolution=args.resolution,
-                max_frames=max_frames,
-                start_seconds=start_sec,
-                end_seconds=end_sec,
-            )
-            sampling_mode = f"uniform @ {fps:.3f} fps"
-        if cache_key and frames:
-            _frame_cache_store(frames_dir, frames, sampling_mode)
+            fps, target = auto_fps(effective_duration, max_frames=max_frames)
+        fps_override: float | None = None
+        sampling = args.sampling
+        if args.fps is not None:
+            fps_override = min(args.fps, MAX_FPS)
+            fps = fps_override
+            target = max(1, int(round(fps * effective_duration)))
+            sampling = "uniform"  # an explicit rate is a uniform-sampling request
+
+        scope = (
+            f"{format_time(effective_start)}-{format_time(effective_end)} ({effective_duration:.1f}s)"
+            if focused else f"full {effective_duration:.1f}s"
+        )
+
+        cache_key = _frame_cache_key(
+            video_path, sampling, fps_override, target, args.resolution, start_sec, end_sec,
+        ) if use_cache else ""
+        frames_dir = CACHE_ROOT / "frames" / cache_key if cache_key else work / "frames"
+
+        cached_frames = _frame_cache_load(frames_dir) if cache_key else None
+        if cached_frames is not None:
+            frames, sampling_mode = cached_frames
+            print(f"[watch] frame cache hit: {len(frames)} frames in {frames_dir}", file=sys.stderr)
+        else:
+            print(f"[watch] extracting ~{target} frames ({sampling} sampling) over {scope}…", file=sys.stderr)
+            frames_dir.mkdir(parents=True, exist_ok=True)
+            if sampling == "scene":
+                frames, sampling_mode = extract_smart(
+                    video_path,
+                    frames_dir,
+                    target=target,
+                    resolution=args.resolution,
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
+                    duration=full_duration,
+                )
+            else:
+                frames = extract(
+                    video_path,
+                    frames_dir,
+                    fps=fps,
+                    resolution=args.resolution,
+                    max_frames=max_frames,
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
+                )
+                sampling_mode = f"uniform @ {fps:.3f} fps"
+            if cache_key and frames:
+                _frame_cache_store(frames_dir, frames, sampling_mode)
+    else:
+        print("[watch] audio-only source — skipping frames, transcript-only report", file=sys.stderr)
 
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
@@ -228,7 +245,10 @@ def main() -> int:
             all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
             transcript_text = format_transcript(transcript_segments)
-            transcript_source = "captions"
+            sub_detail = ", ".join(
+                x for x in (dl.get("subtitle_kind"), dl.get("subtitle_lang")) if x
+            )
+            transcript_source = f"captions ({sub_detail})" if sub_detail else "captions"
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
             transcript_failure = f"Subtitle parse failed: {exc}"
@@ -247,6 +267,7 @@ def main() -> int:
                         api_key=api_key,
                         start_seconds=start_sec,
                         end_seconds=end_sec,
+                        vocab=args.vocab,
                     )
                     transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                     transcript_text = format_transcript(transcript_segments)
@@ -291,8 +312,11 @@ def main() -> int:
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     mode = "focused" if focused else "full"
-    print(f"- **Frames:** {len(frames)}, {sampling_mode}, {mode} mode (budget {target}, max {max_frames})")
-    print(f"- **Frame size:** {args.resolution}px wide")
+    if has_video:
+        print(f"- **Frames:** {len(frames)}, {sampling_mode}, {mode} mode (budget {target}, max {max_frames})")
+        print(f"- **Frame size:** {args.resolution}px wide")
+    else:
+        print("- **Frames:** none — audio-only source (transcript-only report)")
     if transcript_segments:
         in_range = " in range" if focused else ""
         print(
@@ -302,7 +326,7 @@ def main() -> int:
     else:
         print("- **Transcript:** none available")
 
-    if not focused and full_duration > 600:
+    if has_video and not focused and full_duration > 600:
         mins = int(full_duration // 60)
         print()
         print(
@@ -311,18 +335,19 @@ def main() -> int:
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a specific section."
         )
 
-    print()
-    print("## Frames")
-    print()
-    print(f"Frames live at: `{frames_dir}`")
-    print()
-    print(
-        "**Read each frame path below with the Read tool to view the image.** "
-        "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
-    )
-    print()
-    for frame in frames:
-        print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
+    if has_video:
+        print()
+        print("## Frames")
+        print()
+        print(f"Frames live at: `{frames_dir}`")
+        print()
+        print(
+            "**Read each frame path below with the Read tool to view the image.** "
+            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
+        )
+        print()
+        for frame in frames:
+            print(f"- `{frame['path']}` (t={format_time(frame['timestamp_seconds'])})")
 
     print()
     print("## Transcript")
