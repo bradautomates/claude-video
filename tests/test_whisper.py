@@ -155,3 +155,18 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class TestTranscribeVideo:
+    def test_backend_override_requires_matching_key(self, monkeypatch, tmp_path: Path):
+        monkeypatch.setenv("GROQ_API_KEY", "groq-only-test-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(whisper, "extract_audio", lambda _video, out: out)
+
+        def should_not_upload(*_args, **_kwargs):
+            raise AssertionError("wrong provider key should not be used for upload")
+
+        monkeypatch.setattr(whisper, "_transcribe_file", should_not_upload)
+
+        with pytest.raises(SystemExit, match="No Whisper API key available"):
+            whisper.transcribe_video("video.mp4", tmp_path / "audio.mp3", backend="openai")

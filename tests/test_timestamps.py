@@ -26,6 +26,12 @@ def test_parse_timestamps_rejects_garbage():
         frames.parse_timestamps("4:bad")
 
 
+def test_parse_timestamps_rejects_non_finite_values():
+    for value in ("nan", "inf", "-inf"):
+        with pytest.raises(SystemExit):
+            frames.parse_timestamps(value)
+
+
 def test_merge_frames_sorts_and_reindexes():
     primary = [
         {"index": 0, "timestamp_seconds": 1.0, "path": "a", "reason": "scene-change"},

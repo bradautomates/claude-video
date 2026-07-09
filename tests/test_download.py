@@ -53,6 +53,7 @@ def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+    assert "--ignore-config" in calls[0]
 
 
 def test_download_url_requests_english_only(monkeypatch, tmp_path):
@@ -62,3 +63,34 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+    assert "--ignore-config" in calls[0]
+
+
+def test_fetch_captions_clears_stale_artifacts(monkeypatch, tmp_path):
+    out_dir = tmp_path / "download"
+    out_dir.mkdir()
+    stale_sub = out_dir / "video.en.vtt"
+    stale_info = out_dir / "video.info.json"
+    stale_sub.write_text("WEBVTT\n\n00:00.000 --> 00:01.000\nold\n", encoding="utf-8")
+    stale_info.write_text('{"title":"old title"}', encoding="utf-8")
+
+    _capture_argv(monkeypatch)
+    result = download.fetch_captions(URL, out_dir)
+
+    assert result["subtitle_path"] is None
+    assert result["info"] == {"url": URL}
+    assert not stale_sub.exists()
+    assert not stale_info.exists()
+
+
+def test_download_url_clears_stale_video_before_success_check(monkeypatch, tmp_path):
+    out_dir = tmp_path / "download"
+    out_dir.mkdir()
+    stale_video = out_dir / "video.mp4"
+    stale_video.write_bytes(b"old")
+
+    _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, out_dir)
+
+    assert not stale_video.exists()
