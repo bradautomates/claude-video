@@ -14,7 +14,6 @@ import io
 import json
 import math
 import mimetypes
-import os
 import shutil
 import ssl
 import subprocess
@@ -24,6 +23,12 @@ import urllib.error
 import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from config import read_trusted_setting  # noqa: E402
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -35,6 +40,46 @@ OPENAI_MODEL = "whisper-1"
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
+
+# Local backend: whisper.cpp. Runs fully offline — no API key, and the audio
+# never leaves the machine. `whisper-cli` is Homebrew's binary name; older
+# builds ship it as `whisper-cpp`.
+LOCAL_BACKEND = "local"
+WHISPER_CPP_BINARIES = ("whisper-cli", "whisper-cpp")
+LOCAL_MODEL_DIR = Path.home() / ".config" / "watch" / "models"
+
+
+def find_whisper_cpp_binary() -> str | None:
+    """Return a whisper.cpp CLI to run, or None if none is available.
+
+    WHISPER_CPP_BIN overrides discovery (a name on PATH or an absolute path to
+    an executable). Otherwise prefer `whisper-cli`, then the `whisper-cpp` alias.
+    """
+    override = read_trusted_setting("WHISPER_CPP_BIN")
+    if override:
+        return shutil.which(override)
+    for name in WHISPER_CPP_BINARIES:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def find_whisper_cpp_model() -> str | None:
+    """Return a ggml model path for whisper.cpp, or None if none is found.
+
+    WHISPER_CPP_MODEL wins if it points at a real file. Otherwise pick the
+    first `*.bin` in ~/.config/watch/models (sorted for determinism).
+    """
+    override = read_trusted_setting("WHISPER_CPP_MODEL")
+    if override:
+        path = Path(override).expanduser()
+        return str(path) if path.is_file() else None
+    if LOCAL_MODEL_DIR.is_dir():
+        models = sorted(LOCAL_MODEL_DIR.glob("*.bin"))
+        if models:
+            return str(models[0])
+    return None
 
 
 def plan_chunks(
@@ -66,50 +111,55 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
     If `preferred` is "groq" or "openai", only that backend's key is considered.
+    Keys come from trusted config only (environment or ~/.config/watch/.env); a
+    project-local .env cannot supply one — see config.read_trusted_setting.
     """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
-
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
-        return None
-
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
-
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = read_trusted_setting(key_name)
         if value:
             return backend, value
 
     return None, None
+
+
+def resolve_backend(preferred: str | None = None) -> dict | None:
+    """Pick a transcription backend and gather what it needs to run.
+
+    Returns a descriptor {backend, api_key, binary, model} or None when the
+    requested/available backend cannot run.
+
+    preferred:
+      "groq" | "openai" — that cloud backend only (needs its API key).
+      "local"           — whisper.cpp only (needs a binary and a model).
+      None (auto)       — a cloud key if one is set (Groq before OpenAI),
+                          otherwise fall back to local whisper.cpp if available.
+    """
+    if preferred == LOCAL_BACKEND:
+        binary = find_whisper_cpp_binary()
+        model = find_whisper_cpp_model()
+        if binary and model:
+            return {"backend": LOCAL_BACKEND, "api_key": None, "binary": binary, "model": model}
+        return None
+
+    if preferred in ("groq", "openai"):
+        backend, key = load_api_key(preferred)
+        if backend and key:
+            return {"backend": backend, "api_key": key, "binary": None, "model": None}
+        return None
+
+    backend, key = load_api_key()
+    if backend and key:
+        return {"backend": backend, "api_key": key, "binary": None, "model": None}
+
+    binary = find_whisper_cpp_binary()
+    model = find_whisper_cpp_model()
+    if binary and model:
+        return {"backend": LOCAL_BACKEND, "api_key": None, "binary": binary, "model": model}
+    return None
 
 
 def extract_audio(video_path: str, out_path: Path) -> Path:
@@ -129,6 +179,36 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-ar", "16000",
         "-ac", "1",
         "-b:a", "64k",
+        str(out_path.resolve()),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise SystemExit("ffmpeg produced no audio — video may have no audio track")
+    return out_path
+
+
+def extract_audio_wav(video_path: str, out_path: Path) -> Path:
+    """Extract mono 16kHz s16 WAV — the format whisper.cpp reads natively.
+
+    No upload here, so there is no size cap to respect: whisper.cpp streams the
+    whole file locally.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-i", str(Path(video_path).resolve()),
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-ac", "1",
         str(out_path.resolve()),
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -368,6 +448,105 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+def _segments_from_whisper_cpp(data: dict) -> list[dict]:
+    """Convert whisper.cpp --output-json into our {start, end, text} segments.
+
+    whisper.cpp reports each line under `transcription` with millisecond
+    `offsets` (from/to). We divide to seconds to match the caption/API shape.
+    """
+    out: list[dict] = []
+    for item in data.get("transcription") or []:
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        offsets = item.get("offsets") or {}
+        start_ms = float(offsets.get("from") or 0.0)
+        end_ms = float(offsets.get("to") or 0.0)
+        out.append({
+            "start": round(start_ms / 1000.0, 2),
+            "end": round(end_ms / 1000.0, 2),
+            "text": text,
+        })
+    return out
+
+
+def transcribe_local(
+    audio_path: Path,
+    binary: str,
+    model: str,
+    work_dir: Path | None = None,
+) -> list[dict]:
+    """Transcribe one WAV with whisper.cpp and return {start,end,text} segments.
+
+    Fully offline: shells out to the whisper.cpp CLI with JSON output, then
+    parses the sidecar JSON it writes. No network, no API key.
+    """
+    work_dir = work_dir or audio_path.parent
+    work_dir.mkdir(parents=True, exist_ok=True)
+    out_prefix = (work_dir / f"{audio_path.stem}.whisper").resolve()
+    json_path = Path(f"{out_prefix}.json")
+
+    cmd = [
+        binary,
+        "-m", str(Path(model).resolve()),
+        "-f", str(audio_path.resolve()),
+        "-oj",
+        "-of", str(out_prefix),
+        "-np",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"whisper.cpp failed: {result.stderr.strip()[:400]}")
+    if not json_path.exists():
+        raise SystemExit(f"whisper.cpp wrote no JSON output at {json_path}")
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"whisper.cpp JSON was unreadable: {exc}")
+    return _segments_from_whisper_cpp(data)
+
+
+def transcribe_local_video(
+    video_path: str,
+    audio_out: Path,
+    binary: str | None = None,
+    model: str | None = None,
+) -> tuple[list[dict], str]:
+    """Full offline flow: extract WAV → whisper.cpp → segments.
+
+    Returns (segments, "local"). Raises SystemExit on any failure.
+    """
+    binary = binary or find_whisper_cpp_binary()
+    if not binary:
+        raise SystemExit(
+            "whisper.cpp not found. Install it (macOS: `brew install whisper-cpp`) "
+            "or set WHISPER_CPP_BIN to its path."
+        )
+    model = model or find_whisper_cpp_model()
+    if not model:
+        raise SystemExit(
+            "No whisper.cpp model found. Put a ggml model in "
+            f"{LOCAL_MODEL_DIR} or set WHISPER_CPP_MODEL. For example:\n"
+            f"  mkdir -p {LOCAL_MODEL_DIR} && curl -L -o {LOCAL_MODEL_DIR}/ggml-base.en.bin \\\n"
+            "    https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+        )
+
+    wav_out = audio_out.with_suffix(".wav")
+    print("[watch] extracting audio for whisper.cpp (local)…", file=sys.stderr)
+    audio_path = extract_audio_wav(video_path, wav_out)
+
+    print(
+        f"[watch] transcribing locally with whisper.cpp ({Path(model).name})…",
+        file=sys.stderr,
+    )
+    segments = transcribe_local(audio_path, binary, model)
+    if not segments:
+        raise SystemExit("whisper.cpp returned no transcript segments")
+
+    print(f"[watch] transcribed {len(segments)} segments via local whisper.cpp", file=sys.stderr)
+    return segments, LOCAL_BACKEND
+
+
 def transcribe_chunks(
     chunks: list[tuple[Path, float]],
     transcribe_one,
@@ -416,11 +595,17 @@ def transcribe_video(
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    binary: str | None = None,
+    model: str | None = None,
 ) -> tuple[list[dict], str]:
-    """Run the full flow: extract audio → upload → parse segments.
+    """Run the full flow: extract audio → transcribe → parse segments.
 
+    Cloud backends upload audio; the local backend runs whisper.cpp offline.
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
+    if backend == LOCAL_BACKEND:
+        return transcribe_local_video(video_path, audio_out, binary=binary, model=model)
+
     if backend is None or api_key is None:
         detected_backend, detected_key = load_api_key()
         backend = backend or detected_backend
@@ -465,9 +650,52 @@ def transcribe_video(
     return segments, backend
 
 
+def transcribe_with_failover(
+    video_path: str,
+    audio_out: Path,
+    choice: dict,
+) -> tuple[list[dict], str]:
+    """Transcribe with `choice`; if a cloud backend fails, retry locally.
+
+    Local whisper.cpp is the safety net: when a cloud transcription attempt
+    raises (bad key, rate limit, network), fall back to an installed local
+    backend so the run still returns a transcript. Re-raises the original error
+    when the failed backend was already local or no local backup is installed.
+    """
+    try:
+        return transcribe_video(
+            video_path,
+            audio_out,
+            backend=choice["backend"],
+            api_key=choice.get("api_key"),
+            binary=choice.get("binary"),
+            model=choice.get("model"),
+        )
+    except SystemExit as cloud_error:
+        if choice["backend"] == LOCAL_BACKEND:
+            raise
+        binary = find_whisper_cpp_binary()
+        model = find_whisper_cpp_model()
+        if not (binary and model):
+            raise
+        print(
+            f"[watch] {choice['backend']} whisper failed ({cloud_error}); "
+            "falling back to local whisper.cpp…",
+            file=sys.stderr,
+        )
+        return transcribe_video(
+            video_path,
+            audio_out,
+            backend=LOCAL_BACKEND,
+            api_key=None,
+            binary=binary,
+            model=model,
+        )
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai|local]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]
@@ -476,5 +704,15 @@ if __name__ == "__main__":
     if "--backend" in sys.argv:
         backend_override = sys.argv[sys.argv.index("--backend") + 1]
 
-    segments, backend = transcribe_video(video, audio_out, backend=backend_override)
+    choice = resolve_backend(backend_override)
+    if not choice:
+        raise SystemExit("no transcription backend available (no API key, no whisper.cpp)")
+    segments, backend = transcribe_video(
+        video,
+        audio_out,
+        backend=choice["backend"],
+        api_key=choice.get("api_key"),
+        binary=choice.get("binary"),
+        model=choice.get("model"),
+    )
     print(json.dumps({"backend": backend, "segments": segments}, indent=2))

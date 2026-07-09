@@ -45,6 +45,21 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     return values
 
 
+def read_trusted_setting(name: str) -> str | None:
+    """Return a watch setting from trusted sources only, or None.
+
+    Precedence: a real environment variable, then ~/.config/watch/.env.
+    Project-local .env files are deliberately NOT consulted. WHISPER_CPP_BIN is
+    executable code and an API key silently redirects audio off-machine, so
+    letting an arbitrary repository set either would be a code-execution or
+    data-exfiltration surface.
+    """
+    env_value = os.environ.get(name)
+    if env_value and env_value.strip():
+        return env_value.strip()
+    return read_env_file(CONFIG_FILE).get(name) or None
+
+
 def get_config() -> dict[str, object]:
     file_values = read_env_file()
 
