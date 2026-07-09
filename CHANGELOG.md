@@ -2,6 +2,14 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Offline transcription via local whisper.cpp (`--whisper local`).** A third transcription backend alongside Groq and OpenAI that runs whisper.cpp locally — **no API key and no audio upload; the audio never leaves the machine**. Fills the gap where a video with no native captions and no cloud key previously came back frames-only. Pure stdlib: shells out to `whisper-cli`/`whisper-cpp` with JSON output and parses the millisecond offsets into the same `{start, end, text}` shape as captions and the cloud APIs.
+  - Auto-selection now prefers a cloud key (Groq, then OpenAI) and **falls back to local whisper.cpp** when no key is set. Force any backend with `--whisper groq|openai|local`.
+  - Binary discovery: `WHISPER_CPP_BIN`, else `whisper-cli`, else `whisper-cpp`. Model discovery: `WHISPER_CPP_MODEL`, else the first `*.bin` in `~/.config/watch/models/`.
+  - `setup.py` now recognizes a local whisper.cpp install as a complete transcription setup (no key nag) and reports it via a new `local_whisper` field in `--json`.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
