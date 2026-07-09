@@ -6,6 +6,27 @@ from pathlib import Path
 import frames
 
 
+def test_resolve_fps_override_allows_high_fps_for_subsecond_clip():
+    assert frames.resolve_fps_override(25, 0.72) == 25.0
+
+
+def test_resolve_fps_override_clamps_long_clip():
+    assert frames.resolve_fps_override(25, 120) == frames.MAX_FPS
+
+
+def test_resolve_fps_override_preserves_below_cap_short_clip():
+    assert frames.resolve_fps_override(1.0, 0.72) == 1.0
+
+
+def test_resolve_fps_override_short_clip_boundary():
+    assert frames.resolve_fps_override(25, 5.0) == 25.0
+    assert frames.resolve_fps_override(25, 5.01) == frames.MAX_FPS
+
+
+def test_resolve_fps_override_clamps_zero_duration():
+    assert frames.resolve_fps_override(25, 0.0) == frames.MAX_FPS
+
+
 def test_keyframe_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):
     out, meta = frames.extract_keyframes(str(cut_clip), tmp_path / "f", max_frames=50)
     assert meta["engine"] == "keyframe"

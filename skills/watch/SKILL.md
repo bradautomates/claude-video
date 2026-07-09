@@ -114,7 +114,7 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 ## Recommended limits
 
 - **Best accuracy: videos under 10 minutes.** Frame coverage scales inversely with duration.
-- **Universal rate cap: 2 fps.** The script never samples faster than 2 fps, even when a budget or `--fps` would imply more.
+- **Default rate cap: 2 fps.** Auto-fps never samples faster than 2 fps. An explicit `--fps` can exceed 2 fps only when the effective clip/range is 5 seconds or shorter; the frame cap still limits output.
 - **The frame ceiling is set by the detail mode** (`WATCH_DETAIL` in `~/.config/watch/.env`, or `--detail`), not a single global cap:
   - `transcript` → no frames
   - `efficient` → up to **50** (keyframes)
@@ -145,7 +145,7 @@ Optional flags:
 - `--timestamps T1,T2,…` — grab a frame at each of these absolute timestamps (`SS`, `MM:SS`, or `HH:MM:SS`). Use this after reading the transcript to capture deictic moments the presenter flags ("look here", "as you can see", "notice this") that visual selection alone may miss. See "Transcript-cue frames" below.
 - `--max-frames N` — override the preset cap for tighter token budget (e.g. `--max-frames 40`)
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
-- `--fps F` — override auto-fps (clamped to 2 fps max)
+- `--fps F` — override auto-fps (clamped to 2 fps unless the effective clip/range is 5 seconds or shorter; frame caps still apply)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
@@ -153,7 +153,7 @@ Optional flags:
 
 ### Focusing on a section (higher frame rate)
 
-When the user asks about a specific moment — "what happens at the 2 minute mark?", "zoom into 0:45 to 1:00", "the first 10 seconds" — pass `--start` and/or `--end`. The script switches to focused-mode budgets, which are denser than full-video budgets (still capped at 2 fps, and still bounded by the detail-mode cap — the counts below assume the default `balanced` cap of 100; `efficient` tops out at 50):
+When the user asks about a specific moment — "what happens at the 2 minute mark?", "zoom into 0:45 to 1:00", "the first 10 seconds" — pass `--start` and/or `--end`. The script switches to focused-mode budgets, which are denser than full-video budgets (auto-fps is still capped at 2 fps, and frames are still bounded by the detail-mode cap — the counts below assume the default `balanced` cap of 100; `efficient` tops out at 50):
 
 - ≤5s → 2 fps (up to 10 frames)
 - 5-15s → 2 fps (up to 30 frames)

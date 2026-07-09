@@ -17,6 +17,7 @@ from pathlib import Path
 
 
 MAX_FPS = 2.0
+SHORT_CLIP_SECONDS = 5.0
 SCENE_THRESHOLD = 0.20
 # Keep scene-detection results once we have at least this many distinct shots.
 # Below this the video is effectively static (screen recording, talking head),
@@ -50,6 +51,12 @@ def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[fl
     fps = min(fps, MAX_FPS)
     target = min(max_frames, max(1, int(round(fps * duration_seconds))))
     return fps, target
+
+
+def resolve_fps_override(requested_fps: float, duration_seconds: float) -> float:
+    if 0 < duration_seconds <= SHORT_CLIP_SECONDS:
+        return float(requested_fps)
+    return min(float(requested_fps), MAX_FPS)
 
 
 def parse_time(value: str | float | int | None) -> float | None:
