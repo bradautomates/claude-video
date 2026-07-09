@@ -157,11 +157,11 @@ A single pass is capped at 100 frames in one context — fine for Q&A, lossy for
 The script gets a timestamped transcript in one of two ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls English subtitles from the source platform if available. When no English track exists, the script checks what the source actually has and fetches the best alternative — manual captions in any language beat auto-generated ones, and the original language beats translations. The report labels what it got, e.g. `captions (manual, es)` or `captions (auto, en)`. **Treat auto-generated captions as lower quality** — no punctuation, frequent mishearings; if the user wants deep/accurate analysis and a Whisper key exists, consider re-running with Whisper.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts mono 16 kHz audio in the backend's upload format (Opus ~0.18 MB/min for Groq, MP3 ~0.5 MB/min for OpenAI) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
-   Long audio is split into overlapping chunks (8s overlap, stitched at the overlap midpoint) so sentences straddling a boundary aren't mangled, and each chunk receives the tail of the previous chunk's text as prompt context so recognition stays consistent across seams. Pass `--vocab` to bias spelling of proper nouns (see flags above).
+   Most content uploads as **one seamless request** — the chunk budget is derived from the encoded bitrate against the 25 MB API cap (≈1 hour for Groq/Opus, ≈40 min for OpenAI/MP3). Only longer audio is pre-split into overlapping windows (8s overlap, stitched at the midpoint, each primed with the previous window's text tail). If an upload fails after retries, the span is bisected and each half retried independently, so a bad region is isolated instead of losing the whole transcript. Pass `--vocab` to bias spelling of proper nouns (see flags above).
 
 Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
 
@@ -171,7 +171,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
-- **Whisper request fails** → the error is printed to stderr (likely: invalid key, rate limit, or 25 MB upload limit on a very long video). The report will say "none available" for transcript. You can retry with `--whisper openai` if Groq failed (or vice versa).
+- **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit; uploads are auto-sized under the 25 MB cap and bisected on failure, so size errors and total losses are rare). The report will say "none available" for transcript, or list the failed regions if part of it survived. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
 
