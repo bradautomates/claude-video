@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from frames import auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, resolve_fps_override  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
@@ -157,7 +157,7 @@ def main() -> int:
     else:
         fps, target = auto_fps(effective_duration, max_frames=budget_cap)
     if args.fps is not None:
-        fps = min(args.fps, MAX_FPS)
+        fps = resolve_fps_override(args.fps, effective_duration)
         target = max(1, int(round(fps * effective_duration)))
 
     if transcript_segments and focused:
