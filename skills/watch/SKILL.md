@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.2.0"
+version: "0.3.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
@@ -110,6 +110,23 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 - User pastes a video URL (YouTube, Vimeo, X, TikTok, Twitch clip, most yt-dlp-supported sites) and asks about it.
 - User points at a local video file (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) and asks about it.
 - User types `/watch <url-or-path> [question]`.
+- User pastes a Fathom (fathom.video) meeting URL — see **Fathom recordings** below; `/calls/` URLs need one resolver step first.
+
+## Fathom recordings (fathom.video)
+
+yt-dlp natively supports Fathom **share** URLs (`fathom.video/share/<token>`) — those work in Step 2 directly, no auth. Private `/calls/<id>` URLs (the shape Fathom's app, API, and MCP hand out) redirect to sign-in, so resolve them first:
+
+```bash
+python3 "${SKILL_DIR}/scripts/fathom.py" "https://fathom.video/calls/<id>" [--browser chrome]
+```
+
+Requires the user to be signed in to fathom.video in that browser (default `chrome`; any yt-dlp `--cookies-from-browser` value works). On macOS the first run may show a keychain prompt — that's Chrome cookie decryption, expected. The script prints a JSON resolution:
+
+- `"method": "share"` (the common case) → run Step 2 on `resolved_url` as a normal public URL.
+- `"method": "hls+cookies"` (call has sharing disabled) → run Step 2 on `resolved_url` and add `--cookies <cookies_file>` from the JSON.
+- Exit non-zero → the error says what to do (usually: sign in to fathom.video in the browser, or ask the user for a share link).
+
+Fathom recordings have no captions on the share page, so the transcript comes from Whisper (or ask the user to accept frames-only with `--no-whisper`). Meeting recordings are long — prefer `--detail efficient` or a focused `--start`/`--end` range, and ask the user which section matters before scanning a full hour. The `cookies_file` is a filtered fathom.video-only session jar — treat it like a credential and delete its directory in Step 5 cleanup.
 
 ## Recommended limits
 
@@ -150,6 +167,7 @@ Optional flags:
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
+- `--cookies FILE` — Netscape cookie jar passed through to yt-dlp for login-required sources (e.g. the jar `scripts/fathom.py` writes for private Fathom calls with sharing disabled).
 
 ### Focusing on a section (higher frame rate)
 
@@ -234,7 +252,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying. Exception: a `fathom.video/calls/` URL is fixable — run the Fathom resolver (see **Fathom recordings**) instead of giving up.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
@@ -258,11 +276,11 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
+- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data. **One scoped exception:** the opt-in Fathom resolver (`scripts/fathom.py`) reads the user's browser cookies via yt-dlp's `--cookies-from-browser` solely to resolve private `fathom.video/calls/` URLs. It keeps only fathom.video cookies (filtered jar, mode `0600`, full-browser export deleted immediately), sends them only to fathom.video, and never prints cookie values. `--cookies` on `watch.py` likewise sends a user-supplied jar only to the host being downloaded from.
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer), `scripts/fathom.py` (Fathom `/calls/` URL resolver)
 
 Review scripts before first use to verify behavior.

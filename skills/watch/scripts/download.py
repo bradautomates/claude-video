@@ -62,7 +62,12 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def fetch_captions(url: str, out_dir: Path) -> dict:
+def _cookie_args(cookies: Path | None) -> list[str]:
+    """yt-dlp args for an optional Netscape cookie jar (login-required sources)."""
+    return ["--cookies", str(cookies)] if cookies else []
+
+
+def fetch_captions(url: str, out_dir: Path, cookies: Path | None = None) -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -71,6 +76,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
         "yt-dlp",
+        *_cookie_args(cookies),
         "--skip-download",
         "--write-info-json",
         "--write-subs",
@@ -116,6 +122,7 @@ def download_url(
     url: str,
     out_dir: Path,
     audio_only: bool = False,
+    cookies: Path | None = None,
 ) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -126,6 +133,7 @@ def download_url(
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
         "yt-dlp",
+        *_cookie_args(cookies),
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
@@ -166,9 +174,10 @@ def download(
     source: str,
     out_dir: Path,
     audio_only: bool = False,
+    cookies: Path | None = None,
 ) -> dict:
     if is_url(source):
-        return download_url(source, out_dir, audio_only=audio_only)
+        return download_url(source, out_dir, audio_only=audio_only, cookies=cookies)
     return resolve_local(source)
 
 
