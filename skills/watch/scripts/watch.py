@@ -66,7 +66,21 @@ def main() -> int:
         help="Disable near-duplicate frame removal. Keeps visually identical "
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
+    ap.add_argument(
+        "--cookies",
+        type=str,
+        default=None,
+        help="Netscape cookie jar passed through to yt-dlp for login-required "
+             "sources (e.g. the jar written by scripts/fathom.py for private "
+             "Fathom calls).",
+    )
     args = ap.parse_args()
+
+    cookies_path: Path | None = None
+    if args.cookies:
+        cookies_path = Path(args.cookies).expanduser().resolve()
+        if not cookies_path.is_file():
+            raise SystemExit(f"--cookies file not found: {cookies_path}")
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -96,7 +110,7 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(args.source, work / "download", cookies=cookies_path)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -122,6 +136,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                cookies=cookies_path,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)

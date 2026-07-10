@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.3.0] — 2026-07-09
+
+### Added
+- **Fathom (fathom.video) support for private meetings.** yt-dlp already handles public `fathom.video/share/<token>` links; the new `scripts/fathom.py` resolver makes the private `/calls/<id>` URLs (the shape Fathom's app, API, and MCP hand out) watchable too. It reads the user's browser cookies via yt-dlp's `--cookies-from-browser` (default `chrome`, `--browser` to change), fetches the call page, and resolves to the call's existing share URL — either from the server's own redirect (calls the user can view) or from the page's Inertia props (`universalShareable.shareUrl`, calls the user recorded). Downstream download then needs no cookies at all. When sharing is disabled on a call, it falls back to the authenticated HLS `video_url` plus a fathom.video-only cookie jar. Cookie hygiene: the full-browser export is filtered to fathom.video cookies and deleted immediately; jars are `0600`; values are never printed.
+- **`--cookies FILE` on `watch.py`** — pass a Netscape cookie jar through to every yt-dlp call, for login-required sources (used by the Fathom HLS fallback; generic beyond Fathom).
+- `tests/test_fathom.py` — URL classification, Inertia `data-page` parsing, recursive key search, cookie filtering (session-cookie expiry-0 and `#HttpOnly_` survival, cross-domain exclusion, full-jar deletion), and resolve-path behaviors. No network.
+
+### Fixed
+- Two stdlib cookie-jar gotchas that silently break authenticated fetches: Python's `MozillaCookieJar` drops yt-dlp's `#HttpOnly_`-prefixed lines as comments, and treats yt-dlp's expiry-`0` session cookies as "expired in 1970" — clearing them at request time. The resolver strips the prefix before loading and patches expiry-0 cookies to session cookies in memory.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
