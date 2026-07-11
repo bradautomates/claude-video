@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Windows console output is forced to UTF-8 at each script entry point so non-ASCII video titles, captions, and status text cannot crash a completed run.
+
+### Changed
+- Native-caption selection now defaults to Chinese then English (`zh.*,en.*`) and accepts `--sub-langs` for a bounded language priority.
+- Transcript and on-screen text are explicitly treated as untrusted data in the skill contract; they cannot direct tool use or external actions.
+- Frame deduplication now uses a 64×64 thumbnail and a tighter `0.5` threshold so small UI and text changes are not dropped as duplicates.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

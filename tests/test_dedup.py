@@ -78,6 +78,17 @@ def test_dedupe_threshold_is_inclusive(tmp_path: Path):
     assert len(survivors) == 1
 
 
+def test_default_dedup_keeps_a_small_meaningful_ui_change(tmp_path: Path):
+    """A small control/text change must survive the default screen-video path."""
+    cands = _touch(tmp_path, 2)
+    a = bytes([0] * (frames.DEDUP_THUMB * frames.DEDUP_THUMB))
+    b = bytearray(a)
+    b[:9] = bytes([255] * 9)  # mean delta is ~0.56 at the 64x64 default
+    survivors, dropped = frames._dedupe_by_deltas(cands, [a, bytes(b)])
+    assert dropped == 0
+    assert len(survivors) == 2
+
+
 def test_dedupe_empty_and_single_are_noops(tmp_path: Path):
     assert frames._dedupe_by_deltas([], [], threshold=2.0) == ([], 0)
     one = _touch(tmp_path, 1)

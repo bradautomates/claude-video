@@ -17,6 +17,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: |
+          python -m pip install --upgrade pip pytest
+          python -m pytest -q
+
       - name: Build .skill artifact
         run: |
           bash skills/watch/scripts/build-skill.sh

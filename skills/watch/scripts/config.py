@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -12,6 +13,26 @@ CONFIG_FILE = CONFIG_DIR / ".env"
 DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
+
+
+def configure_utf8_streams(
+    streams: tuple[object, ...] | None = None,
+    platform_name: str | None = None,
+) -> None:
+    """Keep Windows legacy consoles from crashing on video text output.
+
+    Video titles, captions, and this skill's own status text can contain
+    characters that cp1252 cannot encode. Reconfigure only on Windows and
+    fail open for wrapped or non-reconfigurable streams.
+    """
+    if (platform_name or os.name) != "nt":
+        return
+    for stream in streams or (sys.stdout, sys.stderr):
+        try:
+            reconfigure = getattr(stream, "reconfigure")
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (AttributeError, OSError, ValueError):
+            pass
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:

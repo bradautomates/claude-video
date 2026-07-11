@@ -15,14 +15,15 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import frame_cap, get_config  # noqa: E402
-from download import download, fetch_captions, is_url  # noqa: E402
+from config import configure_utf8_streams, frame_cap, get_config  # noqa: E402
+from download import download, fetch_captions, is_url, normalize_sub_langs  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
 def main() -> int:
+    configure_utf8_streams()
     ap = argparse.ArgumentParser(
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
@@ -50,6 +51,12 @@ def main() -> int:
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     ap.add_argument(
+        "--sub-langs",
+        type=str,
+        default=None,
+        help="Caption language priority for yt-dlp (default: zh.*,en.*).",
+    )
+    ap.add_argument(
         "--no-whisper",
         action="store_true",
         help="Disable Whisper fallback. Report frames-only if no captions available.",
@@ -67,6 +74,7 @@ def main() -> int:
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
     args = ap.parse_args()
+    sub_langs = normalize_sub_langs(args.sub_langs)
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -96,7 +104,7 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(args.source, work / "download", sub_langs=sub_langs)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -122,6 +130,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                sub_langs=sub_langs,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)

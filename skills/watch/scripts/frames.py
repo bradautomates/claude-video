@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from config import configure_utf8_streams
 
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
@@ -30,12 +31,11 @@ KEYFRAME_MIN = 4
 MAX_READ_DIMENSION = 1998
 # Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB
 # grayscale thumbnail and treat two frames as near-identical when their mean
-# per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
-# purpose: only collapses frames that are visually the same shot, so a code diff
-# / scrolling terminal / slide-gaining-a-bullet survives. Unlike a within-frame
-# perceptual hash, this distinguishes flat frames (solid slides, fades) by luma.
-DEDUP_THUMB = 16
-DEDUP_THRESHOLD = 2.0
+# per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. The larger
+# thumbnail and tighter threshold preserve small screen-recording changes such
+# as buttons, a line of code, or a newly added slide bullet.
+DEDUP_THUMB = 64
+DEDUP_THRESHOLD = 0.5
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
@@ -683,6 +683,7 @@ def extract_keyframes(
 
 
 if __name__ == "__main__":
+    configure_utf8_streams()
     if len(sys.argv) < 3:
         print(
             "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "

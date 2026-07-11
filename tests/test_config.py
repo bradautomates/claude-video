@@ -35,3 +35,31 @@ def test_frame_cap_mapping():
     assert config.frame_cap("token-burner") is None
     assert config.frame_cap("transcript") is None
     assert config.frame_cap("anything-else") == 100
+
+
+def test_windows_streams_are_reconfigured_to_utf8():
+    class Stream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stdout = Stream()
+    stderr = Stream()
+    config.configure_utf8_streams((stdout, stderr), platform_name="nt")
+    assert stdout.calls == [{"encoding": "utf-8", "errors": "backslashreplace"}]
+    assert stderr.calls == [{"encoding": "utf-8", "errors": "backslashreplace"}]
+
+
+def test_non_windows_streams_are_left_untouched():
+    class Stream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stream = Stream()
+    config.configure_utf8_streams((stream,), platform_name="posix")
+    assert stream.calls == []
