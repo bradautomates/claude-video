@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -12,6 +13,26 @@ CONFIG_FILE = CONFIG_DIR / ".env"
 DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
+
+
+def ensure_utf8_console() -> None:
+    """Reconfigure stdout/stderr to UTF-8 so emoji or other non-ASCII content
+    (video titles, transcripts) can't crash the process on Windows, where the
+    console defaults to a legacy codepage like cp1252 that can't encode most
+    Unicode. Undecodable characters are backslash-escaped instead of raising.
+
+    Call this once, as early as possible, in every script that can print
+    untrusted text (video titles pulled from yt-dlp, transcript content).
+    A previous fix (0.1.2) patched individual hardcoded strings, but that
+    doesn't cover titles/transcripts pulled at runtime — see issue #51.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                pass  # stream doesn't support reconfiguration (e.g. redirected/piped in some environments) — leave it alone
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:

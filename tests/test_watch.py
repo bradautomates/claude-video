@@ -16,7 +16,7 @@ def _run(clip: Path, *args: str, env_extra: dict | None = None) -> str:
         env.update(env_extra)
     proc = subprocess.run(
         [sys.executable, str(WATCH), str(clip), "--no-whisper", *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", env=env,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout

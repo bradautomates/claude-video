@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from config import ensure_utf8_console
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
@@ -173,6 +175,7 @@ def download(
 
 
 if __name__ == "__main__":
+    ensure_utf8_console()  # video titles/metadata can contain emoji — see issue #51
     if len(sys.argv) < 3:
         print("usage: download.py <url-or-path> <out-dir>", file=sys.stderr)
         raise SystemExit(2)
