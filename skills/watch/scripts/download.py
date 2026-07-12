@@ -10,11 +10,18 @@ import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# YouTube intermittently serves HTTP 403 on the media URL for a request that
+# succeeded moments earlier (measured ~1 in 6 on an otherwise healthy host, on
+# the current yt-dlp, with and without a JS runtime). It is transient, so a
+# plain retry clears it. Backoff is per failed attempt, in seconds.
+DOWNLOAD_BACKOFF_SECONDS = (3, 8)
 
 
 def is_url(source: str) -> bool:
@@ -144,8 +151,25 @@ def download_url(
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    video = _pick_video(out_dir)
+    #
+    # Only a non-zero exit that produced no video is retried: a clean exit with
+    # no video file is a real failure (unsupported URL, no matching format) and
+    # retrying it just stalls.
+    attempts = len(DOWNLOAD_BACKOFF_SECONDS) + 1
+    for attempt in range(1, attempts + 1):
+        result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+        video = _pick_video(out_dir)
+        if video is not None or result.returncode == 0 or attempt == attempts:
+            break
+        delay = DOWNLOAD_BACKOFF_SECONDS[attempt - 1]
+        print(
+            f"[watch] yt-dlp produced no video (exit {result.returncode}); this is usually "
+            f"a transient 403 from YouTube. Retrying in {delay}s "
+            f"(attempt {attempt + 1}/{attempts})…",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+
     if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
