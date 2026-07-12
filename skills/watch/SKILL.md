@@ -234,7 +234,9 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. Distinguish two cases:
+  - *Terminal* — login-required, region-locked, age-restricted, private, or members-only. Tell the user plainly and stop; retrying cannot help. (Cookies would, but exporting them risks the account being banned — yt-dlp's own guidance is to use a throwaway account, never your main one.)
+  - *Transient* — `HTTP Error 403: Forbidden` on the media URL, surfacing as `yt-dlp did not produce a video file`. YouTube serves this intermittently to requests that would otherwise succeed. `download.py` already retries twice with backoff; if it still fails, simply running `/watch` again usually works. A tell-tale sign: `--detail transcript` succeeds (captions are a separate call) while every frame mode fails.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
