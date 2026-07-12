@@ -24,7 +24,7 @@ def _run(args, *, home=None, extra_env=None):
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", env=env,
     )
 
 
