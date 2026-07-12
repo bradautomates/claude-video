@@ -62,3 +62,63 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+
+
+def _stub_runs(monkeypatch, tmp_path, returncodes, write_video_on_attempt=None):
+    """Stub subprocess.run with a scripted sequence of yt-dlp exit codes.
+
+    Optionally materialise a video file on a given (1-based) attempt so
+    _pick_video starts succeeding from that point on, as a real retry would.
+    """
+    out_dir = tmp_path / "download"
+    attempts: list[int] = []
+    slept: list[float] = []
+
+    class _Result:
+        def __init__(self, rc):
+            self.returncode = rc
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(cmd, *args, **kwargs):
+        n = len(attempts) + 1
+        attempts.append(n)
+        if write_video_on_attempt is not None and n >= write_video_on_attempt:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "video.mp4").write_bytes(b"\x00")
+        rc = returncodes[min(n - 1, len(returncodes) - 1)]
+        return _Result(rc)
+
+    monkeypatch.setattr(download.subprocess, "run", fake_run)
+    monkeypatch.setattr(download.time, "sleep", lambda s: slept.append(s))
+    return out_dir, attempts, slept
+
+
+def test_download_url_retries_transient_403(monkeypatch, tmp_path):
+    """A non-zero exit with no video file is retried, and a later success is used."""
+    out_dir, attempts, slept = _stub_runs(
+        monkeypatch, tmp_path, returncodes=[1, 0], write_video_on_attempt=2
+    )
+    result = download.download_url(URL, out_dir)
+    assert len(attempts) == 2, "should have retried once after the failed attempt"
+    assert slept == [download.DOWNLOAD_BACKOFF_SECONDS[0]], "should back off before retrying"
+    assert result["video_path"].endswith("video.mp4")
+
+
+def test_download_url_gives_up_after_all_attempts(monkeypatch, tmp_path):
+    """Persistent failure still raises, and does not retry forever."""
+    out_dir, attempts, slept = _stub_runs(monkeypatch, tmp_path, returncodes=[1])
+    with pytest.raises(SystemExit):
+        download.download_url(URL, out_dir)
+    expected = len(download.DOWNLOAD_BACKOFF_SECONDS) + 1
+    assert len(attempts) == expected, f"should try exactly {expected} times"
+    assert slept == list(download.DOWNLOAD_BACKOFF_SECONDS)
+
+
+def test_download_url_does_not_retry_clean_exit(monkeypatch, tmp_path):
+    """A clean exit with no video is a real error (bad URL/format) — retrying stalls."""
+    out_dir, attempts, slept = _stub_runs(monkeypatch, tmp_path, returncodes=[0])
+    with pytest.raises(SystemExit):
+        download.download_url(URL, out_dir)
+    assert len(attempts) == 1, "a clean exit must not be retried"
+    assert slept == []
