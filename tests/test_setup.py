@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import setup as watch_setup  # importable via conftest.py's sys.path.insert
+
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
 
 
@@ -78,3 +80,36 @@ def test_key_present_is_ready(tmp_path):
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
     assert js["whisper_backend"] == "groq"
+
+
+def test_missing_youtube_deps_is_reported_but_never_blocks(tmp_path):
+    """missing_youtube_deps is informational only — it must never change
+    status/can_proceed, regardless of whether this machine happens to have
+    deno installed (issue #67)."""
+    _write_env(tmp_path, "GROQ_API_KEY=sk-test-abc\n")
+    js = json.loads(_run(["--json"], home=tmp_path).stdout)
+
+    assert isinstance(js["missing_youtube_deps"], list)
+    assert set(js["missing_youtube_deps"]) <= set(watch_setup.YOUTUBE_OPTIONAL_BINARIES)
+    # Same assertions as test_key_present_is_ready — must hold no matter what
+    # missing_youtube_deps says, since youtube deps are unrelated to readiness.
+    assert js["status"] == "ready"
+    assert js["can_proceed"] is True
+
+
+def test_check_youtube_deps_detects_missing_deno(monkeypatch):
+    monkeypatch.setattr(watch_setup, "_which", lambda name: None)
+    assert watch_setup._check_youtube_deps() == ["deno"]
+
+
+def test_check_youtube_deps_empty_when_present(monkeypatch):
+    monkeypatch.setattr(watch_setup, "_which", lambda name: f"/usr/bin/{name}")
+    assert watch_setup._check_youtube_deps() == []
+
+
+def test_youtube_dep_hint_mentions_curl_cffi_on_every_platform():
+    """curl_cffi can't be detected (see YOUTUBE_OPTIONAL_BINARIES), so the
+    hint text is the only place it's ever surfaced to the user — it must
+    always be there."""
+    for system in ("Darwin", "Windows", "Linux", "SomeOtherOS"):
+        assert "curl_cffi" in watch_setup._youtube_dep_hint(system)

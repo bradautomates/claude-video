@@ -33,6 +33,18 @@ from config import get_config  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+
+# Recent yt-dlp needs an external JS runtime to solve YouTube's EJS challenge,
+# plus curl_cffi for request impersonation. Without them, YouTube downloads
+# fail with HTTP 403 while everything else (captions, non-YouTube sites,
+# local files) works fine — see issue #67. This is deliberately kept out of
+# REQUIRED_BINARIES: it would wrongly fail preflight for the many users who
+# never touch YouTube. deno is reliably detectable via PATH; curl_cffi is a
+# Python package that yt-dlp itself imports, and yt-dlp's install method
+# (pip, pipx, standalone binary, brew formula with vendored deps, ...) varies
+# enough that we can't reliably tell whether *yt-dlp's own* interpreter has
+# it — so we only detect deno and mention curl_cffi as accompanying guidance.
+YOUTUBE_OPTIONAL_BINARIES = ["deno"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -65,6 +77,12 @@ def _which(name: str) -> str | None:
 
 def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if not _which(b)]
+
+
+def _check_youtube_deps() -> list[str]:
+    """Optional, YouTube-specific deps. Never affects can_proceed — see
+    YOUTUBE_OPTIONAL_BINARIES above for why this stays out of REQUIRED_BINARIES."""
+    return [b for b in YOUTUBE_OPTIONAL_BINARIES if not _which(b)]
 
 
 _PERM_WARNED: set[str] = set()
@@ -214,6 +232,21 @@ def _install_hint_windows(missing: list[str]) -> str:
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
+def _youtube_dep_hint(system: str) -> str:
+    """Install guidance for YOUTUBE_OPTIONAL_BINARIES, plus curl_cffi — which we
+    can't reliably detect (see YOUTUBE_OPTIONAL_BINARIES) but is needed
+    alongside deno for the same YouTube downloads to work."""
+    if system == "Darwin":
+        deno_hint = "brew install deno"
+    elif system == "Windows":
+        # winget installs deno without a PATH shim — a shell opened before the
+        # install won't see it on PATH until it's restarted.
+        deno_hint = "winget install DenoLand.Deno (then restart your terminal — winget doesn't add deno to PATH for already-open shells)"
+    else:
+        deno_hint = "see https://docs.deno.com/runtime/getting_started/installation/"
+    return f"{deno_hint}, then: pip install curl_cffi"
+
+
 def _status() -> dict:
     """Structured preflight snapshot.
 
@@ -225,8 +258,14 @@ def _status() -> dict:
     binaries are present AND the user has either set a key or already finished
     setup (consciously opting out of Whisper). A keyless user who completed
     setup is NOT nagged on every call.
+
+    `missing_youtube_deps` is informational only and never affects `status` or
+    `can_proceed` — most sources need nothing extra, but a missing entry here
+    explains an otherwise-confusing HTTP 403 that's specific to YouTube. See
+    YOUTUBE_OPTIONAL_BINARIES.
     """
     missing = _check_binaries()
+    missing_youtube = _check_youtube_deps()
     has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
 
@@ -248,6 +287,7 @@ def _status() -> dict:
         "first_run": not setup_complete,
         "setup_complete": setup_complete,
         "missing_binaries": missing,
+        "missing_youtube_deps": missing_youtube,
         "whisper_backend": backend,
         "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
@@ -330,6 +370,17 @@ def cmd_install() -> int:
         print(f"[setup] created config: {CONFIG_FILE}")
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
+
+    missing_youtube = _check_youtube_deps()
+    if missing_youtube:
+        print("")
+        print(
+            "[setup] optional, for YouTube specifically: recent yt-dlp needs a JS "
+            "runtime + curl_cffi to get past YouTube's bot checks. Without them, "
+            "YouTube downloads fail with HTTP 403 while everything else (captions, "
+            "non-YouTube sites, local files) still works fine."
+        )
+        print(f"  {_youtube_dep_hint(platform.system())}")
 
     has_key, backend = _have_api_key()
     if has_key:
