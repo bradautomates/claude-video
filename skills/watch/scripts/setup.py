@@ -29,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import get_config  # noqa: E402
+from config import ensure_utf8_console, get_config  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
@@ -351,6 +351,8 @@ def cmd_install() -> int:
 
 
 def main() -> int:
+    ensure_utf8_console()  # printed paths/messages can contain non-ASCII — see issue #51
+
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         if arg == "--check":

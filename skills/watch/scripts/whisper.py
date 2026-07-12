@@ -25,6 +25,8 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from config import ensure_utf8_console
+
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
@@ -466,6 +468,7 @@ def transcribe_video(
 
 
 if __name__ == "__main__":
+    ensure_utf8_console()  # see issue #51
     if len(sys.argv) < 2:
         print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
         raise SystemExit(2)

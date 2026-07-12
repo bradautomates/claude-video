@@ -10,6 +10,8 @@ import re
 import sys
 from pathlib import Path
 
+from config import ensure_utf8_console
+
 
 TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
@@ -90,6 +92,7 @@ def format_transcript(segments: list[dict]) -> str:
 
 
 if __name__ == "__main__":
+    ensure_utf8_console()  # transcript text can contain emoji/non-ASCII — see issue #51
     if len(sys.argv) < 2:
         print("usage: transcribe.py <vtt-path>", file=sys.stderr)
         raise SystemExit(2)

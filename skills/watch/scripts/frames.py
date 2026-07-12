@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from config import ensure_utf8_console
+
 
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
@@ -683,6 +685,7 @@ def extract_keyframes(
 
 
 if __name__ == "__main__":
+    ensure_utf8_console()  # see issue #51
     if len(sys.argv) < 3:
         print(
             "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
