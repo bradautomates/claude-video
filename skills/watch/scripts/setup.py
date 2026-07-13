@@ -73,6 +73,11 @@ _PERM_WARNED: set[str] = set()
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
     world/group readable."""
+    if platform.system() == "Windows":
+        # NTFS has no POSIX mode bits; st_mode is a synthetic approximation
+        # that always reports group/other as readable, so this check would
+        # misfire on every run. Access control is handled by ACLs instead.
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
