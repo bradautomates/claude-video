@@ -170,7 +170,36 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (self-hosted) | `WHISPER_BASE_URL` → any OpenAI-compatible server | Free, private, offline |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+
+### Self-hosted / local Whisper
+
+Set `WHISPER_BASE_URL` (in the environment or `~/.config/watch/.env`) to point `watch` at
+any OpenAI-compatible `/v1/audio/transcriptions` endpoint instead of a cloud provider —
+audio then never leaves your machine, and there is no API key, rate limit, or per-minute cost.
+
+```bash
+# ~/.config/watch/.env
+WHISPER_BASE_URL=http://127.0.0.1:8178/v1
+```
+
+No API key is required when `WHISPER_BASE_URL` is set (most self-hosted servers need no
+auth). If yours does, set `WHISPER_API_KEY`. To send a specific model name, set
+`WHISPER_MODEL`. Progress output reports the actual host (`local`, or the hostname) rather
+than naming a cloud provider it isn't using.
+
+A local server that works out of the box is [whisper.cpp](https://github.com/ggml-org/whisper.cpp)'s
+bundled `whisper-server`, which can serve the OpenAI route directly:
+
+```bash
+brew install whisper-cpp
+whisper-server -m ggml-large-v3-turbo.bin \
+  --host 127.0.0.1 --port 8178 \
+  --inference-path /v1/audio/transcriptions --convert
+```
+
+Leaving `WHISPER_BASE_URL` unset preserves the existing hosted behavior exactly.
 
 ## Usage
 

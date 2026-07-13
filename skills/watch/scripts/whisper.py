@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -62,50 +63,88 @@ def plan_chunks(
     return plan
 
 
+def _from_dotenv(path: Path, name: str) -> str | None:
+    """Read a single KEY=value setting out of a dotenv file."""
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() != name:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
+
+
+def read_setting(name: str) -> str | None:
+    """Read a setting from the environment, falling back to the dotenv files."""
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip()
+    for path in (Path.home() / ".config" / "watch" / ".env", Path.cwd() / ".env"):
+        value = _from_dotenv(path, name)
+        if value:
+            return value
+    return None
+
+
+def resolve_endpoint(default: str) -> str:
+    """Return the transcription endpoint, honoring a custom WHISPER_BASE_URL.
+
+    Set WHISPER_BASE_URL (env or ~/.config/watch/.env) to point `watch` at any
+    OpenAI-compatible Whisper server — a local whisper.cpp `whisper-server`, a
+    self-hosted box, or a proxy. Example:
+
+        WHISPER_BASE_URL=http://127.0.0.1:8178/v1
+
+    Unset, behavior is unchanged and the hosted Groq/OpenAI endpoint is used.
+    """
+    base = (read_setting("WHISPER_BASE_URL") or "").rstrip("/")
+    return f"{base}/audio/transcriptions" if base else default
+
+
+def _backend_label(backend: str) -> str:
+    """Human-readable name for progress output.
+
+    When WHISPER_BASE_URL is set the request does NOT go to Groq or OpenAI, so
+    saying so would be actively misleading — users choose a custom base URL
+    precisely to keep audio off third-party servers. Show the host instead.
+    """
+    base = read_setting("WHISPER_BASE_URL")
+    if not base:
+        return backend
+    host = urllib.parse.urlparse(base).hostname or base
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return "local"
+    return host
+
+
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
     If `preferred` is "groq" or "openai", only that backend's key is considered.
+
+    A self-hosted server (WHISPER_BASE_URL) typically needs no auth, so return a
+    placeholder rather than making the caller demand a cloud key it will not use.
     """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
-
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
-        return None
-
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
+    if read_setting("WHISPER_BASE_URL"):
+        backend = preferred or "groq"
+        return backend, read_setting("WHISPER_API_KEY") or "no-key-required"
 
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = read_setting(key_name)
         if value:
             return backend, value
 
@@ -402,10 +441,13 @@ def transcribe_chunks(
 
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
+    model_override = read_setting("WHISPER_MODEL")
     if backend == "groq":
-        response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        endpoint = resolve_endpoint(GROQ_ENDPOINT)
+        response = _post_whisper(endpoint, api_key, model_override or GROQ_MODEL, audio_path)
     elif backend == "openai":
-        response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        endpoint = resolve_endpoint(OPENAI_ENDPOINT)
+        response = _post_whisper(endpoint, api_key, model_override or OPENAI_MODEL, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
@@ -431,10 +473,16 @@ def transcribe_video(
         raise SystemExit(
             "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
             "in the environment or in ~/.config/watch/.env. "
+            "Or, to use a local/self-hosted OpenAI-compatible Whisper server instead of a "
+            "cloud provider, set WHISPER_BASE_URL (e.g. http://127.0.0.1:8178/v1). "
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
+    # Never claim we're talking to a cloud provider when a custom server is set —
+    # the whole point of WHISPER_BASE_URL is often that audio stays on your hardware.
+    label = _backend_label(backend)
+
+    print(f"[watch] extracting audio for Whisper ({label})…", file=sys.stderr)
     audio_path = extract_audio(video_path, audio_out)
     audio_bytes = audio_path.stat().st_size
 
@@ -443,7 +491,7 @@ def transcribe_video(
 
     if audio_bytes <= MAX_UPLOAD_BYTES:
         print(
-            f"[watch] audio: {audio_bytes / 1024:.0f} kB — uploading to {backend} Whisper…",
+            f"[watch] audio: {audio_bytes / 1024:.0f} kB — sending to {label} Whisper…",
             file=sys.stderr,
         )
         segments = transcribe_one(audio_path)
@@ -461,7 +509,7 @@ def transcribe_video(
     if not segments:
         raise SystemExit("Whisper returned no transcript segments")
 
-    print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
+    print(f"[watch] transcribed {len(segments)} segments via {label}", file=sys.stderr)
     return segments, backend
 
 
