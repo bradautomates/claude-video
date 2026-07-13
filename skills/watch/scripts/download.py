@@ -84,7 +84,13 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--",
         url,
     ]
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    if result.returncode != 0:
+        print(
+            f"[watch] yt-dlp exited {result.returncode} during caption fetch; "
+            f"captions may be unavailable",
+            file=sys.stderr,
+        )
     subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
     return {
