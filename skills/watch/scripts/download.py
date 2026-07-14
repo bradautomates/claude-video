@@ -7,6 +7,7 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,99 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# Fallback when the per-video probe below can't tell us anything (non-YouTube
+# site, network hiccup): English (any variant) plus the single "<lang>-orig"
+# track yt-dlp/YouTube tags onto whichever language the video was actually
+# spoken in. This is NOT the same as "--sub-langs all" — "-orig" matches at
+# most one track, so it can't trigger the multi-minute stall that requesting
+# every translated caption causes.
+SUB_LANGS = "en.*,.*-orig"
+
+
+def _probe_langs(url: str) -> dict | None:
+    """Cheap, fast, metadata-only lookup of which caption languages exist.
+
+    Downloads nothing: yt-dlp's plain info dump (`-j`) lists every manual and
+    automatic-caption language as part of parsing the page/player response —
+    that listing is free. Only the *download* step (driven by --sub-langs in
+    fetch_captions/download_url) can be slow if asked for too many languages
+    at once; this call asks for none, so it stays fast regardless of how many
+    translations YouTube offers.
+
+    Returns None on any failure (non-YouTube site, network hiccup, timeout)
+    so the caller can fall back to the bounded SUB_LANGS pattern above.
+    """
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--skip-download", "-j", "--no-warnings", "--no-playlist", "--", url],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        info = json.loads(result.stdout.splitlines()[0])
+    except (json.JSONDecodeError, IndexError):
+        return None
+    return {
+        "language": (info.get("language") or "").split("-")[0] or None,
+        "manual_langs": set((info.get("subtitles") or {}).keys()),
+        "auto_langs": set((info.get("automatic_captions") or {}).keys()),
+    }
+
+
+def _choose_target_lang(probe: dict | None) -> str | None:
+    """Priority order: manual (human-written) subtitle in the video's own
+    language > any manual subtitle > automatic transcript in the video's own
+    language > nothing.
+
+    Manual subtitles never carry the "-orig" tag — YouTube only tags
+    automatic captions that way — so checking `manual_langs` directly is the
+    only way to prefer a hand-written non-English subtitle over an
+    auto-generated one.
+
+    A manual subtitle in the declared language isn't always keyed by the
+    plain code: some uploaders' captions (e.g. via a third-party
+    localization vendor) land as "en-<vendor-id>" instead of a plain "en".
+    Match by prefix (declared + "-"), same as automatic captions' "en-US"/
+    "en-GB" variants, not just an exact key — otherwise this falls through
+    to "any manual subtitle" and picks one alphabetically, which can land on
+    an unrelated language (seen live: "ar" beat a real "en-<vendor-id>"
+    track purely because "ar" sorts first).
+    """
+    if not probe:
+        return None
+    declared = probe["language"]
+    manual = probe["manual_langs"]
+    auto = probe["auto_langs"]
+    if declared:
+        declared_manual = sorted(
+            m for m in manual if m == declared or m.startswith(f"{declared}-")
+        )
+        if declared_manual:
+            return declared if declared in declared_manual else declared_manual[0]
+    if manual:
+        return sorted(manual)[0]
+    if declared and f"{declared}-orig" in auto:
+        return f"{declared}-orig"
+    orig = sorted(k for k in auto if k.endswith("-orig"))
+    return orig[0] if orig else None
+
+
+def _sub_langs_for(url: str) -> str:
+    """--sub-langs value to request for this specific video.
+
+    Falls back to the broad SUB_LANGS pattern when the probe fails or the
+    site isn't YouTube (the "language"/"-orig" fields are YouTube-specific —
+    other yt-dlp-supported sites may not expose them, and the broad pattern
+    still behaves exactly as before there).
+    """
+    target = _choose_target_lang(_probe_langs(url))
+    if target is None:
+        return SUB_LANGS
+    return f"^{re.escape(target)}$"
 
 
 def is_url(source: str) -> bool:
@@ -42,12 +136,24 @@ def resolve_local(path: str) -> dict:
 
 
 def _pick_subtitle(out_dir: Path) -> Path | None:
+    """Prefer the video's original spoken-language track over a translation.
+
+    yt-dlp tags the true source-language auto-caption as "<lang>-orig"
+    (e.g. "it-orig" for an Italian video, "en-orig" for an English one) —
+    see SUB_LANGS above. That beats any plain English file, which for a
+    non-English video is a machine translation, not the original text.
+    English is kept as the second choice for videos with manual (human)
+    English subtitles but no "-orig" auto-caption.
+    """
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
+    orig = [c for c in candidates if "-orig." in c.name]
+    if orig:
+        return orig[0]
     preferred = [
         c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
+        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB."))
     ]
     return preferred[0] if preferred else candidates[0]
 
@@ -75,7 +181,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", _sub_langs_for(url),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -132,7 +238,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", _sub_langs_for(url),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
