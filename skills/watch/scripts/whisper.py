@@ -411,6 +411,76 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
     return _segments_from_response(response)
 
 
+LOCAL_MODEL = os.environ.get("WATCH_LOCAL_WHISPER_MODEL", "small")
+
+
+def local_whisper_available() -> bool:
+    """True if the `openai-whisper` package is importable in this interpreter."""
+    import importlib.util
+
+    return importlib.util.find_spec("whisper") is not None
+
+
+def transcribe_local(
+    video_path: str,
+    work_dir: Path,
+    model: str | None = None,
+    language: str | None = None,
+) -> tuple[list[dict], str]:
+    """Transcribe locally via the installed `openai-whisper` CLI ($0, offline).
+
+    Runs `python -m whisper` (same interpreter) to emit an SRT next to the work
+    dir, then parses it with parse_vtt (the timestamp regex accepts both SRT `,`
+    and VTT `.` millisecond separators). Language is auto-detected when omitted.
+    Returns (segments, "local (<model>)"). Raises SystemExit on failure.
+    """
+    from transcribe import parse_vtt  # local import to avoid a cycle at module load
+
+    if not local_whisper_available():
+        raise SystemExit(
+            "openai-whisper is not installed in this interpreter — "
+            "install with `pip install -U openai-whisper` to enable the local fallback."
+        )
+
+    model = model or LOCAL_MODEL
+    work_dir.mkdir(parents=True, exist_ok=True)
+    src = Path(video_path).resolve()
+
+    cmd = [
+        sys.executable, "-m", "whisper", str(src),
+        "--model", model,
+        "--output_format", "srt",
+        "--output_dir", str(work_dir.resolve()),
+        "--fp16", "False",
+        "--verbose", "False",
+        "--task", "transcribe",
+    ]
+    if language:
+        cmd += ["--language", language]
+
+    print(
+        f"[watch] no API key — transcribing locally via openai-whisper "
+        f"(model={model}, CPU, $0)…",
+        file=sys.stderr,
+    )
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit(f"local whisper failed: {(result.stderr or '').strip()[:400]}")
+
+    srt = work_dir / f"{src.stem}.srt"
+    if not srt.exists():
+        # whisper derives the output name from the input stem; find any srt it wrote.
+        candidates = sorted(work_dir.glob("*.srt"))
+        if not candidates:
+            raise SystemExit("local whisper produced no .srt output")
+        srt = candidates[-1]
+
+    segments = parse_vtt(str(srt))
+    if not segments:
+        raise SystemExit("local whisper transcript was empty")
+    return segments, f"local ({model})"
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
