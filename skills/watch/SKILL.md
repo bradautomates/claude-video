@@ -147,7 +147,7 @@ Optional flags:
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
-- `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
+- `--whisper groq|openai|local` — force a specific Whisper backend. Default: prefer the Groq/OpenAI API (whichever key exists), then fall back to **local** `openai-whisper` if no key is set. `local` forces the offline path (needs `pip install openai-whisper`; $0, no key, runs on CPU).
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
 
@@ -220,14 +220,15 @@ Behavior:
 
 ## Transcription
 
-The script gets a timestamped transcript in one of two ways:
+The script gets a timestamped transcript in one of three ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
+3. **Local Whisper fallback (offline, $0).** If no captions and no API key are available — but the [`openai-whisper`](https://github.com/openai/whisper) package is installed — the script transcribes on-device by running `python -m whisper` (same interpreter) to emit an SRT, then parses it. Language is auto-detected. Model defaults to `small`; override with the `WATCH_LOCAL_WHISPER_MODEL` env var. Runs on CPU, so it is slower than the APIs but needs no key and nothing leaves the machine. Force it with `--whisper local`; the API path also falls back to it if a request fails.
 
-Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
+API keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI, or `--whisper local` for the offline path. Use `--no-whisper` to skip transcription entirely.
 
 ## Failure modes and handling
 
