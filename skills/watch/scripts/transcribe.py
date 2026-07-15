@@ -52,18 +52,77 @@ def parse_vtt(path: str) -> list[dict]:
     return _dedupe(segments)
 
 
+_PUNCT = ".,!?;:\"'()[]—–-"
+
+
+def _norm(word: str) -> str:
+    return word.strip(_PUNCT).lower()
+
+
+def _overlap(prev_words: list[str], cur_words: list[str]) -> int:
+    """Longest k where prev's last k words equal cur's first k.
+
+    Compared punctuation- and case-insensitively: YouTube re-emits the same
+    words with different trailing punctuation as a cue scrolls ("blogai" then
+    "blogai,"), which an exact match would miss.
+
+    k must be >= 2. A single shared word is as likely to be a coincidence
+    ("ir", "ne") as a real overlap, and dropping a legitimate word is a worse
+    outcome than leaving one duplicated.
+    """
+    for k in range(min(len(prev_words), len(cur_words)), 1, -1):
+        if [_norm(w) for w in prev_words[-k:]] == [_norm(w) for w in cur_words[:k]]:
+            return k
+    return 0
+
+
 def _dedupe(segments: list[dict]) -> list[dict]:
-    """Collapse rolling duplicates common in YouTube auto-subs."""
+    """Collapse the rolling duplication in YouTube auto-subs.
+
+    A cue cycles through three phases as it scrolls:
+
+        1. "100 metų, pasirodo buvo tiesa. A"
+        2. "100 metų, pasirodo buvo tiesa. A pasirodo visos imperijos blogai"
+        3. "pasirodo visos imperijos blogai, net"
+
+    Phase 2 contains all of phase 1 and extends it -- the same line still being
+    revealed, so it replaces its predecessor. Phase 3 has scrolled: it begins
+    with the *tail* of phase 2, not the whole of it, so a `startswith(prev)`
+    test never fires and the repetition survives. Handling only phase 1->2
+    halves the cue count and leaves ~85% of the remaining segments repeating
+    their predecessor, roughly doubling the transcript handed to the model.
+
+    Phase 3 is the general case; phase 1->2 is the special case where the
+    overlap covers all of the previous cue.
+    """
     out: list[dict] = []
     for seg in segments:
-        if out and seg["text"] == out[-1]["text"]:
-            out[-1]["end"] = seg["end"]
+        if not out:
+            out.append(dict(seg))
             continue
-        if out and seg["text"].startswith(out[-1]["text"] + " "):
-            out[-1]["text"] = seg["text"]
-            out[-1]["end"] = seg["end"]
+
+        prev = out[-1]
+        if seg["text"] == prev["text"]:
+            prev["end"] = seg["end"]
             continue
-        out.append(seg)
+
+        prev_words, cur_words = prev["text"].split(), seg["text"].split()
+        k = _overlap(prev_words, cur_words)
+        if k == 0:
+            out.append(dict(seg))
+            continue
+
+        if k == len(prev_words):
+            # Still the same line being revealed -- let it replace its predecessor.
+            prev["text"] = seg["text"]
+            prev["end"] = seg["end"]
+            continue
+
+        rest = cur_words[k:]
+        if not rest:
+            prev["end"] = seg["end"]
+            continue
+        out.append({"start": seg["start"], "end": seg["end"], "text": " ".join(rest)})
     return out
 
 
