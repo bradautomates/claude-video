@@ -188,6 +188,30 @@ Focused on a specific section — denser frame budget, lower token cost:
 /watch "$URL" --start 1:12:00            # from 1h12m to end
 ```
 
+Keep a portable evidence bundle after the temporary work directory is removed:
+```
+/watch tutorial.mp4 --evidence-dir ./tutorial-evidence
+```
+
+The evidence directory contains stable frame copies plus three files that can be
+opened without rerunning the video:
+
+```
+tutorial-evidence/
+├── frames/
+│   ├── frame-0001.jpg
+│   └── frame-0002.jpg
+├── transcript.txt
+├── timeline.md
+└── index.json
+```
+
+`timeline.md` places each selected frame beside its timestamp, selection reason,
+and nearby transcript excerpt. `index.json` carries the same alignment as
+structured data. The export is opt-in; normal `/watch` behavior is unchanged.
+Rerunning into the same directory replaces generated `frame-*` files and bundle
+metadata while leaving unrelated files alone.
+
 Other knobs (passed to `scripts/watch.py`):
 
 - `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` skips frames (transcript only); `efficient` uses fast keyframes (cap 50); `balanced` uses scene-aware frames (cap 100); `token-burner` is scene-aware and uncapped.
@@ -199,6 +223,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
+- `--evidence-dir DIR`: copy selected frames and write a durable transcript, timeline, and JSON index to a portable directory.
 
 ## Limits
 
@@ -214,6 +239,7 @@ Other knobs (passed to `scripts/watch.py`):
 │   └── scripts/
 │       ├── watch.py              # entry point — orchestrates download → frames → transcript
 │       ├── download.py           # yt-dlp wrapper
+│       ├── evidence.py           # durable frames + transcript + timeline + JSON export
 │       ├── frames.py             # ffmpeg frame extraction + auto-fps logic
 │       ├── transcribe.py         # VTT parsing + dedupe + Whisper orchestration
 │       ├── whisper.py            # Groq / OpenAI clients (pure stdlib)

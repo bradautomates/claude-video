@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **`--evidence-dir DIR`** writes a durable, portable evidence bundle with stable frame copies, a timestamped transcript, a readable Markdown timeline, and a schema-versioned JSON index. Each frame is aligned with its timestamp, selection reason, and nearby transcript excerpt. The export is opt-in and leaves normal `/watch` output unchanged.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

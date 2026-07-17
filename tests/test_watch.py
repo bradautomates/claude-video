@@ -83,3 +83,15 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     out = _run(static_clip, "--no-dedup")
     assert "near-duplicate" not in out
     assert _frame_lines(out) > 1
+
+
+def test_evidence_dir_writes_durable_bundle(cut_clip: Path, tmp_path: Path):
+    evidence_dir = tmp_path / "tutorial-evidence"
+
+    out = _run(cut_clip, "--detail", "efficient", "--evidence-dir", str(evidence_dir))
+
+    assert f"**Evidence bundle:** {evidence_dir}" in out
+    assert (evidence_dir / "index.json").is_file()
+    assert (evidence_dir / "timeline.md").is_file()
+    assert (evidence_dir / "transcript.txt").is_file()
+    assert list((evidence_dir / "frames").glob("frame-*.jpg"))

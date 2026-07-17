@@ -147,6 +147,7 @@ Optional flags:
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
+- `--evidence-dir DIR`: copy selected frames and write `transcript.txt`, `timeline.md`, and `index.json` to a durable directory. The timeline aligns each frame with its timestamp, selection reason, and nearby transcript excerpt. This is opt-in and does not replace the temporary working directory.
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
@@ -191,6 +192,31 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
 **Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+
+When `--evidence-dir` is set, the evidence directory is the durable result. Do
+not delete it during working-directory cleanup. A rerun into the same evidence
+directory replaces generated `frame-*` files and bundle metadata but preserves
+unrelated files.
+
+## Durable evidence bundles
+
+Use `--evidence-dir` when the user needs inspectable video evidence after the
+agent session ends:
+
+```bash
+python3 "${SKILL_DIR}/scripts/watch.py" tutorial.mp4 \
+  --evidence-dir ./tutorial-evidence
+```
+
+The directory contains:
+
+- `frames/frame-0001.jpg`, `frame-0002.jpg`, and so on: stable copies of the selected frames.
+- `transcript.txt`: the timestamped transcript, or an empty file when no transcript was available.
+- `timeline.md`: a readable sequence of frames, timestamps, selection reasons, and nearby transcript excerpts.
+- `index.json`: schema version 1 metadata and the same frame-to-transcript alignment for other tools.
+
+The bundle reuses the frames and transcript from the current run. It does not
+download or transcribe the source a second time.
 
 ## Detail and frames
 
@@ -254,6 +280,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
+- When `--evidence-dir` is set, copies selected frames and writes a transcript, Markdown timeline, and JSON index to that directory for durable use
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
@@ -261,8 +288,8 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
-- Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
+- Does not persist anything outside the working directory, `~/.config/watch/.env`, and an explicitly requested `--evidence-dir`. Clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/evidence.py` (durable evidence export), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.
