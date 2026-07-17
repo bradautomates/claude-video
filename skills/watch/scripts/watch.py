@@ -17,6 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
+from evidence import build_evidence_bundle  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -49,6 +50,12 @@ def main() -> int:
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
+    ap.add_argument(
+        "--evidence-dir",
+        type=str,
+        default=None,
+        help="Write a durable bundle of frames, transcript, timeline, and JSON index",
+    )
     ap.add_argument(
         "--no-whisper",
         action="store_true",
@@ -266,6 +273,36 @@ def main() -> int:
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
     info = dl.get("info") or {}
+    evidence_dir: Path | None = None
+    if args.evidence_dir:
+        evidence_dir = Path(args.evidence_dir).expanduser().resolve()
+        title = info.get("title")
+        if not title and not url_source:
+            title = Path(args.source).expanduser().stem
+        focus = None
+        if focused:
+            focus = {
+                "start_seconds": effective_start,
+                "end_seconds": effective_end,
+                "start": format_time(effective_start),
+                "end": format_time(effective_end),
+            }
+        try:
+            build_evidence_bundle(
+                evidence_dir,
+                source=args.source,
+                title=title,
+                duration_seconds=full_duration,
+                duration=format_time(full_duration),
+                focus=focus,
+                detail=detail,
+                frames=frames,
+                transcript_segments=transcript_segments,
+                transcript_text=transcript_text,
+                transcript_source=transcript_source,
+            )
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"Could not write evidence bundle: {exc}") from exc
 
     print()
     print("# watch: video report")
@@ -315,6 +352,8 @@ def main() -> int:
         )
     else:
         print("- **Transcript:** none available")
+    if evidence_dir:
+        print(f"- **Evidence bundle:** {evidence_dir}")
 
     if detail == "token-burner" and len(frames) > 250:
         print()
