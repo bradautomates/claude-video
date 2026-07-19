@@ -98,6 +98,8 @@ def get_metadata(video_path: str) -> dict:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
@@ -197,7 +199,7 @@ def extract(
         output_pattern,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
@@ -261,7 +263,7 @@ def extract_scene_candidates(
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
@@ -371,7 +373,7 @@ def extract_at_timestamps(
             "-q:v", "4",
             str(path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0 and path.exists():
             out.append({
                 "index": len(out),
@@ -616,7 +618,7 @@ def extract_keyframes(
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
 
