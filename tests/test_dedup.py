@@ -160,3 +160,38 @@ def test_dedup_false_disables_collapse(static_clip: Path, tmp_path: Path):
     assert meta["deduped_count"] == 0
     assert meta["selected_count"] > 1  # no collapse without dedup
     assert len(out) > 1
+
+
+# --- _is_blank: near-uniform frames carry no information ---------------------
+
+def test_is_blank_detects_black_and_white_frames():
+    assert frames._is_blank(bytes([0, 0, 0, 0]))
+    assert frames._is_blank(bytes([255, 255, 255, 255]))
+
+
+def test_is_blank_rejects_real_content():
+    # Darkest legitimate frame measured on a real screencast scored stdev 16.5.
+    assert not frames._is_blank(bytes([0, 40, 80, 120]))
+
+
+def test_is_blank_empty_thumbnail_is_not_blank():
+    assert not frames._is_blank(b"")
+
+
+def test_dedupe_drops_trailing_blank_frame(tmp_path: Path):
+    """A scene sample landing on the end card at EOF costs image tokens."""
+    cands = _touch(tmp_path / "f", 3)
+    thumbs = [bytes([0, 40, 80, 120]), bytes([120, 80, 40, 0]), FLAT0]
+    kept, dropped = frames._dedupe_by_deltas(cands, thumbs)
+    assert dropped == 1
+    assert len(kept) == 2
+    assert [c["index"] for c in kept] == [0, 1]
+    assert not (tmp_path / "f" / "frame_0002.jpg").exists()
+
+
+def test_dedupe_keeps_first_frame_when_every_frame_is_blank(tmp_path: Path):
+    """An all-black clip must not come back with zero frames."""
+    cands = _touch(tmp_path / "f", 3)
+    kept, dropped = frames._dedupe_by_deltas(cands, [FLAT0, FLAT0, FLAT0])
+    assert len(kept) == 1
+    assert dropped == 2

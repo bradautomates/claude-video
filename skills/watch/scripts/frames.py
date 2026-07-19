@@ -36,6 +36,13 @@ MAX_READ_DIMENSION = 1998
 # perceptual hash, this distinguishes flat frames (solid slides, fades) by luma.
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
+# Blank-frame drop: a frame whose thumbnail luma standard deviation is at or
+# below BLANK_STDEV is near-uniform -- a fade-to-black, a white flash, or the
+# end card a scene-change sample lands on at EOF. Such frames carry no
+# information but still cost image tokens, so they are dropped alongside
+# perceptual duplicates. Deliberately far below real content: the darkest
+# legitimate frame measured on a 19-minute screencast scored 16.5.
+BLANK_STDEV = 3.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
@@ -476,18 +483,35 @@ def dedupe_perceptual(
     return _dedupe_by_deltas(candidates, thumbs, threshold)
 
 
+def _is_blank(thumb: bytes) -> bool:
+    """True when a thumbnail is near-uniform (fade-to-black, white flash, end card).
+
+    Reuses the dedup thumbnail, so this costs no extra ffmpeg work. Standard
+    deviation alone catches both ends -- a black frame and a blown-out white one
+    are equally information-free.
+    """
+    if not thumb:
+        return False
+    count = len(thumb)
+    mean = sum(thumb) / count
+    variance = sum((px - mean) ** 2 for px in thumb) / count
+    return variance <= BLANK_STDEV**2
+
+
 def _dedupe_by_deltas(
     candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
 ) -> tuple[list[dict], int]:
     """Greedily drop frames within ``threshold`` mean per-pixel difference of the
-    last *kept* frame. Deletes dropped JPEGs and reindexes survivors 0..n-1 (same
-    cleanup contract as :func:`_even_sample`). Fail-open: if ``thumbs`` does not
-    line up 1:1 with ``candidates``, return them unchanged.
+    last *kept* frame, plus any near-uniform blank frame. Deletes dropped JPEGs
+    and reindexes survivors 0..n-1 (same cleanup contract as
+    :func:`_even_sample`). Fail-open: if ``thumbs`` does not line up 1:1 with
+    ``candidates``, or every frame reads blank, return them unchanged.
     """
     if len(thumbs) != len(candidates) or len(candidates) <= 1:
         return candidates, 0
 
     kept = [candidates[0]]
+    kept_thumbs = [thumbs[0]]
     last = thumbs[0]
     dropped: list[dict] = []
     for cand, thumb in zip(candidates[1:], thumbs[1:]):
@@ -495,7 +519,16 @@ def _dedupe_by_deltas(
             dropped.append(cand)
         else:
             kept.append(cand)
+            kept_thumbs.append(thumb)
             last = thumb
+
+    # Post-filter: a survivor can still be a fade-to-black or an end card the
+    # scene sampler landed on at EOF. Drop those, but never return nothing --
+    # a genuinely blank video keeps its first frame.
+    survivors = [c for c, t in zip(kept, kept_thumbs) if not _is_blank(t)]
+    if survivors and len(survivors) < len(kept):
+        dropped.extend(c for c in kept if c not in survivors)
+        kept = survivors
 
     for cand in dropped:
         try:
