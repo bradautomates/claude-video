@@ -13,7 +13,7 @@ user-invocable: true
 
 # /watch
 
-You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API as fallback), and builds bounded overview pages plus a complete frame index. You inspect the overview first, then `Read` exact frames only when the question needs more detail.
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
@@ -180,7 +180,24 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 2:15 --end 2:45 --fps 2
 python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 ```
 
-**Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
+**Step 3 — Inspect the bounded visual overview, then drill down selectively.**
+
+1. Read `frame-index.json` and every overview page the script lists. Overview pages cover every selected frame exactly once, in chronological order, while keeping the initial image-result count bounded.
+2. Combine the overview pages with the transcript and the index's exact timestamps/reasons to identify relevant moments.
+3. When the question needs small text, subtle motion, an exact UI state, or an ambiguous tile, `Read` only the relevant JPEG paths from the index. Read any useful subset together in parallel; there is no one-frame-at-a-time restriction.
+4. Never automatically `Read` every indexed JPEG. That recreates the large media context the overview is designed to avoid.
+5. If the selected JPEGs remain too small, re-run the retained local source at exact timestamps in a **new output directory**:
+
+```bash
+python3 "${SKILL_DIR}/scripts/watch.py" "<retained-local-source>" \
+  --detail transcript \
+  --timestamps T1,T2,... \
+  --resolution <retained-source-width> \
+  --no-whisper \
+  --out-dir <new-drilldown-dir>
+```
+
+This requests the highest retained-source, Read-compatible detail without overwriting the first run. URL downloads are retained at up to 720p; local inputs retain their original source path. Extracted images still honor the 1998px Read height limit.
 
 **Step 4 — answer the user.** You now have two streams of evidence:
 - **Frames** — what's on screen at each timestamp
@@ -190,7 +207,7 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script prints a working directory at the end. Delete it only when the script auto-created a `watch-*` directory under the system temporary directory. Never delete a user-supplied `--out-dir`; the user owns that directory and its contents. If follow-ups are likely, leave auto-created output in place temporarily.
 
 ## Detail and frames
 
@@ -244,7 +261,7 @@ This skill burns tokens primarily on frames. Order of magnitude:
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
 - Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
 
-If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
+If you already watched a video this session and the user asks a follow-up, reuse the retained overview, index, transcript, and any exact frames already inspected. Do not re-run unless the question needs a new focused range, timestamp, or higher retained-source detail.
 
 ## Security & Permissions
 
@@ -253,7 +270,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
-- Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
+- Writes the downloaded video, frames, bounded overview pages, frame index, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can inspect them selectively
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**

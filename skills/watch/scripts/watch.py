@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """/watch entry point: download video, extract frames, parse transcript.
 
-Prints a markdown report to stdout listing frame paths + transcript. Claude
-then Reads each frame path to see the video.
+Prints a markdown report with bounded overview pages, a complete frame index,
+and the transcript. Claude inspects exact frames only when needed.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from presentation import PresentationError, prepare_frame_presentation  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
@@ -227,6 +228,18 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
+    presentation: dict | None = None
+    if frames:
+        try:
+            presentation = prepare_frame_presentation(
+                work,
+                source_path=video_path,
+                source_meta=meta,
+                frames=frames,
+            )
+        except PresentationError as exc:
+            raise SystemExit(f"frame presentation failed: {exc}") from exc
+
     if not transcript_segments and dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
@@ -336,19 +349,28 @@ def main() -> int:
     print()
     print("## Frames")
     print()
-    if frames:
-        print(f"Frames live at: `{work / 'frames'}`")
+    if frames and presentation:
+        print(f"- **Frame index:** `{presentation['index_path']}`")
+        print(f"- **Extracted frames:** {len(frames)} (all retained in `{work / 'frames'}`)")
+        print()
+        available_pages = [page for page in presentation["pages"] if page["kind"] == "image"]
+        if available_pages:
+            print(
+                "**Read the frame index and overview pages first.** The overview pages cover every "
+                "selected frame in chronological order. Do not read every indexed JPEG automatically."
+            )
+            print()
+            for page in available_pages:
+                print(
+                    f"- `{page['path']}` "
+                    f"(frames {page['frame_start']}-{page['frame_end']})"
+                )
         print()
         print(
-            "**Read each frame path below with the Read tool to view the image.** "
-            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
+            "For exact detail, use the index to select only relevant frames and Read that subset together. "
+            "If needed, re-run the retained source with `--detail transcript --timestamps ... "
+            "--resolution ... --no-whisper --out-dir <new-dir>` for higher retained-source detail."
         )
-        print()
-        for frame in frames:
-            print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
-            )
     else:
         print("_No frames extracted._")
 
@@ -384,7 +406,10 @@ def main() -> int:
 
     print()
     print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    print(
+        f"_Work dir: `{work}` — delete only if this is an auto-created temporary watch-* directory; "
+        "keep user-supplied --out-dir paths._"
+    )
 
     return 0
 
