@@ -1,3 +1,5 @@
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+
 # /watch
 
 **Give Claude the ability to watch any video.**
