@@ -80,12 +80,23 @@ def filter_range(
     return [seg for seg in segments if seg["end"] >= lo and seg["start"] <= hi]
 
 
+def _format_stamp(seconds: float) -> str:
+    """Render a transcript timestamp as [MM:SS], rolling over to [H:MM:SS] once
+    past an hour. Mirrors frames.format_time so transcript stamps stay aligned
+    with the frame ``t=`` markers instead of overflowing the minutes field
+    (e.g. [1:01:01] rather than [61:01]) on videos longer than an hour."""
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"[{hours}:{minutes:02d}:{secs:02d}]"
+    return f"[{minutes:02d}:{secs:02d}]"
+
+
 def format_transcript(segments: list[dict]) -> str:
     lines = []
     for seg in segments:
-        start = int(seg["start"])
-        stamp = f"[{start // 60:02d}:{start % 60:02d}]"
-        lines.append(f"{stamp} {seg['text']}")
+        lines.append(f"{_format_stamp(seg['start'])} {seg['text']}")
     return "\n".join(lines)
 
 
