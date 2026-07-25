@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from config import get_sub_langs
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
@@ -75,7 +77,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", get_sub_langs(),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -132,7 +134,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", get_sub_langs(),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
