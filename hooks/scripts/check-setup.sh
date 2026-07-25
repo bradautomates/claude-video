@@ -7,12 +7,28 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
+# On Windows, Git Bash's stat reports simulated POSIX bits (always 644) that
+# ignore the real NTFS ACLs, so check the ACL with icacls instead.
 if [[ -f "$CONFIG_FILE" ]]; then
-  perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
-  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $CONFIG_FILE"
-  fi
+  case "$(uname -s 2>/dev/null || echo other)" in
+    MINGW*|MSYS*|CYGWIN*)
+      win_path=$(cygpath -w "$CONFIG_FILE" 2>/dev/null || echo "$CONFIG_FILE")
+      # Loose only if a broad principal (Everyone, BUILTIN\Users,
+      # Authenticated Users) holds an ACE. The trailing ":" avoids matching the
+      # file path (C:\Users\...) that icacls prints on its first line.
+      if icacls "$win_path" 2>/dev/null | grep -Eiq '(Everyone:|\\Users:|Authenticated Users:)'; then
+        echo "/watch: WARNING — $CONFIG_FILE is readable by other Windows accounts."
+        echo "  Fix: icacls \"$win_path\" /inheritance:r /grant:r \"$USERNAME:F\""
+      fi
+      ;;
+    *)
+      perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
+      if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+        echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
+        echo "  Fix: chmod 600 $CONFIG_FILE"
+      fi
+      ;;
+  esac
 fi
 
 # Load API keys from the config file without exporting them.
