@@ -13,6 +13,11 @@ DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
+# Subtitle languages passed to yt-dlp's --sub-langs. Upstream hardcodes "en.*",
+# which leaves non-English videos with no captions at all — and at transcript
+# detail there is no frame fallback to soften that.
+DEFAULT_SUB_LANGS = "en.*,ru.*"
+
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     if path is None:
@@ -43,6 +48,15 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
                     break
         values[key.strip()] = value
     return values
+
+
+def get_sub_langs() -> str:
+    """Comma-separated yt-dlp --sub-langs value. Env wins over the config file."""
+    return (
+        os.environ.get("WATCH_SUB_LANGS")
+        or read_env_file().get("WATCH_SUB_LANGS")
+        or DEFAULT_SUB_LANGS
+    )
 
 
 def get_config() -> dict[str, object]:
