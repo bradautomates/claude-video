@@ -2,8 +2,11 @@
 
 Regression guard: ``--sub-langs all`` makes yt-dlp fetch YouTube's hundreds of
 auto-translated caption tracks, which can take minutes and stalls before the
-video download even starts. We only support English, so the request must stay
-bounded to the English-only pattern.
+video download even starts. The request must therefore stay bounded — but
+bounded is not the same as English-only: asking for ``en.*`` on a Turkish video
+returns a machine translation and silently discards the spoken words. So we ask
+for the original track plus English as a fallback, which resolves to two tracks
+(measured: ``Downloading subtitles: tr-orig, en``), not hundreds.
 """
 from __future__ import annotations
 
@@ -43,22 +46,29 @@ def _sub_langs(argv: list[str]) -> str:
     return argv[idx + 1]
 
 
-def _assert_english_only(langs: str) -> None:
+def _assert_bounded(langs: str) -> None:
     tokens = langs.split(",")
     assert "all" not in tokens, f"sub-langs must not request all languages, got {langs!r}"
-    assert all(t.startswith("en") for t in tokens), f"sub-langs must be English-only, got {langs!r}"
+    assert len(tokens) <= 3, f"sub-langs must stay bounded, got {langs!r}"
+    assert any("-orig" in t for t in tokens), f"sub-langs must ask for the original track, got {langs!r}"
 
 
-def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
+def test_fetch_captions_requests_bounded_langs(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded(_sub_langs(calls[0]))
 
 
-def test_download_url_requests_english_only(monkeypatch, tmp_path):
+def test_download_url_requests_bounded_langs(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     # _pick_video returns None with no real file, which raises SystemExit after
     # the yt-dlp argv is already built — that's all we need to inspect.
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded(_sub_langs(calls[0]))
+
+
+def test_pick_subtitle_prefers_original_over_translation(tmp_path):
+    for name in ("video.en.vtt", "video.tr-orig.vtt"):
+        (tmp_path / name).write_text("WEBVTT\n", encoding="utf-8")
+    assert download._pick_subtitle(tmp_path).name == "video.tr-orig.vtt"

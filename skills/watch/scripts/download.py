@@ -16,6 +16,15 @@ from urllib.parse import urlparse
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
+# YouTube tags the spoken-language auto-caption track "<lang>-orig" (e.g. "tr-orig")
+# and every other language is a machine translation of it. Requesting only "en.*"
+# silently returns an English translation of a non-English video, so ask for the
+# original first and keep English as the fallback for sources that have no -orig track.
+# ponytail: a video with manual subtitles in a non-English language matches neither
+# pattern and comes back without captions; read info.json's "language" field to
+# request it directly if that case shows up.
+SUB_LANGS = ".*-orig,en.*"
+
 
 def is_url(source: str) -> bool:
     if source.startswith("-"):
@@ -45,11 +54,14 @@ def _pick_subtitle(out_dir: Path) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [
-        c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
-    ]
-    return preferred[0] if preferred else candidates[0]
+    # The spoken-language track wins over any translation of it, so "-orig" is
+    # checked before the English markers. Without this the English translation is
+    # picked even when the original was downloaded alongside it.
+    for markers in (("-orig.",), (".en.", ".en-US.", ".en-GB.")):
+        for c in candidates:
+            if any(m in c.name for m in markers):
+                return c
+    return candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -75,7 +87,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", SUB_LANGS,
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -132,7 +144,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", SUB_LANGS,
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
