@@ -52,6 +52,13 @@ ENV_TEMPLATE = """# /watch API configuration
 GROQ_API_KEY=
 OPENAI_API_KEY=
 
+# Self-hosted alternative: point /watch at any OpenAI-compatible transcription
+# server (speaches, whisper.cpp, vLLM, LiteLLM) and audio never leaves your
+# machine. Takes precedence over the keys above when set.
+# WATCH_WHISPER_ENDPOINT=http://localhost:8000/v1/audio/transcriptions
+# WATCH_WHISPER_MODEL=Systran/faster-whisper-large-v3
+# WATCH_WHISPER_API_KEY=
+
 # Default watch behavior (the /watch first-run wizard sets this for you).
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.
