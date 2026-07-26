@@ -32,6 +32,15 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+# Self-hosted / OpenAI-compatible transcription servers (speaches, whisper.cpp
+# server, vLLM, LiteLLM, ...). Point WATCH_WHISPER_ENDPOINT at one and audio
+# never leaves the machine — useful for private footage, and for anyone who
+# would rather not hold a hosted API key at all.
+CUSTOM_ENDPOINT_VAR = "WATCH_WHISPER_ENDPOINT"
+CUSTOM_MODEL_VAR = "WATCH_WHISPER_MODEL"
+CUSTOM_KEY_VAR = "WATCH_WHISPER_API_KEY"
+CUSTOM_MODEL_DEFAULT = "whisper-1"
+
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
@@ -62,50 +71,83 @@ def plan_chunks(
     return plan
 
 
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+def _from_env(name: str) -> str | None:
+    value = os.environ.get(name)
+    return value.strip() if value else None
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
-    """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
 
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
+def _from_dotenv(path: Path, name: str) -> str | None:
+    if not path.exists():
         return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            if key.strip() != name:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+    return None
 
-    dotenv_paths = [
+
+def _dotenv_paths() -> list[Path]:
+    return [
         Path.home() / ".config" / "watch" / ".env",
         Path.cwd() / ".env",
     ]
+
+
+def _setting(name: str) -> str | None:
+    """Read a setting from the environment, falling back to the dotenv files."""
+    value = _from_env(name)
+    if value:
+        return value
+    for candidate in _dotenv_paths():
+        value = _from_dotenv(candidate, name)
+        if value:
+            return value
+    return None
+
+
+def custom_endpoint() -> tuple[str, str] | tuple[None, None]:
+    """Return (endpoint, model) for a self-hosted server, or (None, None).
+
+    Configured via WATCH_WHISPER_ENDPOINT (+ optional WATCH_WHISPER_MODEL) in
+    the environment or ~/.config/watch/.env.
+    """
+    endpoint = _setting(CUSTOM_ENDPOINT_VAR)
+    if not endpoint:
+        return None, None
+    return endpoint, (_setting(CUSTOM_MODEL_VAR) or CUSTOM_MODEL_DEFAULT)
+
+
+def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
+    """Return (backend, api_key). Prefers custom, then Groq, then OpenAI.
+
+    If `preferred` is "custom", "groq" or "openai", only that backend is
+    considered. The "custom" backend is selected by the presence of
+    WATCH_WHISPER_ENDPOINT; its key is optional, since self-hosted servers
+    commonly need no auth — an empty string is a valid key there.
+    """
+    if preferred in (None, "custom"):
+        endpoint, _ = custom_endpoint()
+        if endpoint:
+            return "custom", (_setting(CUSTOM_KEY_VAR) or "")
+        if preferred == "custom":
+            return None, None
 
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = _setting(key_name)
         if value:
             return backend, value
 
@@ -242,13 +284,16 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     }
     body, boundary = _build_multipart(fields, audio_path)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         # Groq sits behind Cloudflare — the default `Python-urllib/3.x` UA
         # trips WAF rule 1010 (403) before auth even runs. Any non-default
         # UA clears it; we identify honestly.
         "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
     }
+    # Self-hosted servers commonly run without auth; sending `Bearer ` with an
+    # empty key makes some of them reject the request outright.
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     context = ssl.create_default_context()
     rate_limit_hits = 0
@@ -402,7 +447,14 @@ def transcribe_chunks(
 
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
-    if backend == "groq":
+    if backend == "custom":
+        endpoint, model = custom_endpoint()
+        if not endpoint:
+            raise SystemExit(
+                f"whisper backend 'custom' selected but {CUSTOM_ENDPOINT_VAR} is not set."
+            )
+        response = _post_whisper(endpoint, api_key, model, audio_path)
+    elif backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
@@ -426,11 +478,13 @@ def transcribe_video(
         backend = backend or detected_backend
         api_key = api_key or detected_key
 
-    if not backend or not api_key:
+    # A custom endpoint authenticates itself, so an empty key is legitimate there.
+    if not backend or (not api_key and backend != "custom"):
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
             "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
+            "in the environment or in ~/.config/watch/.env, or point "
+            f"{CUSTOM_ENDPOINT_VAR} at a self-hosted OpenAI-compatible server. "
             f"Run `python3 {setup_py}` to configure."
         )
 

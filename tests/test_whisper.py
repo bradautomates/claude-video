@@ -155,3 +155,70 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class TestCustomEndpoint:
+    """Self-hosted OpenAI-compatible transcription servers."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch, tmp_path):
+        # Keep the developer's real keys and dotenv files out of these tests.
+        for var in (
+            "GROQ_API_KEY",
+            "OPENAI_API_KEY",
+            whisper.CUSTOM_ENDPOINT_VAR,
+            whisper.CUSTOM_MODEL_VAR,
+            whisper.CUSTOM_KEY_VAR,
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(whisper, "_dotenv_paths", lambda: [tmp_path / "absent.env"])
+
+    def test_unset_endpoint_reports_nothing(self):
+        assert whisper.custom_endpoint() == (None, None)
+
+    def test_endpoint_defaults_the_model(self, monkeypatch):
+        monkeypatch.setenv(whisper.CUSTOM_ENDPOINT_VAR, "http://localhost:8000/v1/audio/transcriptions")
+
+        endpoint, model = whisper.custom_endpoint()
+
+        assert endpoint == "http://localhost:8000/v1/audio/transcriptions"
+        assert model == whisper.CUSTOM_MODEL_DEFAULT
+
+    def test_model_is_overridable(self, monkeypatch):
+        monkeypatch.setenv(whisper.CUSTOM_ENDPOINT_VAR, "http://localhost:8000/v1/audio/transcriptions")
+        monkeypatch.setenv(whisper.CUSTOM_MODEL_VAR, "Systran/faster-whisper-large-v3")
+
+        assert whisper.custom_endpoint()[1] == "Systran/faster-whisper-large-v3"
+
+    def test_custom_wins_over_hosted_keys(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_hosted")
+        monkeypatch.setenv(whisper.CUSTOM_ENDPOINT_VAR, "http://localhost:8000/v1/audio/transcriptions")
+
+        assert whisper.load_api_key() == ("custom", "")
+
+    def test_custom_key_is_optional_but_honoured(self, monkeypatch):
+        monkeypatch.setenv(whisper.CUSTOM_ENDPOINT_VAR, "http://localhost:8000/v1/audio/transcriptions")
+        monkeypatch.setenv(whisper.CUSTOM_KEY_VAR, "local-secret")
+
+        assert whisper.load_api_key() == ("custom", "local-secret")
+
+    def test_forcing_custom_without_endpoint_yields_nothing(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_hosted")
+
+        # Must not silently fall back to Groq — the user asked for local only.
+        assert whisper.load_api_key("custom") == (None, None)
+
+    def test_hosted_still_works_when_no_endpoint_set(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_hosted")
+
+        assert whisper.load_api_key() == ("groq", "gsk_hosted")
+
+    def test_endpoint_readable_from_dotenv(self, monkeypatch, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            f'{whisper.CUSTOM_ENDPOINT_VAR}="http://box:8000/v1/audio/transcriptions"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(whisper, "_dotenv_paths", lambda: [env_file])
+
+        assert whisper.custom_endpoint()[0] == "http://box:8000/v1/audio/transcriptions"

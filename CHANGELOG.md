@@ -2,6 +2,16 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Self-hosted Whisper via `WATCH_WHISPER_ENDPOINT`.** Point `/watch` at any OpenAI-compatible `/v1/audio/transcriptions` server (speaches, whisper.cpp, vLLM, LiteLLM) and audio never leaves the machine — for footage that can't be uploaded to a hosted API. Optional `WATCH_WHISPER_MODEL` (defaults to `whisper-1`) and `WATCH_WHISPER_API_KEY` (most local servers need none). Readable from the environment or `~/.config/watch/.env`, same as the existing keys.
+- **`--whisper custom`** joins `groq` and `openai`. It fails rather than silently falling back to a hosted API, so "local only" stays local.
+
+### Changed
+- When set, `WATCH_WHISPER_ENDPOINT` takes precedence over `GROQ_API_KEY` / `OPENAI_API_KEY`. Behavior is unchanged for everyone who doesn't set it.
+- The `Authorization` header is now omitted when the resolved key is empty — some self-hosted servers reject a bare `Bearer `.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

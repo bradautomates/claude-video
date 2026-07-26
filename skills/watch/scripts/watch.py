@@ -56,9 +56,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["custom", "groq", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. 'custom' uses WATCH_WHISPER_ENDPOINT "
+             "(a self-hosted OpenAI-compatible server). Default: prefer custom if "
+             "configured, then Groq, then OpenAI.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -238,7 +240,8 @@ def main() -> int:
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        # A self-hosted endpoint may need no key at all, so "" is valid there.
+        if backend and (api_key or backend == "custom"):
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
@@ -252,11 +255,12 @@ def main() -> int:
             except SystemExit as exc:
                 print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
+            if args.whisper == "custom":
+                hint = "--whisper custom was set but WATCH_WHISPER_ENDPOINT is not configured"
+            elif args.whisper:
+                hint = f"--whisper {args.whisper} was set but the matching API key is missing"
+            else:
+                hint = "no subtitles, no Whisper API key, and no WATCH_WHISPER_ENDPOINT found"
             setup_py = SCRIPT_DIR / "setup.py"
             print(
                 f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
