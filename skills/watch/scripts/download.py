@@ -13,8 +13,15 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+import config
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+# Browsers probed (in order) for --cookies-from-browser when a bare download
+# fails on a login-gated host (Instagram, TikTok, X, private / age-gated).
+# An explicit WATCH_COOKIES_FROM_BROWSER (env or ~/.config/watch/.env) wins.
+COOKIE_BROWSER_FALLBACKS = ("chrome", "brave", "firefox", "edge", "safari")
 
 
 def is_url(source: str) -> bool:
@@ -124,31 +131,54 @@ def download_url(
     output_template = str(out_dir / "video.%(ext)s")
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
-    cmd = [
-        "yt-dlp",
-        "-N", "8",
-        "-f", fmt,
-        "--merge-output-format", "mp4",
-        "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en.*",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
-        "--no-playlist",
-        "--ignore-errors",
-        "-o", output_template,
-        "--",
-        url,
-    ]
 
+    def build_cmd(cookie_browser: str | None) -> list[str]:
+        cmd = [
+            "yt-dlp",
+            "-N", "8",
+            "-f", fmt,
+            "--merge-output-format", "mp4",
+            "--write-info-json",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs", "en.*",
+            "--sub-format", "vtt",
+            "--convert-subs", "vtt",
+            "--no-playlist",
+            "--ignore-errors",
+        ]
+        if cookie_browser:
+            cmd += ["--cookies-from-browser", cookie_browser]
+        cmd += ["-o", output_template, "--", url]
+        return cmd
+
+    # First attempt without cookies (fastest, works for public YouTube/Vimeo/etc.).
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    result = subprocess.run(build_cmd(None), stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
+
+    # Fallback: login-gated hosts (Instagram, TikTok, X, private / age-gated) need
+    # session cookies. Retry with the user's logged-in browser session. An
+    # explicit WATCH_COOKIES_FROM_BROWSER wins; otherwise probe common browsers.
+    if video is None:
+        forced = config.cookies_from_browser()
+        browsers = (forced,) if forced else COOKIE_BROWSER_FALLBACKS
+        for browser in browsers:
+            print(
+                f"[watch] bare download failed — retrying with cookies from {browser}…",
+                file=sys.stderr,
+            )
+            result = subprocess.run(build_cmd(browser), stdout=sys.stderr, stderr=sys.stderr)
+            video = _pick_video(out_dir)
+            if video is not None:
+                break
+
     if video is None:
         raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode}). "
+            "For a login-gated video, log into the site in your browser and/or set "
+            "WATCH_COOKIES_FROM_BROWSER=chrome (or firefox/brave/edge/safari)."
         )
 
     subtitle = _pick_subtitle(out_dir)

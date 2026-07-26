@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Login-gated download fallback.** When the first cookie-less download returns no video (Instagram, TikTok, X, private / age-gated), the script retries with yt-dlp's `--cookies-from-browser`, probing `chrome → brave → firefox → edge → safari`. Set `WATCH_COOKIES_FROM_BROWSER` (env or `~/.config/watch/.env`) to force a specific browser. Public videos are unaffected — the cookie-less attempt always runs first.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

@@ -62,3 +62,48 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+
+
+def _cookie_browser(argv: list[str]) -> str | None:
+    if "--cookies-from-browser" not in argv:
+        return None
+    return argv[argv.index("--cookies-from-browser") + 1]
+
+
+def test_download_url_first_attempt_has_no_cookies(monkeypatch, tmp_path):
+    """The bare, fastest attempt must not pull browser cookies."""
+    calls = _capture_argv(monkeypatch)
+    monkeypatch.setattr(download.config, "cookies_from_browser", lambda: None)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "download")
+    assert _cookie_browser(calls[0]) is None
+
+
+def test_download_url_probes_browsers_on_failure(monkeypatch, tmp_path):
+    """When the bare download yields no video, retry once per fallback browser."""
+    calls = _capture_argv(monkeypatch)
+    monkeypatch.setattr(download.config, "cookies_from_browser", lambda: None)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "download")
+    retried = [_cookie_browser(c) for c in calls if _cookie_browser(c) is not None]
+    assert retried == list(download.COOKIE_BROWSER_FALLBACKS)
+
+
+def test_download_url_respects_forced_browser(monkeypatch, tmp_path):
+    """An explicit WATCH_COOKIES_FROM_BROWSER short-circuits the probe."""
+    calls = _capture_argv(monkeypatch)
+    monkeypatch.setattr(download.config, "cookies_from_browser", lambda: "firefox")
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "download")
+    retried = [_cookie_browser(c) for c in calls if _cookie_browser(c) is not None]
+    assert retried == ["firefox"]
+
+
+def test_download_url_no_cookie_retry_on_success(monkeypatch, tmp_path):
+    """A successful bare download must not trigger any cookie retry."""
+    calls = _capture_argv(monkeypatch)
+    monkeypatch.setattr(download, "_pick_video", lambda out_dir: tmp_path / "video.mp4")
+    result = download.download_url(URL, tmp_path / "download")
+    assert result["downloaded"] is True
+    assert len(calls) == 1
+    assert _cookie_browser(calls[0]) is None

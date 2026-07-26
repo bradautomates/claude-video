@@ -62,6 +62,23 @@ def get_config() -> dict[str, object]:
     }
 
 
+def cookies_from_browser() -> str | None:
+    """Browser to pull cookies from for login-gated hosts (Instagram, TikTok, X,
+    private / age-gated videos).
+
+    Set ``WATCH_COOKIES_FROM_BROWSER=chrome`` (or firefox/brave/edge/safari) in
+    the environment or ``~/.config/watch/.env`` to force a specific browser.
+    Returns ``None`` to let download.py probe common browsers in order.
+    """
+    file_values = read_env_file()
+    value = (
+        os.environ.get("WATCH_COOKIES_FROM_BROWSER")
+        or file_values.get("WATCH_COOKIES_FROM_BROWSER")
+        or ""
+    ).strip()
+    return value or None
+
+
 def frame_cap(detail: str) -> int | None:
     if detail == "efficient":
         return 50

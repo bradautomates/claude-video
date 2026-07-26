@@ -197,6 +197,7 @@ This holds for `transcript` detail too: even with no frames, produce a **summary
 Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
+- `WATCH_COOKIES_FROM_BROWSER=chrome|firefox|brave|edge|safari` (optional) — force which browser yt-dlp pulls cookies from for login-gated videos. Unset, the download tries cookie-less first and only on failure probes `chrome → brave → firefox → edge → safari`.
 
 At `transcript` detail, captions are enough to return a report without downloading video. If captions are missing, the script downloads audio only and tries Whisper. If no transcript can be produced, it reports the limitation clearly; re-run with `--detail balanced` for frames.
 
@@ -234,7 +235,7 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. Login-gated hosts (Instagram, TikTok, X, private / age-gated videos) are retried automatically with `--cookies-from-browser`, probing `chrome → brave → firefox → edge → safari` (force one with `WATCH_COOKIES_FROM_BROWSER`). If every attempt still fails, tell the user plainly (they may need to be logged into the site in that browser); do not keep retrying.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
@@ -250,6 +251,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does:**
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
+- On a login-gated host (Instagram, TikTok, X, private / age-gated), if the first cookie-less download returns no video, retries with `--cookies-from-browser` — reading session cookies from your local browser to authenticate. Cookies are read locally and only sent to the originating host by yt-dlp; they are never uploaded to any third party, logged, or written to output files
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
@@ -258,7 +260,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
+- Does not log into, post to, or otherwise act on any platform account. It never sends credentials; the only account data it ever touches is read-only browser cookies, and only on the login-gated retry described above (skip it entirely by staying logged out of that browser or by pointing `WATCH_COOKIES_FROM_BROWSER` at a browser with no session)
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
