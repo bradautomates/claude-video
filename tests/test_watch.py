@@ -70,7 +70,16 @@ def test_timestamps_with_transcript_detail_is_cue_only(cut_clip: Path):
 
 
 def _frame_lines(out: str) -> int:
-    return sum(1 for line in out.splitlines() if "/frames/frame_" in line and "(t=" in line)
+    """Count frame lines in the report, on either path separator.
+
+    The report prints native paths, so matching only "/frames/frame_" counts
+    zero on Windows and silently passes any "== 0" assertion.
+    """
+    return sum(
+        1
+        for line in out.splitlines()
+        if ("/frames/frame_" in line or "\\frames\\frame_" in line) and "(t=" in line
+    )
 
 
 def test_dedup_collapses_static_by_default(static_clip: Path):
