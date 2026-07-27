@@ -72,7 +72,15 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    POSIX only. Windows synthesizes ``st_mode`` as 0o666 no matter what the
+    real ACL says, so the check can never pass there — it would warn on every
+    single invocation — and the remedy it prints (`chmod 600`) is not a Windows
+    command. Access there is governed by the user-profile ACL instead.
+    """
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
