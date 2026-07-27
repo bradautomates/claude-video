@@ -3,6 +3,11 @@
 
 YouTube auto-subs emit rolling-duplicate cues (each line appears 2-3 times as it
 scrolls). We dedupe consecutive identical cues and merge their time ranges.
+
+Three rolling shapes are collapsed, see _dedupe: an exact repeat, a cue that
+grows by appending to the previous one, and a scrolling cue whose leading words
+repeat the tail of the previous cue. That last shape is the common one on
+`en-orig` tracks and roughly doubles transcript size if left in.
 """
 from __future__ import annotations
 
@@ -15,6 +20,11 @@ TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
+PUNCT_RE = re.compile(r"[^\w']+")
+
+# A scrolling cue repeats the tail of the one before it. Requiring at least this
+# many matching words keeps a genuine short repetition ("yeah, yeah") intact.
+MIN_OVERLAP_WORDS = 3
 
 
 def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
@@ -52,6 +62,22 @@ def parse_vtt(path: str) -> list[dict]:
     return _dedupe(segments)
 
 
+def _key(words: list[str]) -> list[str]:
+    """Compare words ignoring case and punctuation, which cues vary on."""
+    return [PUNCT_RE.sub("", w).lower() for w in words]
+
+
+def strip_rolling_overlap(previous: str, current: str) -> str:
+    """Drop the leading words of `current` that just repeat the tail of `previous`."""
+    prev_words = previous.split()
+    cur_words = current.split()
+    limit = min(len(prev_words), len(cur_words))
+    for size in range(limit, MIN_OVERLAP_WORDS - 1, -1):
+        if _key(prev_words[-size:]) == _key(cur_words[:size]):
+            return " ".join(cur_words[size:])
+    return current
+
+
 def _dedupe(segments: list[dict]) -> list[dict]:
     """Collapse rolling duplicates common in YouTube auto-subs."""
     out: list[dict] = []
@@ -63,6 +89,12 @@ def _dedupe(segments: list[dict]) -> list[dict]:
             out[-1]["text"] = seg["text"]
             out[-1]["end"] = seg["end"]
             continue
+        if out:
+            trimmed = strip_rolling_overlap(out[-1]["text"], seg["text"])
+            if not trimmed:
+                out[-1]["end"] = seg["end"]
+                continue
+            seg = {**seg, "text": trimmed}
         out.append(seg)
     return out
 
