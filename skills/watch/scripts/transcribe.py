@@ -2,7 +2,9 @@
 """Parse a WebVTT subtitle file into a clean, timestamped transcript.
 
 YouTube auto-subs emit rolling-duplicate cues (each line appears 2-3 times as it
-scrolls). We dedupe consecutive identical cues and merge their time ranges.
+scrolls). We dedupe consecutive identical cues and merge their time ranges, and
+trim the partial overlap that remains when a cue re-emits only the tail of the
+one before it.
 """
 from __future__ import annotations
 
@@ -15,6 +17,9 @@ TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
+
+# Shortest word run treated as a rolling repeat rather than genuine repetition.
+MIN_OVERLAP_WORDS = 2
 
 
 def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
@@ -52,6 +57,29 @@ def parse_vtt(path: str) -> list[dict]:
     return _dedupe(segments)
 
 
+def _strip_leading_overlap(previous: str, current: str) -> str:
+    """Drop the part of ``current`` that merely repeats the tail of ``previous``.
+
+    Roll-up captions scroll: a cue re-emits the tail of the cue before it and
+    appends a few new words, so the repeated text is a *suffix* of the previous
+    cue and a *prefix* of this one. ``startswith`` only catches the case where
+    the whole previous cue is repeated, which is the rarer shape.
+
+    Match on whole words (punctuation travels with its word) and take the
+    longest overlap. Overlaps shorter than ``MIN_OVERLAP_WORDS`` are left alone
+    so genuine repetition ("no, no") survives.
+    """
+    previous_words = previous.split()
+    current_words = current.split()
+    limit = min(len(previous_words), len(current_words))
+
+    for size in range(limit, MIN_OVERLAP_WORDS - 1, -1):
+        if previous_words[-size:] == current_words[:size]:
+            return " ".join(current_words[size:])
+
+    return current
+
+
 def _dedupe(segments: list[dict]) -> list[dict]:
     """Collapse rolling duplicates common in YouTube auto-subs."""
     out: list[dict] = []
@@ -63,6 +91,13 @@ def _dedupe(segments: list[dict]) -> list[dict]:
             out[-1]["text"] = seg["text"]
             out[-1]["end"] = seg["end"]
             continue
+        if out:
+            trimmed = _strip_leading_overlap(out[-1]["text"], seg["text"])
+            if not trimmed:
+                # Nothing new was said — fold this cue into the previous one.
+                out[-1]["end"] = seg["end"]
+                continue
+            seg = {**seg, "text": trimmed}
         out.append(seg)
     return out
 
