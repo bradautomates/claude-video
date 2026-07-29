@@ -11,6 +11,25 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+
+@pytest.fixture(scope="session")
+def _isolated_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return tmp_path_factory.mktemp("home")
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_config(monkeypatch: pytest.MonkeyPatch, _isolated_home: Path) -> None:
+    """Keep the developer's real ~/.config/watch/.env and shell env out of tests.
+
+    Subprocess-based tests inherit os.environ, so a customized WATCH_DETAIL or a
+    real API key on the developer's machine would otherwise change what
+    watch.py / setup.py resolve (#96).
+    """
+    monkeypatch.setenv("HOME", str(_isolated_home))
+    monkeypatch.setenv("USERPROFILE", str(_isolated_home))  # Windows
+    for var in ("WATCH_DETAIL", "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE"):
+        monkeypatch.delenv(var, raising=False)
+
 # 14 visually distinct fills → 14 abrupt cuts → x264 emits a keyframe per cut.
 COLORS = [
     "red", "green", "blue", "white", "black", "yellow", "cyan",
