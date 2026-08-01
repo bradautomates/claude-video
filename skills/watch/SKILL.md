@@ -114,7 +114,7 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 ## Recommended limits
 
 - **Best accuracy: videos under 10 minutes.** Frame coverage scales inversely with duration.
-- **Universal rate cap: 2 fps.** The script never samples faster than 2 fps, even when a budget or `--fps` would imply more.
+- **Auto-mode rate cap: 2 fps.** Auto-mode never samples faster than 2 fps, even when a budget would imply more. The ceiling is auto-mode only: explicit `--fps` and `--every-frame` bypass it (see "High-density mode" below), and `--max-frames` can go up to 1000 (hard safety backstop).
 - **The frame ceiling is set by the detail mode** (`WATCH_DETAIL` in `~/.config/watch/.env`, or `--detail`), not a single global cap:
   - `transcript` → no frames
   - `efficient` → up to **50** (keyframes)
@@ -128,6 +128,24 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
   - 3-10min → ~80 frames
   - \>10min → up to the detail cap, sparsely spaced (warning printed)
 - If the user hands you a long video, consider asking whether they want a specific section before burning tokens on a sparse scan.
+
+### High-density mode — when you need every transition frame
+
+Auto-mode samples at most 2 fps, so a cut, fade, wipe, or fast on-screen change shorter than ~500ms can fall between frames. When the user needs full detail — "don't miss any frames", "show me the exact transition", "frame-by-frame" — sample at the source's native rate over a **tight** window:
+
+```bash
+# Every frame across a 3-second transition (native fps, no gaps).
+# 3s × 30fps = 90 frames, so --max-frames must allow at least that or it truncates:
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 0:45 --end 0:48 --every-frame --max-frames 120
+
+# Or pin an explicit rate (honored verbatim now, not clamped to 2):
+python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 0:45 --end 0:48 --fps 30 --max-frames 120
+```
+
+Rules:
+- **Always pair with a narrow `--start`/`--end`.** Native-fps over a whole video blows context, and `--max-frames` will silently truncate to the first N frames. A few seconds is the right scope.
+- **Raise `--max-frames` to cover the window.** The default cap is the detail mode's (100 on `balanced`). A 4s window at 30fps needs `--max-frames 120` to capture all of it; otherwise the tail is truncated.
+- **Mind token cost.** ~100 frames ≈ 50-80k image tokens; 300+ can fill a whole context window. The script warns above ~150 frames. To cut cost, shorten the time window (not the resolution) or use `--fps 15` to halve the rate while still catching most transitions.
 
 ## How to invoke
 
@@ -143,9 +161,10 @@ Optional flags:
 - `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` = no frames (transcript only, skips video download when captions exist); `efficient` = fast keyframes (cap 50); `balanced` = scene-aware frames (cap 100); `token-burner` = scene-aware, uncapped.
 - `--start T` / `--end T` — focus on a section. Accepts `SS`, `MM:SS`, or `HH:MM:SS`. When either is set, fps auto-scales denser (see "Focusing on a section" below).
 - `--timestamps T1,T2,…` — grab a frame at each of these absolute timestamps (`SS`, `MM:SS`, or `HH:MM:SS`). Use this after reading the transcript to capture deictic moments the presenter flags ("look here", "as you can see", "notice this") that visual selection alone may miss. See "Transcript-cue frames" below.
-- `--max-frames N` — override the preset cap for tighter token budget (e.g. `--max-frames 40`)
+- `--max-frames N` — override the preset cap. Lower it for a tighter token budget (e.g. `--max-frames 40`); raise it (up to 1000) for high-density runs.
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
-- `--fps F` — override auto-fps (clamped to 2 fps max)
+- `--fps F` — override auto-fps. Honored verbatim — **not** clamped to 2 fps — so you can sample fast transitions.
+- `--every-frame` — high-density: sample at the video's native fps (every frame, no gaps), capped by `--max-frames`. Pair with a tight `--start`/`--end`.
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)

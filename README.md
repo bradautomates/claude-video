@@ -44,7 +44,7 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
-3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
+3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. For full frame-by-frame detail, `--every-frame` / `--fps` sample at the native rate (see "High-density mode"). JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
@@ -62,7 +62,20 @@ Token cost is dominated by frames. Every frame is an image; image tokens add up 
 | 3 - 10 min | ~80 frames | Sparse but workable |
 | > 10 min | 100 frames (capped modes) | "Sparse scan" warning — re-run focused, or `--detail token-burner` for full uncapped coverage |
 
-When the user names a moment ("around 2:30", "the last 30 seconds", "from 0:45 to 1:00"), pass `--start` / `--end`. Focused mode gets denser per-second budgets, capped at 2 fps. Far more useful than a sparse pass over the whole thing.
+When the user names a moment ("around 2:30", "the last 30 seconds", "from 0:45 to 1:00"), pass `--start` / `--end`. Focused mode gets denser per-second budgets, capped at 2 fps in auto-mode. Far more useful than a sparse pass over the whole thing.
+
+### High-density mode — every transition frame
+
+Auto-mode tops out at 2 fps, so a cut/fade/wipe shorter than ~500ms can fall between frames. To see **every** frame, sample at the native rate over a tight window:
+
+```
+/watch "$URL" --start 0:45 --end 0:48 --every-frame --max-frames 120
+/watch "$URL" --start 0:45 --end 0:48 --fps 30 --max-frames 120
+```
+
+- `--every-frame` samples at the source's native fps (no gaps); `--fps N` pins an exact rate and is honored verbatim (no 2 fps clamp).
+- Always pair with a narrow `--start`/`--end` — and raise `--max-frames` to cover the window (a 4s clip at 30fps = 120 frames). Otherwise the run truncates at the detail mode's frame cap.
+- Watch the token cost: ~100 frames ≈ 50-80k image tokens; 300+ can fill a context window. Shorten the time window before touching resolution.
 
 ## Frame deduplication
 
@@ -192,9 +205,10 @@ Other knobs (passed to `scripts/watch.py`):
 
 - `--detail transcript|efficient|balanced|token-burner` — fidelity/speed dial. `transcript` skips frames (transcript only); `efficient` uses fast keyframes (cap 50); `balanced` uses scene-aware frames (cap 100); `token-burner` is scene-aware and uncapped.
 - `--timestamps T1,T2,…` — grab a frame at each absolute timestamp (`SS`/`MM:SS`/`HH:MM:SS`). Claude reads the transcript first, then targets the moments the presenter flags ("look here", "as you can see"). Added on top of the detail frames (reserved against the cap); out-of-window cues are dropped in focus mode; with `--detail transcript` these become the only frames.
-- `--max-frames N` — lower the frame cap for a tighter token budget.
+- `--max-frames N` — override the frame cap. Lower it for a tighter token budget; raise it (up to 1000) for high-density runs.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
-- `--fps F` — override the auto-fps calculation (still capped at 2 fps).
+- `--fps F` — override the auto-fps calculation. Honored verbatim — not clamped to 2 fps.
+- `--every-frame` — sample at the video's native fps (every frame, no gaps), capped by `--max-frames`. Pair with a tight `--start`/`--end`.
 - `--whisper groq|openai` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
@@ -204,6 +218,7 @@ Other knobs (passed to `scripts/watch.py`):
 
 - **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
+- **The 2 fps ceiling is auto-mode only.** `--every-frame` / `--fps` / `--max-frames` (up to 1000) unlock full frame-by-frame detail when you need it — pair with a tight `--start`/`--end` (see "High-density mode").
 
 ## Structure
 

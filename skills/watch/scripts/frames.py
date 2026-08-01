@@ -16,6 +16,9 @@ import sys
 from pathlib import Path
 
 
+# Auto-mode fps ceiling. Keeps default scans cheap. Explicit --fps and
+# --every-frame deliberately bypass this (see watch.py) so you can sample at the
+# source's native rate when you need to see every transition frame.
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
 # Keep scene-detection results once we have at least this many distinct shots.
@@ -45,11 +48,34 @@ def _scale_filter(resolution: int) -> str:
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
 
+# Safety backstop on frame count once high-density mode lifts the budget. This is
+# a runaway guard, not a recommendation — reading more than ~150-300 frames is
+# context-heavy, so keep dense runs to short --start/--end windows.
+HARD_MAX_FRAMES = 1000
+
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
     fps = min(fps, MAX_FPS)
     target = min(max_frames, max(1, int(round(fps * duration_seconds))))
     return fps, target
+
+
+def parse_frame_rate(value: str | float | int | None) -> float:
+    """Parse an ffprobe frame-rate string (e.g. '30000/1001') into fps."""
+    if not value:
+        return 0.0
+    s = str(value).strip()
+    if "/" in s:
+        num, _, den = s.partition("/")
+        try:
+            den_f = float(den)
+            return float(num) / den_f if den_f else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
 
 def parse_time(value: str | float | int | None) -> float | None:
@@ -109,11 +135,15 @@ def get_metadata(video_path: str) -> dict:
     audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
     duration = float(fmt.get("duration") or video_stream.get("duration") or 0)
+    native_fps = parse_frame_rate(
+        video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    )
     return {
         "duration_seconds": duration,
         "width": video_stream.get("width"),
         "height": video_stream.get("height"),
         "codec": video_stream.get("codec_name"),
+        "fps": native_fps,
         "size_bytes": int(fmt.get("size") or 0),
         "has_audio": audio_stream is not None,
     }
@@ -685,8 +715,8 @@ def extract_keyframes(
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(
-            "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
-            "[--max-frames N] [--start T] [--end T] [--no-dedup]",
+            "usage: frames.py <video-path> <out-dir> [--fps F] [--every-frame] "
+            "[--resolution W] [--max-frames N] [--start T] [--end T] [--no-dedup]",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -696,8 +726,9 @@ if __name__ == "__main__":
     args = sys.argv[3:]
 
     fps_override = None
+    every_frame = False
     resolution = 512
-    max_frames = 100
+    max_frames = 80
     start_arg = None
     end_arg = None
     dedup = True
@@ -705,6 +736,8 @@ if __name__ == "__main__":
     while i < len(args):
         if args[i] == "--fps":
             fps_override = float(args[i + 1]); i += 2
+        elif args[i] == "--every-frame":
+            every_frame = True; i += 1
         elif args[i] == "--resolution":
             resolution = int(args[i + 1]); i += 2
         elif args[i] == "--max-frames":
@@ -718,23 +751,35 @@ if __name__ == "__main__":
         else:
             i += 1
 
+    max_frames = min(max_frames, HARD_MAX_FRAMES)
+    # --every-frame promises no skipped frames, so perceptual dedup stays off.
+    if every_frame:
+        dedup = False
+
     meta = get_metadata(video)
     start_sec = parse_time(start_arg)
     end_sec = parse_time(end_arg)
     full_duration = meta["duration_seconds"]
+    native_fps = meta.get("fps") or 0.0
 
     effective_start = start_sec if start_sec is not None else 0.0
     effective_end = end_sec if end_sec is not None else full_duration
     effective_duration = max(0.0, effective_end - effective_start)
 
     focused = start_sec is not None or end_sec is not None
-    if focused:
+    if every_frame:
+        # Sample at native rate — every decoded frame, no gaps. max_frames caps it.
+        fps = native_fps if native_fps > 0 else MAX_FPS
+        target = min(max_frames, max(1, int(round(fps * effective_duration))))
+    elif focused:
         fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
     else:
         fps, target = auto_fps(effective_duration, max_frames=max_frames)
+    # Explicit --fps is honored verbatim (NOT clamped to MAX_FPS) so you can ask
+    # for native-rate sampling to catch fast transitions.
     if fps_override is not None:
         fps = fps_override
-        target = max(1, int(round(fps * effective_duration)))
+        target = min(max_frames, max(1, int(round(fps * effective_duration))))
 
     frames = extract(
         video, out,
