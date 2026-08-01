@@ -7,6 +7,7 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -19,7 +20,7 @@ from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import load_api_key, resolve_model_alias, transcribe_video  # noqa: E402
 
 
 def main() -> int:
@@ -56,9 +57,20 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["local", "groq", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default priority: local (whisper.cpp/mlx) → Groq → OpenAI.",
+    )
+    ap.add_argument(
+        "--accurate",
+        action="store_true",
+        help="Use the max-accuracy local model (large-v3) instead of the fast default (turbo). Slower.",
+    )
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Local whisper.cpp model: an alias (turbo, large-v3, medium, small, base) or a path to a ggml .bin. "
+             "Overrides the auto-pick (and --accurate). Cloud backends ignore this.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -67,6 +79,12 @@ def main() -> int:
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
     args = ap.parse_args()
+
+    # Translate the friendly --model / --accurate into WHISPER_MODEL, which the
+    # local whisper.cpp backend honors. (Cloud backends have fixed models.)
+    chosen_model = args.model or ("large-v3" if args.accurate else None)
+    if chosen_model:
+        os.environ["WHISPER_MODEL"] = resolve_model_alias(chosen_model)
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -253,9 +271,9 @@ def main() -> int:
                 print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
         else:
             hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
+                f"--whisper {args.whisper} was set but that backend isn't available"
                 if args.whisper else
-                "no subtitles and no Whisper API key found"
+                "no subtitles and no Whisper backend found (no local whisper.cpp/mlx, no API key)"
             )
             setup_py = SCRIPT_DIR / "setup.py"
             print(

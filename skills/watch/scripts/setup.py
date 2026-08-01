@@ -113,7 +113,40 @@ def _read_env_key(name: str) -> str | None:
     return None
 
 
+# Local whisper.cpp ggml models, checked before requiring any cloud API key.
+LOCAL_MODEL_DIRS = (
+    "/opt/homebrew/share/whisper-cpp",
+    "/usr/local/share/whisper-cpp",
+    str(Path.home() / ".cache" / "whisper"),
+)
+LOCAL_MODEL_NAMES = (
+    "ggml-large-v3-turbo-q5_0.bin",
+    "ggml-large-v3-turbo.bin",
+    "ggml-large-v3-q5_0.bin",
+    "ggml-large-v3.bin",
+    "ggml-medium.bin",
+    "ggml-small.bin",
+    "ggml-base.bin",
+)
+
+
+def _have_local_whisper() -> bool:
+    """True if a local engine is usable: whisper.cpp (binary + model) or mlx/openai-whisper."""
+    if os.environ.get("WATCH_DISABLE_LOCAL_WHISPER"):
+        return False
+    override = os.environ.get("WHISPER_MODEL")
+    has_cpp_bin = any(_which(b) for b in ("whisper-cli", "whisper-cpp", "main"))
+    has_model = (override and Path(override).expanduser().exists()) or any(
+        (Path(d) / n).exists() for d in LOCAL_MODEL_DIRS for n in LOCAL_MODEL_NAMES
+    )
+    if has_cpp_bin and has_model:
+        return True
+    return bool(_which("mlx_whisper") or _which("whisper"))
+
+
 def _have_api_key() -> tuple[bool, str | None]:
+    if _have_local_whisper():
+        return True, "local"
     if _read_env_key("GROQ_API_KEY"):
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):

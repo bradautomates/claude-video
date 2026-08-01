@@ -2,6 +2,21 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **Local Whisper backend — no API key, no network, no upload limit.** Auto-detects two engines: `whisper.cpp` (`whisper-cli` binary + a `ggml-*.bin` model, Metal-accelerated on Apple Silicon) and the `mlx_whisper` / `whisper` Python CLIs. `--whisper local` forces it. whisper.cpp gets 16 kHz WAV; the Python CLIs take the existing mp3.
+- `--accurate` flag (use `large-v3`) and `--model turbo|large-v3|<path>` for picking the local whisper.cpp model by friendly alias — no more typing a full `WHISPER_MODEL=/…/ggml-*.bin` path. `$WHISPER_MODEL` still works for an explicit override.
+- Model auto-pick now prefers full `large-v3-turbo` over the quantized variant when both are present.
+- `WATCH_DISABLE_LOCAL_WHISPER=1` skips local-engine detection entirely (forces cloud backends; also keeps the setup tests hermetic on machines with whisper installed).
+
+### Changed
+- Whisper backend priority is now **local → Groq → OpenAI** (was Groq → OpenAI). The first available backend wins; key-only setups are unaffected. `--whisper` now accepts `local`.
+- `setup.py --check` treats a usable local engine as a valid backend, so no API key is required when local Whisper is installed.
+- `extract_audio` emits 16 kHz PCM WAV when the output path ends in `.wav` (whisper.cpp's native input), else the existing mp3.
+
+> Note: `brew install whisper-cpp` provides the binary but **not** a model — download a `ggml-*.bin` separately (quantized `large-v3-turbo-q5_0` is ~547 MB).
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
