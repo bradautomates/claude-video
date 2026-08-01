@@ -21,7 +21,7 @@ def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
-def parse_vtt(path: str) -> list[dict]:
+def parse_vtt(path: str, rolling: bool | None = None) -> list[dict]:
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
@@ -49,11 +49,45 @@ def parse_vtt(path: str) -> list[dict]:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
 
-    return _dedupe(segments)
+    if rolling is None:
+        rolling = _looks_like_rolling_captions(segments)
+    return _dedupe(segments, rolling=rolling)
 
 
-def _dedupe(segments: list[dict]) -> list[dict]:
-    """Collapse rolling duplicates common in YouTube auto-subs."""
+def _normalized_words(text: str) -> list[str]:
+    return [re.sub(r"^\W+|\W+$", "", word).casefold() for word in text.split()]
+
+
+def _rolling_overlap(left: str, right: str, min_words: int = 3) -> int:
+    """Return the longest word overlap between left's suffix and right's prefix."""
+    left_words = _normalized_words(left)
+    right_words = _normalized_words(right)
+    for size in range(min(len(left_words), len(right_words)), min_words - 1, -1):
+        if left_words[-size:] == right_words[:size]:
+            return size
+    return 0
+
+
+def _looks_like_rolling_captions(segments: list[dict]) -> bool:
+    """Detect YouTube-style rolling captions without assuming a track type.
+
+    Manual captions occasionally repeat a phrase, but auto captions overlap
+    adjacent cues consistently. Requiring multiple overlaps and a minimum
+    ratio keeps normal subtitle tracks untouched.
+    """
+    sample = segments[:200]
+    if len(sample) < 3:
+        return False
+    hits = sum(
+        1
+        for previous, current in zip(sample, sample[1:])
+        if _rolling_overlap(previous["text"], current["text"])
+    )
+    return hits >= 2 and hits / (len(sample) - 1) >= 0.08
+
+
+def _dedupe(segments: list[dict], rolling: bool = False) -> list[dict]:
+    """Collapse exact duplicates and optional rolling-caption word overlap."""
     out: list[dict] = []
     for seg in segments:
         if out and seg["text"] == out[-1]["text"]:
@@ -63,7 +97,16 @@ def _dedupe(segments: list[dict]) -> list[dict]:
             out[-1]["text"] = seg["text"]
             out[-1]["end"] = seg["end"]
             continue
-        out.append(seg)
+        cleaned = dict(seg)
+        if rolling and out:
+            overlap = _rolling_overlap(out[-1]["text"], cleaned["text"])
+            if overlap:
+                remaining = cleaned["text"].split()[overlap:]
+                if not remaining:
+                    out[-1]["end"] = cleaned["end"]
+                    continue
+                cleaned["text"] = " ".join(remaining)
+        out.append(cleaned)
     return out
 
 

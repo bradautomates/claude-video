@@ -41,12 +41,26 @@ ENV_TEMPLATE = """# /watch API configuration
 # Get a Groq key:  https://console.groq.com/keys
 # Get an OpenAI key:  https://platform.openai.com/api-keys
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
+# Leave both blank to disable Whisper — caption-less videos will come back
+# frames-only, and audio-only sources cannot be transcribed.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
+
+# Optional learned sound-event understanding for short clips. Unlike the local
+# waveform/spectrogram pass, this uploads only the selected audio range to the
+# configured provider. Leave SOUND_SEMANTICS_PROVIDER blank to keep it disabled.
+# Values: openai or gemini
+SOUND_SEMANTICS_PROVIDER=
+GEMINI_API_KEY=
 """
+
+ENV_FIELDS = (
+    "GROQ_API_KEY",
+    "OPENAI_API_KEY",
+    "SOUND_SEMANTICS_PROVIDER",
+    "GEMINI_API_KEY",
+)
 
 
 def _which(name: str) -> str | None:
@@ -109,8 +123,27 @@ def is_first_run() -> bool:
 
 
 def _scaffold_env() -> bool:
-    """Create ~/.config/watch/.env with placeholders if missing."""
+    """Create the config, or append newly introduced fields without clobbering it."""
     if CONFIG_FILE.exists():
+        try:
+            existing = CONFIG_FILE.read_text()
+            present = {
+                line.partition("=")[0].strip()
+                for line in existing.splitlines()
+                if "=" in line and not line.lstrip().startswith("#")
+            }
+            missing = [name for name in ENV_FIELDS if name not in present]
+            if missing:
+                separator = "" if not existing or existing.endswith("\n") else "\n"
+                addition = separator + "\n# Optional semantic sound configuration\n"
+                addition += "\n".join(f"{name}=" for name in missing) + "\n"
+                CONFIG_FILE.write_text(existing + addition)
+                try:
+                    CONFIG_FILE.chmod(0o600)
+                except OSError:
+                    pass
+        except OSError:
+            pass
         return False
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(ENV_TEMPLATE)
@@ -200,6 +233,14 @@ def _status() -> dict:
     """Structured preflight snapshot."""
     missing = _check_binaries()
     has_key, backend = _have_api_key()
+    semantic_provider = (_read_env_key("SOUND_SEMANTICS_PROVIDER") or "").lower()
+    if semantic_provider not in {"openai", "gemini"}:
+        semantic_provider = None
+    semantic_key_name = (
+        "GEMINI_API_KEY" if semantic_provider == "gemini" else
+        "OPENAI_API_KEY" if semantic_provider == "openai" else None
+    )
+    semantic_ready = bool(semantic_key_name and _read_env_key(semantic_key_name))
 
     if not missing and has_key:
         status = "ready"
@@ -216,6 +257,8 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "semantic_sound_provider": semantic_provider,
+        "semantic_sound_ready": semantic_ready,
         "config_file": str(CONFIG_FILE),
         "platform": platform.system(),
     }
@@ -308,7 +351,10 @@ def cmd_install() -> int:
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
     print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print(
+        "  Without a key, caption-less videos come back frames-only and "
+        "audio-only sources cannot be transcribed."
+    )
     return 3
 
 

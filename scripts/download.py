@@ -97,11 +97,21 @@ def _read_raw_info(out_dir: Path) -> dict:
 def _load_info(out_dir: Path, url: str) -> dict:
     raw = _read_raw_info(out_dir)
     if raw:
+        chapters = []
+        for chapter in raw.get("chapters") or []:
+            if not isinstance(chapter, dict) or chapter.get("start_time") is None:
+                continue
+            chapters.append({
+                "start_time": chapter.get("start_time"),
+                "end_time": chapter.get("end_time"),
+                "title": chapter.get("title") or "Untitled chapter",
+            })
         return {
             "title": raw.get("title"),
             "uploader": raw.get("uploader") or raw.get("channel"),
             "duration": raw.get("duration"),
             "url": raw.get("webpage_url") or url,
+            "chapters": chapters,
         }
     return {"url": url}
 

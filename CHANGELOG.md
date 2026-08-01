@@ -2,6 +2,20 @@
 
 All notable changes to `/watch` are documented here.
 
+## Unreleased
+
+### Added
+- Scene-aware frame selection with a reserved timeline-coverage floor, exact frame timestamps, uniform fallback, and persistent frame caching.
+- Multi-pass deep analysis guidance for long videos, using source chapters when available and focused chapter agents within the host's concurrency limit.
+- Persistent download caching, source chapter reporting, audio-only inputs, non-English caption fallback, Whisper vocabulary biasing, overlap-aware long-audio stitching, and adaptive bisection recovery.
+- Optional semantic sound timelines for clips and focused ranges up to 60 seconds, using OpenAI or Gemini audio models with validated events, source timestamps, local audio/visual timing support, and persistent result caching.
+- Adaptive 0.9-second motion detail strips for dense short-form action, changed-pixel coverage with hysteresis-based cut/flash-versus-motion candidates, and low/mid/high-band audio onset detection for effects layered over continuous music.
+
+### Changed
+- Long videos now receive the documented 100-frame default instead of silently stopping at 80.
+- Auto-generated rolling captions remove repeated word overlap before analysis.
+- Audio-only transcription failures no longer tell the agent to proceed with nonexistent frames.
+
 ## [0.1.2] — 2026-04-24
 
 ### Fixed

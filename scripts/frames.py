@@ -3,12 +3,11 @@
 
 Two sampling strategies share the same duration-based frame budget:
 
-- scene (default): a detection pass finds visual change points, the budget is
-  spent on the strongest changes first, and remaining slots split the largest
-  temporal gaps so coverage never collapses. Every frame carries new
-  information — slide flips and cuts land exactly on a frame instead of
-  between two uniform samples, and talking-head stretches stop eating the
-  budget with near-identical frames.
+- scene (default): a detection pass finds visual change points, reserves part
+  of the budget for uniform timeline coverage, spends the rest on the
+  strongest changes, and uses any remaining slots to split the largest gaps.
+  Slide flips and cuts land exactly on a frame without letting a dense intro
+  starve a quiet later section.
 - uniform: constant-fps sampling (the pre-scene behavior). Used as automatic
   fallback when detection finds nothing, and forced when the caller pins an
   explicit --fps.
@@ -20,6 +19,7 @@ focused-mode budgets denser (they are zooming in for detail).
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -38,6 +38,10 @@ SCENE_THRESHOLD = 0.04
 SCENE_DETECT_WIDTH = 160
 # Two selected frames closer than this are near-duplicates — skip the weaker.
 MIN_FRAME_GAP = 0.5
+# Scene-heavy intros can contain more candidates than the entire frame budget.
+# Reserve a quarter of the budget for evenly spaced anchors before ranking
+# scene changes so every part of the requested range remains visible.
+TIMELINE_COVERAGE_FRACTION = 0.25
 EXTRACT_WORKERS = 8
 
 
@@ -222,14 +226,25 @@ def plan_timestamps(
     target: int,
     min_gap: float = MIN_FRAME_GAP,
 ) -> list[float]:
-    """Pick up to `target` timestamps in [start, end): strongest scene changes
-    first, then split the largest remaining temporal gaps so quiet stretches
-    still get floor coverage."""
+    """Pick up to `target` timestamps in [start, end).
+
+    Reserve a uniform coverage floor first, add the strongest scene changes
+    next, then split the largest remaining gaps. The reservation matters when
+    one visually busy section has enough scene candidates to consume the
+    entire budget by itself.
+    """
     duration = end - start
     if duration <= 0 or target < 1:
         return []
 
-    selected: list[float] = [start]
+    coverage_slots = min(
+        target,
+        max(1, math.ceil(target * TIMELINE_COVERAGE_FRACTION)),
+    )
+    selected: list[float] = [
+        start + duration * i / coverage_slots
+        for i in range(coverage_slots)
+    ]
 
     def far_enough(t: float) -> bool:
         return all(abs(t - s) >= min_gap for s in selected)
