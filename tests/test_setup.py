@@ -1,6 +1,7 @@
 """setup.py --json surfaces the resolved watch detail."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -34,6 +35,54 @@ def _write_env(home: Path, body: str) -> None:
     f = cfg / ".env"
     f.write_text(body, encoding="utf-8")
     f.chmod(0o600)
+
+
+def _load_setup_module():
+    spec = importlib.util.spec_from_file_location("watch_setup_under_test", SETUP)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _FakeStat:
+    def __init__(self, mode):
+        self.st_mode = mode
+
+
+class _FakePath:
+    """Stands in for the .env path — _check_file_permissions only needs stat + str."""
+    def __init__(self, mode):
+        self._mode = mode
+
+    def stat(self):
+        return _FakeStat(self._mode)
+
+    def __str__(self):
+        return "/home/u/.config/watch/.env"
+
+
+def test_permission_warning_fires_on_posix(monkeypatch, capsys):
+    """The world-readable warning must still work where st_mode is meaningful."""
+    mod = _load_setup_module()
+    monkeypatch.setattr(mod.os, "name", "posix")
+    mod._check_file_permissions(_FakePath(0o644))
+    assert "readable by other users" in capsys.readouterr().err
+
+
+def test_permission_warning_silent_on_posix_when_locked_down(monkeypatch, capsys):
+    mod = _load_setup_module()
+    monkeypatch.setattr(mod.os, "name", "posix")
+    mod._check_file_permissions(_FakePath(0o600))
+    assert capsys.readouterr().err == ""
+
+
+def test_permission_warning_skipped_on_windows(monkeypatch, capsys):
+    """st_mode on Windows is synthesized from the read-only bit, not the ACL, so
+    0o644 there is not evidence of anything and chmod 600 cannot clear it."""
+    mod = _load_setup_module()
+    monkeypatch.setattr(mod.os, "name", "nt")
+    mod._check_file_permissions(_FakePath(0o644))
+    assert capsys.readouterr().err == ""
 
 
 def test_json_reports_watch_detail():

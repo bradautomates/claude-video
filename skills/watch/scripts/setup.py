@@ -72,7 +72,16 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    Skipped on Windows: `st_mode` there is synthesized from the read-only
+    attribute rather than read from the ACL, so every file reports group and
+    other as readable and this warning can never be cleared. `chmod 600` cannot
+    clear it either — on Windows chmod only toggles read-only. Access is
+    governed by NTFS ACLs on the user profile instead.
+    """
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
