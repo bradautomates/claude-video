@@ -6,14 +6,21 @@ set -euo pipefail
 
 CONFIG_FILE="$HOME/.config/watch/.env"
 
-# Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
-  perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
-  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $CONFIG_FILE"
-  fi
-fi
+# Warn if the secrets file has loose permissions. Skipped under Git Bash and
+# Cygwin: the mode there is synthesized from the read-only attribute rather than
+# read from the ACL, so it always reports 644 and chmod 600 cannot change it.
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) ;;
+  *)
+    if [[ -f "$CONFIG_FILE" ]]; then
+      perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
+      if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+        echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
+        echo "  Fix: chmod 600 $CONFIG_FILE"
+      fi
+    fi
+    ;;
+esac
 
 # Load API keys from the config file without exporting them.
 read_key() {
