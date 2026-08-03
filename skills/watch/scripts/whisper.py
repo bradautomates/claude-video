@@ -62,16 +62,13 @@ def plan_chunks(
     return plan
 
 
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
-
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
-    """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
+def _read_config_value(name: str) -> str | None:
+    """Read a config value from the environment, then the watch dotenv files."""
+    def _from_env(env_name: str) -> str | None:
+        value = os.environ.get(env_name)
         return value.strip() if value else None
 
-    def _from_dotenv(path: Path, name: str) -> str | None:
+    def _from_dotenv(path: Path, env_name: str) -> str | None:
         if not path.exists():
             return None
         try:
@@ -80,7 +77,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, _, value = line.partition("=")
-                if key.strip() != name:
+                if key.strip() != env_name:
                     continue
                 value = value.strip()
                 if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
@@ -95,17 +92,33 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    value = _from_env(name)
+    if value:
+        return value
+    for candidate in dotenv_paths:
+        value = _from_dotenv(candidate, name)
+        if value:
+            return value
+    return None
+
+
+def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
+    """Return (backend, api_key). Prefers Groq, then OpenAI, then local whisper.cpp.
+
+    If `preferred` is "groq", "openai", or "local", only that backend is
+    considered. For the "local" backend the second tuple element is the path to
+    the whisper.cpp binary (WHISPER_CPP_BIN) rather than an API key.
+    """
+    candidates = (
+        ("GROQ_API_KEY", "groq"),
+        ("OPENAI_API_KEY", "openai"),
+        ("WHISPER_CPP_BIN", "local"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = _read_config_value(key_name)
         if value:
             return backend, value
 
@@ -400,12 +413,87 @@ def transcribe_chunks(
     return segments
 
 
+def _run_whisper_cpp(bin_path: str, audio_path: Path) -> list[dict]:
+    """Transcribe one audio file with a local whisper.cpp binary.
+
+    Requires WHISPER_CPP_BIN (the whisper-cli executable) and WHISPER_CPP_MODEL
+    (a ggml model file) in the environment or ~/.config/watch/.env. Nothing
+    leaves the machine.
+    """
+    binary = Path(bin_path)
+    if not binary.exists():
+        raise SystemExit(f"WHISPER_CPP_BIN does not exist: {binary}")
+
+    model = _read_config_value("WHISPER_CPP_MODEL")
+    if not model:
+        raise SystemExit(
+            "WHISPER_CPP_MODEL is not set. Point it at a ggml model file "
+            "(e.g. ggml-small.en.bin) in ~/.config/watch/.env."
+        )
+    model_path = Path(model)
+    if not model_path.exists():
+        raise SystemExit(f"WHISPER_CPP_MODEL does not exist: {model_path}")
+
+    # whisper.cpp wants 16kHz WAV input; the pipeline's audio is mp3.
+    wav_path = audio_path.with_suffix(".whisper.wav")
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(audio_path.resolve()),
+        "-ar", "16000", "-ac", "1",
+        str(wav_path.resolve()),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not wav_path.exists():
+        raise SystemExit(f"ffmpeg wav conversion failed: {result.stderr.strip()}")
+
+    out_prefix = audio_path.with_suffix(".whisper")
+    cmd = [
+        str(binary.resolve()),
+        "-m", str(model_path.resolve()),
+        "-f", str(wav_path.resolve()),
+        "-oj",
+        "-of", str(out_prefix.resolve()),
+        "-t", str(os.cpu_count() or 4),
+        "-np",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    json_path = Path(str(out_prefix) + ".json")
+    if result.returncode != 0 or not json_path.exists():
+        raise SystemExit(
+            f"whisper.cpp failed (exit {result.returncode}): {result.stderr.strip()[-400:]}"
+        )
+
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"whisper.cpp produced unreadable JSON: {exc}")
+
+    segments: list[dict] = []
+    for entry in data.get("transcription") or []:
+        text = (entry.get("text") or "").strip()
+        if not text:
+            continue
+        offsets = entry.get("offsets") or {}
+        segments.append({
+            "start": round(float(offsets.get("from") or 0) / 1000.0, 2),
+            "end": round(float(offsets.get("to") or 0) / 1000.0, 2),
+            "text": text,
+        })
+    return segments
+
+
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
-    """Upload one audio file and return its 0-based segments."""
+    """Transcribe one audio file and return its 0-based segments.
+
+    For cloud backends `api_key` is the API key; for "local" it is the
+    whisper.cpp binary path.
+    """
     if backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend == "local":
+        return _run_whisper_cpp(api_key, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)

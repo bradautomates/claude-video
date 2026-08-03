@@ -56,9 +56,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "local"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default: prefer Groq, then OpenAI, then local whisper.cpp.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -239,18 +239,27 @@ def main() -> int:
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
         if backend and api_key:
-            try:
-                all_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
-                transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-                transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
-            except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+            # Cloud backend first; if it fails and a local whisper.cpp install
+            # is configured, retry locally before giving up on a transcript.
+            attempts = [(backend, api_key)]
+            if backend != "local" and args.whisper is None:
+                local_backend, local_bin = load_api_key("local")
+                if local_backend and local_bin:
+                    attempts.append((local_backend, local_bin))
+            for attempt_backend, attempt_key in attempts:
+                try:
+                    all_segments, used_backend = transcribe_video(
+                        video_path,
+                        work / "audio.mp3",
+                        backend=attempt_backend,
+                        api_key=attempt_key,
+                    )
+                    transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
+                    transcript_text = format_transcript(transcript_segments)
+                    transcript_source = f"whisper ({used_backend})"
+                    break
+                except SystemExit as exc:
+                    print(f"[watch] whisper ({attempt_backend}) failed: {exc}", file=sys.stderr)
         else:
             hint = (
                 f"--whisper {args.whisper} was set but the matching API key is missing"
