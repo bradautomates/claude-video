@@ -52,6 +52,14 @@ ENV_TEMPLATE = """# /watch API configuration
 GROQ_API_KEY=
 OPENAI_API_KEY=
 
+# Fully local, offline transcription via whisper.cpp — no API key, audio never
+# leaves the machine. Point these at a whisper-cli executable and a ggml model
+# (e.g. ggml-small.en.bin from huggingface.co/ggerganov/whisper.cpp).
+# Used when no API key is set, or forced with --whisper local. Also acts as an
+# automatic fallback when a cloud backend fails mid-run.
+# WHISPER_CPP_BIN=
+# WHISPER_CPP_MODEL=
+
 # Default watch behavior (the /watch first-run wizard sets this for you).
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.
@@ -118,6 +126,8 @@ def _have_api_key() -> tuple[bool, str | None]:
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
+    if _read_env_key("WHISPER_CPP_BIN"):
+        return True, "local"
     return False, None
 
 
