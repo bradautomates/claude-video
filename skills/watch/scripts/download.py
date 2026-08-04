@@ -16,6 +16,14 @@ from urllib.parse import urlparse
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
+# YouTube gates the default web client's caption tracks behind a PO token, so
+# every subtitle request comes back as "Some web client subtitles require a PO
+# Token ... They will be discarded" and the run silently degrades to frames-only.
+# The tv / web_safari clients still serve them. `default` stays first so the
+# formats the web client does provide are kept rather than replaced.
+# Non-YouTube extractors ignore `youtube:*` args, so this is safe to always pass.
+YOUTUBE_EXTRACTOR_ARGS = "youtube:player_client=default,tv,web_safari"
+
 
 def is_url(source: str) -> bool:
     if source.startswith("-"):
@@ -75,6 +83,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
+        "--extractor-args", YOUTUBE_EXTRACTOR_ARGS,
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
@@ -132,6 +141,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
+        "--extractor-args", YOUTUBE_EXTRACTOR_ARGS,
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
