@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+CAPTION_FALLBACKS = ("en", "en-US", "en-GB", "en-orig", "es", "es-ES", "es-orig")
 
 
 def is_url(source: str) -> bool:
@@ -41,12 +42,15 @@ def resolve_local(path: str) -> dict:
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+def _pick_subtitle(out_dir: Path, preferred_languages: list[str] | None = None) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [c for c in candidates if ".en" in c.name]
-    return preferred[0] if preferred else candidates[0]
+    for language in preferred_languages or []:
+        exact = out_dir / f"video.{language}.vtt"
+        if exact in candidates:
+            return exact
+    return candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -59,12 +63,73 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
+def _caption_languages(url: str) -> tuple[list[str], list[str]]:
+    """Discover the source language before requesting captions.
+
+    YouTube exposes automatic captions for many languages, but requesting a
+    fixed language (previously English only) can miss the video's original
+    transcript entirely. Keep the request narrow when metadata is available;
+    use ``all`` only when discovery itself fails.
+    """
+    cmd = ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", "--no-warnings", "--", url]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(
+            "[watch] caption-language discovery failed; falling back to all caption languages",
+            file=sys.stderr,
+        )
+        return ["all"], []
+
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        print(
+            "[watch] caption-language metadata was not valid JSON; falling back to all caption languages",
+            file=sys.stderr,
+        )
+        return ["all"], []
+
+    available = set((metadata.get("subtitles") or {}).keys())
+    available.update((metadata.get("automatic_captions") or {}).keys())
+    source_language = metadata.get("language") or ""
+
+    preferred: list[str] = []
+
+    def add(language: str) -> None:
+        if language and language not in preferred:
+            preferred.append(language)
+
+    add(source_language)
+    if source_language:
+        base_language = source_language.split("-", 1)[0]
+        add(f"{base_language}-orig")
+        add(base_language)
+    for language in CAPTION_FALLBACKS:
+        add(language)
+
+    selected = [language for language in preferred if language in available]
+    if not selected:
+        selected = ["all"]
+        if available:
+            print(
+                "[watch] advertised caption languages did not match the source language; requesting all",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "[watch] no caption tracks advertised by the source; allowing Whisper fallback",
+                file=sys.stderr,
+            )
+    return selected, preferred
+
+
 def download_url(url: str, out_dir: Path) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
+    subtitle_languages, preferred_languages = _caption_languages(url)
 
     cmd = [
         "yt-dlp",
@@ -74,11 +139,16 @@ def download_url(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en,en-US,en-GB,en-orig",
+        "--sub-langs", ",".join(subtitle_languages),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
         "--ignore-errors",
+        "--retries", "10",
+        "--fragment-retries", "10",
+        "--retry-sleep", "http:exp=1:20",
+        "--sleep-requests", "5",
+        "--sleep-subtitles", "10",
         "-o", output_template,
         "--",
         url,
@@ -93,7 +163,7 @@ def download_url(url: str, out_dir: Path) -> dict:
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
 
-    subtitle = _pick_subtitle(out_dir)
+    subtitle = _pick_subtitle(out_dir, preferred_languages)
     info_path = out_dir / "video.info.json"
     info: dict = {}
     if info_path.exists():
@@ -103,7 +173,9 @@ def download_url(url: str, out_dir: Path) -> dict:
                 "title": raw.get("title"),
                 "uploader": raw.get("uploader") or raw.get("channel"),
                 "duration": raw.get("duration"),
+                "language": raw.get("language"),
                 "url": raw.get("webpage_url") or url,
+                "caption_languages": subtitle_languages,
             }
         except Exception as exc:
             print(f"[watch] info.json parse failed: {exc}", file=sys.stderr)
