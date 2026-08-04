@@ -43,22 +43,25 @@ def _sub_langs(argv: list[str]) -> str:
     return argv[idx + 1]
 
 
-def _assert_english_only(langs: str) -> None:
+def _assert_bounded_langs(langs: str) -> None:
     tokens = langs.split(",")
     assert "all" not in tokens, f"sub-langs must not request all languages, got {langs!r}"
-    assert all(t.startswith("en") for t in tokens), f"sub-langs must be English-only, got {langs!r}"
+    # English plus the source video's own track. Anything wider re-introduces
+    # the 200-file auto-translation dump that the "all" guard above exists to
+    # prevent.
+    assert set(tokens) <= {"en.*", ".*-orig"}, f"sub-langs must stay bounded, got {langs!r}"
 
 
-def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
+def test_fetch_captions_requests_bounded_langs(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded_langs(_sub_langs(calls[0]))
 
 
-def test_download_url_requests_english_only(monkeypatch, tmp_path):
+def test_download_url_requests_bounded_langs(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     # _pick_video returns None with no real file, which raises SystemExit after
     # the yt-dlp argv is already built — that's all we need to inspect.
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded_langs(_sub_langs(calls[0]))
