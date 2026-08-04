@@ -49,6 +49,22 @@ def _assert_english_only(langs: str) -> None:
     assert all(t.startswith("en") for t in tokens), f"sub-langs must be English-only, got {langs!r}"
 
 
+def _assert_caption_capable_clients(argv: list[str]) -> None:
+    """Guard the PO-token workaround.
+
+    Without extra player clients YouTube discards every caption track
+    ("Some web client subtitles require a PO Token"), and the run silently
+    degrades to frames-only. `default` must stay in the list so the formats the
+    web client does provide are added to, not replaced.
+    """
+    idx = argv.index("--extractor-args")
+    value = argv[idx + 1]
+    assert value.startswith("youtube:player_client="), f"unexpected extractor-args: {value!r}"
+    clients = value.split("=", 1)[1].split(",")
+    assert "default" in clients, f"default client must be kept, got {clients!r}"
+    assert len(clients) > 1, f"need a caption-capable client beyond default, got {clients!r}"
+
+
 def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
@@ -62,3 +78,16 @@ def test_download_url_requests_english_only(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
     _assert_english_only(_sub_langs(calls[0]))
+
+
+def test_fetch_captions_uses_caption_capable_clients(monkeypatch, tmp_path):
+    calls = _capture_argv(monkeypatch)
+    download.fetch_captions(URL, tmp_path / "download")
+    _assert_caption_capable_clients(calls[0])
+
+
+def test_download_url_uses_caption_capable_clients(monkeypatch, tmp_path):
+    calls = _capture_argv(monkeypatch)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, tmp_path / "download")
+    _assert_caption_capable_clients(calls[0])
