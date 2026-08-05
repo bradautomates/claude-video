@@ -41,15 +41,34 @@ def resolve_local(path: str) -> dict:
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+def _pick_subtitle(out_dir: Path, original_lang: str | None = None) -> Path | None:
+    """Prefer captions in the video's ORIGINAL language over machine translations.
+
+    YouTube marks the source-language auto-captions with an `-orig` suffix
+    (e.g. `video.de-orig.vtt`) and offers every other language as a machine
+    translation of them. Preferring `.en.` unconditionally means reading a
+    machine translation of a talk whose original captions were right there.
+    """
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [
-        c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
-    ]
-    return preferred[0] if preferred else candidates[0]
+
+    def first_match(markers: tuple[str, ...]) -> Path | None:
+        for c in candidates:
+            if any(m in c.name for m in markers):
+                return c
+        return None
+
+    # 1. Original-language auto-captions, whatever language that is.
+    pick = first_match(("-orig.",))
+    # 2. The language yt-dlp reports as the video's own.
+    if pick is None and original_lang:
+        lang = original_lang.split("-")[0]
+        pick = first_match((f".{lang}.", f".{lang}-"))
+    # 3. English, then anything at all.
+    if pick is None:
+        pick = first_match((".en.", ".en-US.", ".en-GB.", ".en-orig."))
+    return pick or candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -75,7 +94,12 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        # `.*-orig` matches the source-language auto-captions whatever the
+        # language is (YouTube tags them e.g. `pl-orig`); every other entry it
+        # offers is a machine translation of those. Requesting only `en.*`
+        # leaves non-English videos with no captions at all whenever YouTube
+        # has not generated an English translation.
+        "--sub-langs", "en.*,.*-orig",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -85,8 +109,8 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         url,
     ]
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
+    subtitle = _pick_subtitle(out_dir, (info or {}).get("language"))
     return {
         "video_path": None,
         "subtitle_path": str(subtitle) if subtitle else None,
@@ -105,6 +129,8 @@ def _read_info(info_path: Path, url: str) -> dict:
                 "uploader": raw.get("uploader") or raw.get("channel"),
                 "duration": raw.get("duration"),
                 "url": raw.get("webpage_url") or url,
+                # Drives original-language caption preference in _pick_subtitle.
+                "language": raw.get("language"),
             }
         except Exception as exc:
             print(f"[watch] info.json parse failed: {exc}", file=sys.stderr)
@@ -132,7 +158,12 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        # `.*-orig` matches the source-language auto-captions whatever the
+        # language is (YouTube tags them e.g. `pl-orig`); every other entry it
+        # offers is a machine translation of those. Requesting only `en.*`
+        # leaves non-English videos with no captions at all whenever YouTube
+        # has not generated an English translation.
+        "--sub-langs", "en.*,.*-orig",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -151,8 +182,8 @@ def download_url(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
 
-    subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
+    subtitle = _pick_subtitle(out_dir, (info or {}).get("language"))
 
     return {
         "video_path": str(video),
