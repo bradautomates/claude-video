@@ -70,7 +70,11 @@ def test_timestamps_with_transcript_detail_is_cue_only(cut_clip: Path):
 
 
 def _frame_lines(out: str) -> int:
-    return sum(1 for line in out.splitlines() if "/frames/frame_" in line and "(t=" in line)
+    # Frame paths are printed with the host separator, so normalise before
+    # matching: on Windows the report contains `…\frames\frame_0001.jpg` and a
+    # forward-slash-only match counts zero frames on every run.
+    normalised = out.replace("\\", "/")
+    return sum(1 for line in normalised.splitlines() if "/frames/frame_" in line and "(t=" in line)
 
 
 def test_dedup_collapses_static_by_default(static_clip: Path):

@@ -18,6 +18,16 @@ Design:
 """
 from __future__ import annotations
 
+# Local: force UTF-8 stdout on Windows. Full rationale in watch.py.
+import sys as _sys
+if _sys.platform == "win32":
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 import json
 import os
 import platform
@@ -73,6 +83,13 @@ _PERM_WARNED: set[str] = set()
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
     world/group readable."""
+    # On Windows, st_mode carries no ACL information: CPython synthesises the
+    # mode bits from the read-only attribute alone, so the group/other bits are
+    # always set and this check would warn forever. `chmod 600` cannot clear
+    # them either. Restricting the file is an `icacls /inheritance:r` job, which
+    # this check has no way to observe.
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return

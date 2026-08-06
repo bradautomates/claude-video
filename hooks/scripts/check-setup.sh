@@ -6,8 +6,11 @@ set -euo pipefail
 
 CONFIG_FILE="$HOME/.config/watch/.env"
 
-# Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# Warn if the secrets file has loose permissions. Skipped under Git Bash /
+# Cygwin: `stat` synthesises 644 for any user file on NTFS no matter what
+# `chmod` did, so the warning would fire forever and point at a fix that cannot
+# work. Windows users restrict the file with `icacls /inheritance:r` instead.
+if [[ -f "$CONFIG_FILE" && "$OSTYPE" != msys* && "$OSTYPE" != cygwin* ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
