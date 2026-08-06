@@ -29,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import get_config  # noqa: E402
+from config import decode_env_bytes, get_config  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
@@ -97,7 +97,10 @@ def _read_env_key(name: str) -> str | None:
         return None
     _check_file_permissions(CONFIG_FILE)
     try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
+        # decode_env_bytes, not read_text: this preflight runs on every /watch
+        # call, so a non-UTF-8 .env crashed here before config.py was reached.
+        raw_bytes = CONFIG_FILE.read_bytes()
+        for line in decode_env_bytes(raw_bytes, CONFIG_FILE).splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -148,7 +151,10 @@ def _write_setup_complete() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     existing = ""
     if CONFIG_FILE.exists():
-        existing = CONFIG_FILE.read_text(encoding="utf-8")
+        # Reading through decode_env_bytes and writing back as UTF-8 also
+        # normalises a .env the platform wrote as UTF-16 or a legacy code page,
+        # so the file stops being a hazard for every other reader.
+        existing = decode_env_bytes(CONFIG_FILE.read_bytes(), CONFIG_FILE)
         for line in existing.splitlines():
             if line.strip().startswith("SETUP_COMPLETE="):
                 return

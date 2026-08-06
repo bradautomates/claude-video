@@ -25,6 +25,11 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import decode_env_bytes  # noqa: E402
+
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
@@ -75,7 +80,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         if not path.exists():
             return None
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
+            for line in decode_env_bytes(path.read_bytes(), path).splitlines():
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
                     continue

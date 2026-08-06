@@ -155,3 +155,34 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class TestLoadApiKeyEncodings:
+    """load_api_key() read the .env as strict UTF-8 and guarded it with
+    `except OSError`. UnicodeDecodeError is a ValueError, so a .env written by
+    PowerShell took the transcription step down instead of finding the key."""
+
+    BODY = "GROQ_API_KEY=sk-test-abc\n"
+
+    @pytest.mark.parametrize(
+        "name,data",
+        [
+            ("out-file-utf16-bom", BODY.encode("utf-16")),
+            ("utf16le-no-bom", BODY.encode("utf-16-le")),
+            ("notepad-utf8-bom", BODY.encode("utf-8-sig")),
+            ("ansi-codepage", (BODY + "# configuración\n").encode("cp1252")),
+        ],
+    )
+    def test_key_found_in_platform_written_env(
+        self, name, data, tmp_path, monkeypatch
+    ):
+        cfg = tmp_path / ".config" / "watch"
+        cfg.mkdir(parents=True)
+        (cfg / ".env").write_bytes(data)
+
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.chdir(tmp_path)
+
+        assert whisper.load_api_key() == ("groq", "sk-test-abc"), name
