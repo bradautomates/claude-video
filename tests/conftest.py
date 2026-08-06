@@ -69,6 +69,23 @@ def build_static_clip(
     ])
 
 
+@pytest.fixture(autouse=True)
+def isolated_tempdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep watch.py's working directories inside pytest's tmp tree.
+
+    Every `watch.py` run without `--out-dir` calls `tempfile.mkdtemp()` and
+    leaves the directory behind on purpose — the agent reads the frames from it
+    and deletes it afterwards. The suite has no agent, so a full run strews one
+    `watch-*` directory per subprocess through the real TMPDIR / %TEMP% and
+    never cleans them up. Redirecting the temp root makes pytest's own tmp_path
+    retention policy own them instead.
+    """
+    tmp = tmp_path / "tmp"
+    tmp.mkdir()
+    for var in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(var, str(tmp))
+
+
 @pytest.fixture(scope="session")
 def cut_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("clips") / "cuts.mp4"
