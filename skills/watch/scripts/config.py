@@ -24,7 +24,7 @@ DEFAULT_DETAIL = "balanced"
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
 
-def decode_env_bytes(data: bytes) -> str:
+def decode_env_bytes(data: bytes, path: Path | None = None) -> str:
     """Decode .env bytes written by any of the encodings Windows produces.
 
     Reading the file as strict UTF-8 fails four different ways on Windows, and
@@ -41,6 +41,10 @@ def decode_env_bytes(data: bytes) -> str:
     cases escaped `except OSError` and took the whole /watch run down instead
     of falling back to defaults. Decoding here is total: the last resort uses
     errors="replace", which cannot raise.
+
+    Shared by every .env reader in the package (config, setup, whisper) so a
+    fix here cannot go stale in one of them; setup's preflight in particular
+    runs before this module is even consulted.
     """
     for bom, encoding in _BOM_ENCODINGS:
         if data.startswith(bom):
@@ -57,7 +61,8 @@ def decode_env_bytes(data: bytes) -> str:
         # and API keys survive; only the offending bytes become U+FFFD.
         print(
             "watch: %s is not valid UTF-8; some characters were replaced. "
-            "Re-save it as UTF-8 if a setting looks wrong." % CONFIG_FILE,
+            "Re-save it as UTF-8 if a setting looks wrong."
+            % (path if path is not None else CONFIG_FILE),
             file=sys.stderr,
         )
         return data.decode("utf-8", errors="replace")
@@ -70,7 +75,7 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
     if not path.exists():
         return values
     try:
-        lines = decode_env_bytes(path.read_bytes()).splitlines()
+        lines = decode_env_bytes(path.read_bytes(), path).splitlines()
     except OSError:
         return values
     for line in lines:

@@ -23,14 +23,19 @@ read_key() {
     return
   fi
   if [[ -f "$CONFIG_FILE" ]]; then
-    awk -F= -v k="$name" '
+    # Strip NUL bytes and BOMs before awk. PowerShell's Out-File writes the
+    # .env as UTF-16LE+BOM by default, and awk then matches nothing at all:
+    # SETUP_COMPLETE reads empty and this hook nags about setup on every
+    # session forever. Deleting these bytes is safe because every key and
+    # value it reads is ASCII; at worst a comment loses an accent.
+    tr -d '\000\377\376\357\273\277' < "$CONFIG_FILE" | awk -F= -v k="$name" '
       /^[[:space:]]*#/ { next }
       $1 == k {
         sub(/^[[:space:]]*/, "", $2); sub(/[[:space:]]*$/, "", $2);
         gsub(/^["'\'']|["'\'']$/, "", $2);
         print $2; exit
       }
-    ' "$CONFIG_FILE"
+    '
   fi
 }
 

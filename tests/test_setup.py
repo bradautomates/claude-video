@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
 
 
@@ -29,10 +31,14 @@ def _run(args, *, home=None, extra_env=None):
 
 
 def _write_env(home: Path, body: str) -> None:
+    _write_env_bytes(home, body.encode("utf-8"))
+
+
+def _write_env_bytes(home: Path, data: bytes) -> None:
     cfg = home / ".config" / "watch"
     cfg.mkdir(parents=True, exist_ok=True)
     f = cfg / ".env"
-    f.write_text(body, encoding="utf-8")
+    f.write_bytes(data)
     f.chmod(0o600)
 
 
@@ -78,3 +84,33 @@ def test_key_present_is_ready(tmp_path):
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
     assert js["whisper_backend"] == "groq"
+
+
+# --- .env encodings the platform writes on its own ---------------------------
+# _read_env_key ran on EVERY /watch call and read the file as strict UTF-8.
+# UnicodeDecodeError is a ValueError, so `except OSError` missed it and the
+# preflight died before config.py was ever consulted.
+
+BODY = "GROQ_API_KEY=sk-test-abc\nWATCH_DETAIL=efficient\nSETUP_COMPLETE=true\n"
+
+
+@pytest.mark.parametrize(
+    "name,data",
+    [
+        ("out-file-utf16-bom", BODY.encode("utf-16")),          # PowerShell Out-File
+        ("utf16le-no-bom", BODY.encode("utf-16-le")),
+        ("notepad-utf8-bom", BODY.encode("utf-8-sig")),
+        ("ansi-codepage", BODY.replace("\n", "  # configuración\n", 1)
+                              .encode("cp1252")),               # PS Set-Content
+    ],
+)
+def test_preflight_survives_platform_written_env(name, data, tmp_path):
+    _write_env_bytes(tmp_path, data)
+
+    chk = _run(["--check"], home=tmp_path)
+    assert chk.returncode == 0, f"{name}: --check died: {chk.stderr}"
+
+    js = json.loads(_run(["--json"], home=tmp_path).stdout)
+    assert js["setup_complete"] is True, name
+    assert js["has_api_key"] is True, name
+    assert js["watch_detail"] == "efficient", name
