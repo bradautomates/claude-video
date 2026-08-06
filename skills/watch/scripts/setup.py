@@ -18,6 +18,16 @@ Design:
 """
 from __future__ import annotations
 
+# Local: force UTF-8 stdout on Windows. Full rationale in watch.py.
+import sys as _sys
+if _sys.platform == "win32":
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 import json
 import os
 import platform

@@ -6,6 +6,21 @@ then Reads each frame path to see the video.
 """
 from __future__ import annotations
 
+# SKILL.md invokes every one of these scripts directly and each has a __main__
+# block, so any of them can be the process writing to stdout. On Windows Python
+# still encodes stdout with the locale codepage (cp1252), while the agent
+# harness reading it decodes UTF-8 — the U+2026 and U+2014 we print arrive
+# mangled. Ask for UTF-8 before anything is written. `sys` is aliased because
+# several of these modules import it further down.
+import sys as _sys
+if _sys.platform == "win32":
+    for _stream in (_sys.stdout, _sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
+
 import argparse
 import sys
 import tempfile
