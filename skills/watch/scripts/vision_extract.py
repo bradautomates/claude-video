@@ -74,14 +74,15 @@ def analyze(base, model, api_key, frame_path):
                  'image_url': {'url': 'data:image/jpeg;base64,' + b64}},
             ],
         }],
-        'temperature': 0,
+        'temperature': 1,  # kimi-k2.7-code rejects anything but 1
         'max_tokens': 800,
     }
     req = urllib.request.Request(
         base.rstrip('/') + '/chat/completions',
         data=json.dumps(payload).encode(),
         headers={'Content-Type': 'application/json',
-                 'Authorization': 'Bearer ' + api_key},
+                 'Authorization': 'Bearer ' + api_key,
+                 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'},
     )
     with urllib.request.urlopen(req, timeout=120) as r:
         resp = json.load(r)
