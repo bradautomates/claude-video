@@ -6,6 +6,7 @@ scrolls). We dedupe consecutive identical cues and merge their time ranges.
 """
 from __future__ import annotations
 
+import html
 import re
 import sys
 from pathlib import Path
@@ -15,10 +16,25 @@ TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
+WS_RE = re.compile(r"\s+")
 
 
 def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
     return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+
+
+def _clean(text: str) -> str:
+    """Strip cue tags, decode HTML entities, and normalize whitespace.
+
+    Many YouTube caption tracks pad wrapped lines with `&nbsp;`, which otherwise
+    survives into the transcript as literal `&nbsp;` (or a U+00A0 once decoded)
+    in the middle of sentences. Decode entities first, then fold every kind of
+    space — including U+00A0 — into a single ASCII space.
+    """
+    text = TAG_RE.sub("", text)
+    text = html.unescape(text)
+    text = text.replace(" ", " ").replace("​", "")
+    return WS_RE.sub(" ", text).strip()
 
 
 def parse_vtt(path: str) -> list[dict]:
@@ -39,12 +55,12 @@ def parse_vtt(path: str) -> list[dict]:
 
         cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip():
-            cleaned = TAG_RE.sub("", lines[i]).strip()
+            cleaned = _clean(lines[i])
             if cleaned:
                 cue_lines.append(cleaned)
             i += 1
 
-        cue_text = " ".join(cue_lines).strip()
+        cue_text = _clean(" ".join(cue_lines))
         if cue_text:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
