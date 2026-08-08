@@ -75,7 +75,10 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        # Not "en.*": that also matches YouTube's ~30 auto-translated tracks
+        # (en-ar, en-zh, ...), which _pick_subtitle never selects and which
+        # trigger HTTP 429 on the way. These four are exactly what it prefers.
+        "--sub-langs", "en-orig,en,en-US,en-GB",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -132,7 +135,10 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        # Not "en.*": that also matches YouTube's ~30 auto-translated tracks
+        # (en-ar, en-zh, ...), which _pick_subtitle never selects and which
+        # trigger HTTP 429 on the way. These four are exactly what it prefers.
+        "--sub-langs", "en-orig,en,en-US,en-GB",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
