@@ -25,7 +25,10 @@ def parse_vtt(path: str) -> list[dict]:
     text = Path(path).read_text(encoding="utf-8", errors="ignore")
     lines = text.splitlines()
 
-    segments: list[dict] = []
+    # One entry per physical cue LINE (not per cue) so _dedupe can compare
+    # lines individually — YouTube's rolling captions repeat whole lines
+    # verbatim across adjacent cues, never partial lines.
+    cue_lines: list[dict] = []
     i = 0
     while i < len(lines):
         match = TS_RE.match(lines[i])
@@ -33,37 +36,68 @@ def parse_vtt(path: str) -> list[dict]:
             i += 1
             continue
 
-        start = _to_seconds(*match.groups()[:4])
-        end = _to_seconds(*match.groups()[4:])
+        start = round(_to_seconds(*match.groups()[:4]), 2)
+        end = round(_to_seconds(*match.groups()[4:]), 2)
         i += 1
 
-        cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip():
             cleaned = TAG_RE.sub("", lines[i]).strip()
             if cleaned:
-                cue_lines.append(cleaned)
+                cue_lines.append({"text": cleaned, "start": start, "end": end})
             i += 1
-
-        cue_text = " ".join(cue_lines).strip()
-        if cue_text:
-            segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
 
-    return _dedupe(segments)
+    return _dedupe(cue_lines)
 
 
-def _dedupe(segments: list[dict]) -> list[dict]:
-    """Collapse rolling duplicates common in YouTube auto-subs."""
+MAX_SEGMENT_WORDS = 30
+MAX_SEGMENT_GAP = 1.5  # seconds of silence that force a new segment
+
+
+def _dedupe(cue_lines: list[dict]) -> list[dict]:
+    """Collapse rolling duplicates common in YouTube auto-subs and group lines
+    into readable segments.
+
+    YouTube's rolling auto-captions re-render each spoken line 2-3 times as
+    the on-screen window advances: once while it's the growing second line,
+    once settled as a solo transition cue, once again as the next cue's
+    first line. Each re-render is a verbatim repeat of the whole line, so we
+    drop a line only when it exactly matches the immediately preceding kept
+    line — never on a partial/substring match, which would risk deleting a
+    genuine spoken repetition (e.g. an idiom repeated across two distinct
+    lines) instead of a rendering artifact.
+    """
     out: list[dict] = []
-    for seg in segments:
-        if out and seg["text"] == out[-1]["text"]:
-            out[-1]["end"] = seg["end"]
+    open_seg: dict | None = None
+
+    for line in cue_lines:
+        if open_seg is not None and line["text"] == open_seg["last_line"]:
+            open_seg["end"] = line["end"]
             continue
-        if out and seg["text"].startswith(out[-1]["text"] + " "):
-            out[-1]["text"] = seg["text"]
-            out[-1]["end"] = seg["end"]
-            continue
-        out.append(seg)
+
+        start_new = (
+            open_seg is None
+            or line["start"] - open_seg["end"] > MAX_SEGMENT_GAP
+            or open_seg["word_count"] >= MAX_SEGMENT_WORDS
+        )
+        if start_new:
+            if open_seg is not None:
+                out.append({"start": open_seg["start"], "end": open_seg["end"], "text": open_seg["text"]})
+            open_seg = {
+                "start": line["start"],
+                "end": line["end"],
+                "text": line["text"],
+                "last_line": line["text"],
+                "word_count": len(line["text"].split()),
+            }
+        else:
+            open_seg["text"] += " " + line["text"]
+            open_seg["last_line"] = line["text"]
+            open_seg["word_count"] += len(line["text"].split())
+            open_seg["end"] = line["end"]
+
+    if open_seg is not None:
+        out.append({"start": open_seg["start"], "end": open_seg["end"], "text": open_seg["text"]})
     return out
 
 
