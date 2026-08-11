@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """/watch entry point: download video, extract frames, parse transcript.
 
-Prints a markdown report to stdout listing frame paths + transcript. Claude
-then Reads each frame path to see the video.
+Prints a bounded markdown report with overview pages, a complete frame index,
+and a transcript artifact path. Exact frames remain available for selective review.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -18,8 +19,46 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from presentation import PresentationError, prepare_frame_presentation, prepare_transcript_presentation  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def publish_transcript(work: Path, transcript: str) -> Path:
+    target = work / "transcript.txt"
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"transcript target already exists: {target}")
+    descriptor, temporary = tempfile.mkstemp(prefix=".transcript.txt.", dir=work)
+    temporary_path = Path(temporary)
+    descriptor_is_open = True
+    try:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor_is_open = False
+        with handle:
+            handle.write(transcript)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, target, follow_symlinks=False)
+        _fsync_directory(work)
+    finally:
+        if descriptor_is_open:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+    return target
 
 
 def main() -> int:
@@ -227,6 +266,18 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
+    presentation: dict | None = None
+    if frames:
+        try:
+            presentation = prepare_frame_presentation(
+                work,
+                source_path=video_path,
+                source_meta=meta,
+                frames=frames,
+            )
+        except PresentationError as exc:
+            raise SystemExit(f"frame presentation failed: {exc}") from exc
+
     if not transcript_segments and dl.get("subtitle_path"):
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
@@ -264,6 +315,19 @@ def main() -> int:
             )
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
+
+    transcript_path: Path | None = None
+    if transcript_text:
+        try:
+            transcript_path = publish_transcript(work, transcript_text)
+            if presentation is None:
+                presentation = prepare_transcript_presentation(
+                    work,
+                    source_path=video_path,
+                    source_meta=meta,
+                )
+        except Exception as exc:
+            raise SystemExit(f"transcript publication failed: {exc}") from exc
 
     info = dl.get("info") or {}
 
@@ -336,35 +400,45 @@ def main() -> int:
     print()
     print("## Frames")
     print()
-    if frames:
-        print(f"Frames live at: `{work / 'frames'}`")
+    if frames and presentation:
+        print(f"- **Frame index:** `{presentation['index_path']}`")
+        print(f"- **Extracted frames:** {len(frames)} (all retained in `{work / 'frames'}`)")
+        print()
+        available_pages = [page for page in presentation["pages"] if page["kind"] == "image"]
+        if available_pages:
+            print(
+                f"**Review route:** use `{SCRIPT_DIR / 'visual_harness.py'}`. The trusted harness "
+                "sends every overview page to one fresh tool-less worker and returns bounded "
+                "validated text. The coordinator must not Read raster images."
+            )
+            print()
+            first_page = available_pages[0]
+            last_page = available_pages[-1]
+            print(
+                f"- **Overview pages:** {len(available_pages)} under `{work / 'overview'}` "
+                f"(`overview_0001.jpg` … `overview_{len(available_pages):04d}.jpg`, "
+                f"frames {first_page['frame_start']}-{last_page['frame_end']})"
+            )
         print()
         print(
-            "**Read each frame path below with the Read tool to view the image.** "
-            "Frames are in chronological order; `t=MM:SS` is the absolute timestamp in the source video."
+            "Exact-frame detail requires a new focused extraction in a new output directory, then "
+            "a fresh harness inspect digest, review request, and explicit approval. Workers remain "
+            "tool-less and cannot Read frames or re-run extraction."
         )
-        print()
-        for frame in frames:
-            print(
-                f"- `{frame['path']}` "
-                f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"
-            )
     else:
         print("_No frames extracted._")
 
     print()
     print("## Transcript")
     print()
-    if transcript_text:
+    if transcript_path:
         label = transcript_source or "captions"
+        count = len(transcript_segments)
+        segment_label = "segment" if count == 1 else "segments"
+        print(f"- **Transcript artifact:** `{transcript_path}`")
+        print(f"- **Coverage:** {count} {segment_label} via {label}")
         if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
+            print(f"- **Range:** {format_time(effective_start)} → {format_time(effective_end)}")
     elif detail == "transcript":
         print(
             "_No transcript available at transcript detail. Captions were missing and Whisper was "
@@ -384,7 +458,10 @@ def main() -> int:
 
     print()
     print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    print(
+        f"_Work dir: `{work}` — delete only if this is an auto-created temporary watch-* directory; "
+        "keep user-supplied --out-dir paths._"
+    )
 
     return 0
 

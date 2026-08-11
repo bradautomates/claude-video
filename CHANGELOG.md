@@ -2,6 +2,15 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.2.1] — 2026-08-11
+
+### Fixed
+- Routed visual inspection through bounded, tool-less Claude CLI children instead of the invoking agent context, preventing parent prompt growth from breaking overview review.
+- Added fixed `context_limit` failure handling with no retry, raw diagnostics, partial evidence, or silent model/provider fallback.
+
+### Security
+- Bound every review to exact media/runtime digests, model, effort, budgets, timeouts, and complete page coverage before private atomic evidence publication.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

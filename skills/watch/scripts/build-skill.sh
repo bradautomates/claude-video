@@ -11,14 +11,17 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO_ROOT"
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
   echo "error: working tree is dirty; commit or stash before building" >&2
   exit 1
 fi
 
 mkdir -p dist
 OUT="dist/watch.skill"
-git archive --format=zip --prefix=watch/ --output="$OUT" HEAD:skills/watch
+git archive --format=zip --prefix=watch/ --output="$OUT" \
+  HEAD:skills/watch -- . \
+  ':(exclude)scripts/build-skill.sh' \
+  ':(exclude).skillignore'
 
 COUNT=$(unzip -l "$OUT" | tail -1 | awk '{print $2}')
 SIZE=$(du -h "$OUT" | cut -f1)
