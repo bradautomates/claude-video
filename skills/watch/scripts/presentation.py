@@ -1,6 +1,7 @@
 """Bounded visual handoff artifacts for /watch reports."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -35,6 +36,10 @@ def _frame_record(frame: dict) -> dict[str, Any]:
         "path": frame["path"],
         "reason": frame.get("reason", "selected"),
     }
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
@@ -107,6 +112,33 @@ def create_contact_sheet(frames: list[dict], output_path: Path) -> Path:
     return output_path
 
 
+def prepare_transcript_presentation(
+    work: Path,
+    source_path: str | None,
+    source_meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Write an empty visual index for a transcript-only review."""
+    index_path = work / "frame-index.json"
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "source": {"path": source_path, "metadata": dict(source_meta)},
+        "frame_count": 0,
+        "frames": [],
+        "overview": {
+            "page_count": 0,
+            "page_size": TILES_PER_PAGE,
+            "tile_width": TILE_WIDTH,
+            "tile_height": TILE_HEIGHT,
+            "pages": [],
+        },
+    }
+    try:
+        _write_json_atomic(index_path, manifest)
+    except Exception as exc:
+        raise PresentationError(f"could not write {index_path}: {exc}") from exc
+    return {"index_path": index_path, "pages": [], "manifest": manifest}
+
+
 def prepare_frame_presentation(
     work: Path,
     source_path: str | None,
@@ -136,6 +168,9 @@ def prepare_frame_presentation(
             "page": page_number,
             "frame_start": page[0]["index"],
             "frame_end": page[-1]["index"],
+            "frame_sha256": [
+                _file_sha256(Path(frame["path"])) for frame in page
+            ],
             "tiles": [
                 {
                     "tile": tile_number,

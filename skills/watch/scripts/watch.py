@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """/watch entry point: download video, extract frames, parse transcript.
 
-Prints a markdown report with bounded overview pages, a complete frame index,
-and the transcript. Claude inspects exact frames only when needed.
+Prints a bounded markdown report with overview pages, a complete frame index,
+and a transcript artifact path. Exact frames remain available for selective review.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -18,9 +19,46 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
-from presentation import PresentationError, prepare_frame_presentation  # noqa: E402
+from presentation import PresentationError, prepare_frame_presentation, prepare_transcript_presentation  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def publish_transcript(work: Path, transcript: str) -> Path:
+    target = work / "transcript.txt"
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"transcript target already exists: {target}")
+    descriptor, temporary = tempfile.mkstemp(prefix=".transcript.txt.", dir=work)
+    temporary_path = Path(temporary)
+    descriptor_is_open = True
+    try:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        descriptor_is_open = False
+        with handle:
+            handle.write(transcript)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary_path, target, follow_symlinks=False)
+        _fsync_directory(work)
+    finally:
+        if descriptor_is_open:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+    return target
 
 
 def main() -> int:
@@ -278,6 +316,19 @@ def main() -> int:
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
+    transcript_path: Path | None = None
+    if transcript_text:
+        try:
+            transcript_path = publish_transcript(work, transcript_text)
+            if presentation is None:
+                presentation = prepare_transcript_presentation(
+                    work,
+                    source_path=video_path,
+                    source_meta=meta,
+                )
+        except Exception as exc:
+            raise SystemExit(f"transcript publication failed: {exc}") from exc
+
     info = dl.get("info") or {}
 
     print()
@@ -356,20 +407,23 @@ def main() -> int:
         available_pages = [page for page in presentation["pages"] if page["kind"] == "image"]
         if available_pages:
             print(
-                "**Read the frame index and overview pages first.** The overview pages cover every "
-                "selected frame in chronological order. Do not read every indexed JPEG automatically."
+                f"**Review route:** use `{SCRIPT_DIR / 'visual_harness.py'}`. The trusted harness "
+                "sends every overview page to one fresh tool-less worker and returns bounded "
+                "validated text. The coordinator must not Read raster images."
             )
             print()
-            for page in available_pages:
-                print(
-                    f"- `{page['path']}` "
-                    f"(frames {page['frame_start']}-{page['frame_end']})"
-                )
+            first_page = available_pages[0]
+            last_page = available_pages[-1]
+            print(
+                f"- **Overview pages:** {len(available_pages)} under `{work / 'overview'}` "
+                f"(`overview_0001.jpg` … `overview_{len(available_pages):04d}.jpg`, "
+                f"frames {first_page['frame_start']}-{last_page['frame_end']})"
+            )
         print()
         print(
-            "For exact detail, use the index to select only relevant frames and Read that subset together. "
-            "If needed, re-run the retained source with `--detail transcript --timestamps ... "
-            "--resolution ... --no-whisper --out-dir <new-dir>` for higher retained-source detail."
+            "Exact-frame detail requires a new focused extraction in a new output directory, then "
+            "a fresh harness inspect digest, review request, and explicit approval. Workers remain "
+            "tool-less and cannot Read frames or re-run extraction."
         )
     else:
         print("_No frames extracted._")
@@ -377,16 +431,14 @@ def main() -> int:
     print()
     print("## Transcript")
     print()
-    if transcript_text:
+    if transcript_path:
         label = transcript_source or "captions"
+        count = len(transcript_segments)
+        segment_label = "segment" if count == 1 else "segments"
+        print(f"- **Transcript artifact:** `{transcript_path}`")
+        print(f"- **Coverage:** {count} {segment_label} via {label}")
         if focused:
-            print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
-        else:
-            print(f"_Source: {label}._")
-        print()
-        print("```")
-        print(transcript_text)
-        print("```")
+            print(f"- **Range:** {format_time(effective_start)} → {format_time(effective_end)}")
     elif detail == "transcript":
         print(
             "_No transcript available at transcript detail. Captions were missing and Whisper was "

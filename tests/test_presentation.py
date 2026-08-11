@@ -139,6 +139,25 @@ def test_mixed_dimensions_render_one_overview(tmp_path: Path):
     assert output.is_file()
 
 
+def test_manifest_binds_overview_to_source_frame_digests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    frames = _frames(tmp_path, 2)
+
+    def fake_contact_sheet(_page: list[dict], path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"overview")
+        return path
+
+    monkeypatch.setattr(presentation, "create_contact_sheet", fake_contact_sheet)
+    result = presentation.prepare_frame_presentation(tmp_path, None, {}, frames)
+    manifest = json.loads(Path(result["index_path"]).read_text())
+
+    assert manifest["overview"]["pages"][0]["frame_sha256"] == [
+        presentation._file_sha256(Path(frame["path"])) for frame in frames
+    ]
+
+
 def test_rejects_symlinked_overview_directory(tmp_path: Path):
     frames = _frames(tmp_path, 1)
     external = tmp_path / "external"

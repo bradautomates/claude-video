@@ -2,17 +2,17 @@
 
 **Give Claude the ability to watch any video.**
 
-Claude Code (recommended — auto-updates via marketplace):
+Claude Code on supported Linux (recommended — auto-updates via marketplace):
 ```
 /plugin marketplace add bradautomates/claude-video
 /plugin install watch@claude-video
 ```
 
-Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:
+Other [Agent Skills](https://agentskills.io) hosts can install the extraction package:
 ```bash
 npx skills add bradautomates/claude-video -g
 ```
-(`-g` installs globally for your user, available across all projects. Drop it to scope per-project.)
+Trusted visual review currently requires supported Linux plus the native Claude Code CLI. Other hosts may extract frames/transcripts but must report visual review as unavailable; they must not inspect pixels in the coordinator.
 
 More install options (claude.ai web, manual) in the [Install](#install) section below.
 
@@ -22,7 +22,7 @@ Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` o
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and reads full-coverage overview pages before drilling into exact frames when needed. By the time it answers, it has *seen* the video and *heard* the audio.
+With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), and pulls a timestamped transcript (free captions when available, Whisper API as fallback). Isolated tool-less workers inspect overview pages and reduce transcript evidence; the coordinator receives only validated, bounded text. Exact-frame follow-up requires a separate focused extraction, fresh inspection digest and review request, and explicit approval. By the time it answers, the review has grounded the answer in what was shown and said.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -46,9 +46,9 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
 4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
-5. **Overview pages + transcript are handed to Claude.** The script writes a complete `frame-index.json` and chronological overview pages, then prints only those bounded paths with the transcript. Claude reads overview pages first and drills into selected JPEGs when needed.
+5. **The trusted harness isolates visual and transcript review.** The script writes a complete `frame-index.json`, chronological overview pages, and a private transcript artifact. Fresh tool-less workers inspect one overview page each; tool-less reducers receive only bounded evidence. The coordinator never reads raster or transcript contents. Exact-frame follow-up requires a separate focused extraction, fresh inspection digest and review request, and explicit approval.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
+7. **Cleanup.** The script prints a working directory. Caller-supplied `--out-dir` paths and committed review evidence are never auto-deleted. A verified auto-created temporary `watch-*` directory may be removed only in a later separately scoped action.
 
 ## Frame budget — why it matters
 
@@ -113,9 +113,9 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 
 Update later with `/plugin update watch@claude-video`.
 
-### Codex, Cursor, Copilot, Gemini CLI, and 50+ other hosts
+### Codex, Cursor, Copilot, Gemini CLI, and other hosts
 
-The [Agent Skills](https://agentskills.io) CLI installs the skill into whatever agents it detects:
+The [Agent Skills](https://agentskills.io) CLI installs the extraction package into detected hosts. Trusted visual review remains unavailable without supported Linux and the native Claude Code CLI:
 
 ```bash
 npx skills add bradautomates/claude-video -g
@@ -127,7 +127,7 @@ npx skills add bradautomates/claude-video -g
 - `-l, --list` — list the skills in this repo without installing
 - `--copy` — copy files instead of symlinking (for filesystems without symlink support)
 
-The CLI discovers the skill from `skills/watch/SKILL.md` and copies the whole folder — `SKILL.md` plus its `scripts/` runtime — as a self-contained unit. `SKILL.md` resolves its own scripts relative to wherever it was installed, so it works the same on every host.
+The CLI discovers the skill from `skills/watch/SKILL.md` and copies the whole folder — `SKILL.md` plus its `scripts/` runtime — as a self-contained unit. Relative script resolution works across hosts; trusted visual review still requires the supported Linux runtime above.
 
 Update later with `npx skills update watch -g`.
 
@@ -202,6 +202,8 @@ Other knobs (passed to `scripts/watch.py`):
 
 ## Limits
 
+- **Trusted review is Linux-only in 0.2.1.** It requires `/proc/self/fd`, a native ELF Claude Code 2.1.220+ binary, `/usr/bin/setpriv`, `/usr/bin/unshare`, user/PID namespaces, sealed `memfd`, and `O_TMPFILE`. Runtime inspection happens before media processing; unsupported hosts return `BLOCKED/UNKNOWN`.
+- **Trusted review fails closed.** Context, output, model/effort identity, budget, timeout, schema, or publication failures return bounded `BLOCKED/UNKNOWN`; Watch does not retry, truncate selected evidence, substitute a model/provider, or expose raw child diagnostics.
 - **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
 
