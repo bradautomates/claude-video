@@ -116,6 +116,84 @@ def test_presentation_failure_invalidates_manifest_and_preserves_frames(
     assert all(path.read_bytes() for path in paths)
 
 
+def _solid_frame(path: Path, color: str = "blue") -> dict:
+    path.parent.mkdir(exist_ok=True)
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            f"color=c={color}:s=320x180",
+            "-frames:v",
+            "1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    return {
+        "index": int(path.stem.rsplit("_", 1)[-1]),
+        "timestamp_seconds": 0.0,
+        "path": str(path),
+        "reason": "uniform",
+    }
+
+
+def _mean_rgb(path: Path, x: int, y: int) -> tuple[int, int, int]:
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-vf",
+            f"crop={presentation.TILE_WIDTH}:{presentation.TILE_HEIGHT}:{x}:{y},"
+            "scale=1:1,format=rgb24",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-",
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+    assert len(result.stdout) == 3
+    return tuple(result.stdout)  # type: ignore[return-value]
+
+
+@pytest.mark.parametrize("count", [1, 5, 19])
+def test_partial_contact_sheet_unused_tiles_are_black(tmp_path: Path, count: int):
+    frames = [
+        _solid_frame(tmp_path / "frames" / f"frame_{index:04d}.jpg")
+        for index in range(count)
+    ]
+
+    output = presentation.create_contact_sheet(frames, tmp_path / "overview.jpg")
+
+    rows = (count + presentation.TILE_COLUMNS - 1) // presentation.TILE_COLUMNS
+    empty_tile = count
+    column = empty_tile % presentation.TILE_COLUMNS
+    row = empty_tile // presentation.TILE_COLUMNS
+    red, green, blue = _mean_rgb(
+        output,
+        column * presentation.TILE_WIDTH,
+        row * presentation.TILE_HEIGHT,
+    )
+    assert max(red, green, blue) <= 4
+    assert row < rows
+
+
 def test_mixed_dimensions_render_one_overview(tmp_path: Path):
     frames = []
     for index, size in enumerate(("320x240", "640x180")):

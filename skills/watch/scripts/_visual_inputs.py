@@ -29,6 +29,7 @@ MAX_RENDERED_OVERVIEW_BYTES = 10 * 1024 * 1024
 
 
 def _render_overview(frame_bytes: list[bytes], rows: int) -> bytes:
+    missing = TILE_COLUMNS * rows - len(frame_bytes)
     command = [
         "ffmpeg",
         "-hide_banner",
@@ -48,7 +49,8 @@ def _render_overview(frame_bytes: list[bytes], rows: int) -> bytes:
             "force_original_aspect_ratio=decrease,"
             f"pad={EXPECTED_TILE_WIDTH}:{EXPECTED_TILE_HEIGHT}:"
             "(ow-iw)/2:(oh-ih)/2:color=black,"
-            f"tile={TILE_COLUMNS}x{rows}:nb_frames={len(frame_bytes)}"
+            f"tile={TILE_COLUMNS}x{rows}:nb_frames={len(frame_bytes)}:"
+            f"init_padding={missing}"
         ),
         "-frames:v",
         "1",

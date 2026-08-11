@@ -75,9 +75,10 @@ def create_contact_sheet(frames: list[dict], output_path: Path) -> Path:
             f"pad={TILE_WIDTH}:{TILE_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black[v{index}]"
         )
     labels = "".join(f"[v{index}]" for index in range(len(inputs)))
+    missing = TILE_COLUMNS * rows - len(inputs)
     filter_graph = ";".join(normalized) + ";" + (
         f"{labels}concat=n={len(inputs)}:v=1:a=0,"
-        f"tile={TILE_COLUMNS}x{rows}:nb_frames={len(inputs)}"
+        f"tile={TILE_COLUMNS}x{rows}:nb_frames={len(inputs)}:init_padding={missing}"
     )
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     for path in inputs:
