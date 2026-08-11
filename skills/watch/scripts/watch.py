@@ -50,6 +50,11 @@ def main() -> int:
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
     ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Discard any cached download for this source and fetch it again.",
+    )
+    ap.add_argument(
         "--no-whisper",
         action="store_true",
         help="Disable Whisper fallback. Report frames-only if no captions available.",
@@ -96,7 +101,7 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(args.source, work / "download", fresh=args.fresh)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -122,6 +127,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                fresh=args.fresh,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
@@ -315,6 +321,20 @@ def main() -> int:
         )
     else:
         print("- **Transcript:** none available")
+
+    # Captions cannot run past the end of their own video. If they do, the media
+    # file and the transcript came from different sources — which means every
+    # frame below belongs to the wrong video.
+    if transcript_segments and full_duration > 0:
+        last_cue = max(float(s.get("end") or s.get("start") or 0) for s in transcript_segments)
+        if last_cue > full_duration + 30:
+            print()
+            print(
+                f"> **STOP — mismatched sources.** The transcript runs to "
+                f"{format_time(last_cue)} but the video file is only {format_time(full_duration)} "
+                "long. The frames below are from a different video than the transcript. "
+                "Re-run with `--fresh` before using anything from this report."
+            )
 
     if detail == "token-burner" and len(frames) > 250:
         print()

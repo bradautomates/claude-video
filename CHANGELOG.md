@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **A leftover download could hand back frames from a different video when reusing `--out-dir`.** A second run against a *different* URL found the previous `download/video.mp4` in place, so yt-dlp reported `has already been downloaded` and skipped fetching. It still rewrote `video.info.json` and the subtitles, so title, duration and transcript in the report all described the newly requested video while every extracted frame came from the old one — invisible unless you open a frame. Three independent guards:
+  - Downloads now land in a **per-source cache directory** (`download/<source_key>/`). Re-running the same URL still reuses its download (the point of `--out-dir`); a different URL can no longer inherit another's media. URL canonicalisation maps `watch?v=X&t=3s`, `youtu.be/X?si=…` and `/shorts/X` onto one key, while unknown hosts keep every meaningful query parameter so two distinct videos can never collapse into one entry. Applies to both the full download and the captions-only fetch.
+  - After each fetch, `_duration_mismatch()` probes the media with ffprobe and compares it against the duration in `video.info.json` (tolerance `max(8s, 3%)`). On disagreement the directory is discarded and fetched once more from scratch, with a loud warning if it still disagrees.
+  - `watch.py` prints a **STOP — mismatched sources** banner in the report when the last transcript cue runs past the end of the media, placed inline where the frame list is read.
+
+### Added
+- `--fresh` — discard the cached download for this source and fetch it again (the upstream video changed, or a run looks wrong).
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
