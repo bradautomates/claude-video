@@ -11,6 +11,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows consoles default to a legacy codepage (e.g. cp1252) that can't
+# encode characters this script prints (e.g. the "->" arrow in focus-range
+# output), crashing with UnicodeEncodeError. Force UTF-8 regardless of the
+# console's codepage. reconfigure() is Python 3.7+; guard defensively in
+# case stdout/stderr have been replaced with a stream that lacks it.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
