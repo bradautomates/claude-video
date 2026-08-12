@@ -93,23 +93,28 @@ def _read_env_key(name: str) -> str | None:
     value = os.environ.get(name)
     if value and value.strip():
         return value.strip()
-    if not CONFIG_FILE.exists():
-        return None
-    _check_file_permissions(CONFIG_FILE)
-    try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, raw = line.partition("=")
-            if key.strip() != name:
-                continue
-            raw = raw.strip()
-            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                raw = raw[1:-1]
-            return raw or None
-    except OSError:
-        return None
+    # Search the same paths, in the same order, that whisper.load_api_key does.
+    # Diverging means a key that transcribes fine still reports "setup
+    # incomplete" on every run.
+    for path in (CONFIG_FILE, Path.cwd() / ".env"):
+        if not path.exists():
+            continue
+        _check_file_permissions(path)
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, raw = line.partition("=")
+                if key.strip() != name:
+                    continue
+                raw = raw.strip()
+                if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
+                    raw = raw[1:-1]
+                if raw:
+                    return raw
+        except OSError:
+            continue
     return None
 
 

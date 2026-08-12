@@ -10,7 +10,7 @@ from pathlib import Path
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
 
 
-def _run(args, *, home=None, extra_env=None):
+def _run(args, *, home=None, extra_env=None, cwd=None):
     env = dict(os.environ)
     env.pop("WATCH_DETAIL", None)
     # Don't let a real key in the developer's shell env leak into the test.
@@ -25,7 +25,15 @@ def _run(args, *, home=None, extra_env=None):
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
         capture_output=True, text=True, env=env,
+        cwd=str(cwd) if cwd is not None else None,
     )
+
+
+def _write_project_env(project: Path, body: str) -> None:
+    project.mkdir(parents=True, exist_ok=True)
+    f = project / ".env"
+    f.write_text(body, encoding="utf-8")
+    f.chmod(0o600)
 
 
 def _write_env(home: Path, body: str) -> None:
@@ -77,4 +85,52 @@ def test_key_present_is_ready(tmp_path):
     js = json.loads(_run(["--json"], home=tmp_path).stdout)
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
+    assert js["whisper_backend"] == "groq"
+
+
+def test_key_in_project_dotenv_is_ready(tmp_path):
+    """A key in the working directory's .env must satisfy preflight.
+
+    whisper.load_api_key reads cwd/.env, so such a key transcribes fine. When
+    setup.py didn't look there, --check reported "setup incomplete" on every
+    single run for anyone keeping keys in a project .env.
+    """
+    home = tmp_path / "home"
+    _write_env(home, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+    project = tmp_path / "project"
+    _write_project_env(project, "GROQ_API_KEY=sk-test-cwd\n")
+
+    chk = _run(["--check"], home=home, cwd=project)
+    assert chk.returncode == 0, f"project .env key should pass --check: {chk.stderr}"
+
+    js = json.loads(_run(["--json"], home=home, cwd=project).stdout)
+    assert js["status"] == "ready"
+    assert js["whisper_backend"] == "groq"
+
+
+def test_backend_preference_beats_file_location(tmp_path):
+    """Groq is preferred wherever it lives, matching whisper.load_api_key.
+
+    Each key name is searched across every path before the next name is tried,
+    so a Groq key in the project .env still wins over an OpenAI key in
+    ~/.config/watch/.env.
+    """
+    home = tmp_path / "home"
+    _write_env(home, "OPENAI_API_KEY=sk-test-config\n")
+    project = tmp_path / "project"
+    _write_project_env(project, "GROQ_API_KEY=sk-test-cwd\n")
+
+    js = json.loads(_run(["--json"], home=home, cwd=project).stdout)
+    assert js["whisper_backend"] == "groq"
+
+
+def test_empty_config_value_falls_through_to_project_dotenv(tmp_path):
+    """An empty GROQ_API_KEY= in the config file must not mask a real one."""
+    home = tmp_path / "home"
+    _write_env(home, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+    project = tmp_path / "project"
+    _write_project_env(project, "GROQ_API_KEY=sk-test-cwd\n")
+
+    js = json.loads(_run(["--json"], home=home, cwd=project).stdout)
+    assert js["status"] == "ready"
     assert js["whisper_backend"] == "groq"
