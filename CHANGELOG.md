@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Frame extraction on ffmpeg 9.0+.** Both extraction paths passed `-vsync`, which ffmpeg removed in 9.0, so every `efficient`, `balanced`, and `token-burner` run failed with `Unrecognized option 'vsync'`. Switched to the modern equivalent `-fps_mode vfr` (available since ffmpeg 5.0). `--detail transcript` was unaffected.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
