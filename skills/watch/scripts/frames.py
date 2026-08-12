@@ -46,6 +46,36 @@ def _scale_filter(resolution: int) -> str:
     )
 
 
+_FPS_MODE_ARGS: list[str] | None = None
+
+
+def fps_mode_args() -> list[str]:
+    """Variable-frame-rate flag for the current ffmpeg.
+
+    ffmpeg 9.0 removed the long-deprecated ``-vsync``; ``-fps_mode`` replaced it
+    in 5.0. Probe the version once and pick the flag that actually parses, so
+    scene/keyframe extraction works on both old and new builds. Unknown or
+    unparseable versions get the modern flag.
+    """
+    global _FPS_MODE_ARGS
+    if _FPS_MODE_ARGS is not None:
+        return _FPS_MODE_ARGS
+
+    major = None
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-version"], capture_output=True, text=True
+        ).stdout
+        m = re.search(r"ffmpeg version n?(\d+)", out)
+        if m:
+            major = int(m.group(1))
+    except (OSError, ValueError):
+        pass
+
+    _FPS_MODE_ARGS = ["-vsync", "vfr"] if major is not None and major < 5 else ["-fps_mode", "vfr"]
+    return _FPS_MODE_ARGS
+
+
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
     fps = min(fps, MAX_FPS)
     target = min(max_frames, max(1, int(round(fps * duration_seconds))))
@@ -253,7 +283,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *fps_mode_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +642,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *fps_mode_args(),
         "-q:v", "4",
         output_pattern,
     ]
