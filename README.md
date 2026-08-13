@@ -48,7 +48,7 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 4. **The transcript comes from one of three places.** For YouTube URLs, Claude tries the `youtube-data` MCP's official transcript first — no download needed. Otherwise: `yt-dlp` pulls native captions (manual or auto-generated) from the source, free and instant. If neither is available, Claude extracts a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and transcribes it locally with Voicebox — no API key, nothing leaves the machine.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
+7. **Cleanup.** The script prints a working directory at the end. Claude removes it unconditionally, every run — no "skip if follow-ups" carve-out.
 
 ## Frame budget — why it matters
 
