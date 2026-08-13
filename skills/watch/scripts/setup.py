@@ -73,6 +73,11 @@ _PERM_WARNED: set[str] = set()
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
     world/group readable."""
+    if os.name == "nt":
+        # Windows doesn't use POSIX permission bits — st_mode always looks
+        # world-readable and chmod 600 is meaningless there, so the warning
+        # would misfire on every run.
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
