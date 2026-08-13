@@ -3,7 +3,7 @@ name: watch
 version: "0.3.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, resolves a transcript via youtube-data MCP / native captions / local Voicebox (no paid API), extracts auto-scaled frames only once a transcript is secured (or the user asked for visual-only analysis), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
-allowed-tools: Bash, Read, AskUserQuestion
+allowed-tools: Bash, Read, mcp__youtube-data__transcripts_getTranscript, mcp__voicebox__voicebox_transcribe
 homepage: https://github.com/bradautomates/claude-video
 repository: https://github.com/bradautomates/claude-video
 author: bradautomates (fork: local-first transcript resolution, see DLU-302)
@@ -79,7 +79,7 @@ If it returns usable text (not empty, not garbled, right language), that's your 
 python3 "${SKILL_DIR}/scripts/watch.py" "<source>" --detail transcript
 ```
 
-This does **not** extract frames. If the source has native captions, this returns them without downloading video at all (`transcript_source = "captions"`). If not, it downloads **audio only** — no frames, no full video — and the report tells you where that audio landed.
+This does **not** extract frames. If the source has native captions, this returns them without downloading video at all (`transcript_source = "captions"`). If not, it downloads **audio only** — no frames, no full video — and the report tells you where that audio landed. **Note the `working dir:` path printed to stderr** (e.g. `/tmp/watch-xxxxx`) whenever this probe actually ran — reuse it as `--out-dir` in Step 1 below so the real frame-extraction run lands in the same directory instead of creating a second one.
 
 **Step C — Still no transcript. Extract audio (if step B didn't already produce it) and hand it to Voicebox:**
 
@@ -99,7 +99,8 @@ If Voicebox returns usable text, `transcript_source = "voicebox"`. If it errors 
 
 ```
 transcript secured                              → proceed to frame extraction (Step 1 below,
-                                                    now downloading the full video)
+                                                    now downloading the full video — reuse Step
+                                                    B's work dir via --out-dir if it ran)
 transcript failed, user did NOT ask visual-only → STOP. Tell the user no transcript is
                                                     available for this video and you're not
                                                     pulling frames without one. Do not run
@@ -109,7 +110,7 @@ transcript failed, user DID ask visual-only      → proceed to frame extraction
                                                     review — content that's visual by nature)
 ```
 
-Note: this means the "no captions, needs Voicebox" path costs **two** `watch.py` invocations (the Step B probe, then the real frame-extraction run below) instead of one — accepted tradeoff for not burning image tokens on videos with no transcript backing.
+Note: this means the "no captions, needs Voicebox" path costs **two** `watch.py` invocations (the Step B probe, then the real frame-extraction run below) instead of one — accepted tradeoff for not burning image tokens on videos with no transcript backing. Pass Step B's work dir as `--out-dir` to Step 1 so both invocations share one directory — see Step 4 for why this matters.
 
 ## Recommended limits
 
@@ -144,7 +145,7 @@ Optional flags:
 - `--max-frames N` — override the preset cap for tighter token budget.
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text).
 - `--fps F` — override auto-fps (clamped to 2 fps max).
-- `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir).
+- `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir). **Reuse Step B's probe work dir here whenever it ran** (no native captions path) — otherwise the probe's audio-only download and this run's frame-extraction download end up in two separate directories, and Step 4's single `rm -rf` only cleans up one of them.
 - `--no-dedup` — keep near-duplicate frames instead of collapsing held slides / static screen recordings.
 
 ### Focusing on a section (higher frame rate)
@@ -183,7 +184,7 @@ This holds for `transcript` detail too: produce a **summary**, don't paste the f
 rm -rf <work_dir>
 ```
 
-Do this as your last action every single time, regardless of whether the user might ask a follow-up. (A startup safety net in `watch.py` also prunes any `watch-*` tmp dirs older than 1 hour, in case a run gets interrupted before this step runs — but don't rely on that; always run this explicitly.) If the `rm -rf` itself fails, say so — don't silently claim the disk space was reclaimed.
+If Step B's probe ran with its own auto-generated tmp dir (you did not pass `--out-dir` to reuse it in Step 1), there are **two** work dirs this run created — remove both. Do this as your last action every single time, regardless of whether the user might ask a follow-up. (A startup safety net in `watch.py` also prunes any `watch-*` tmp dirs older than 1 hour, in case a run gets interrupted before this step runs — but don't rely on that; always run this explicitly.) If the `rm -rf` itself fails, say so — don't silently claim the disk space was reclaimed.
 
 ## Detail and frames
 
