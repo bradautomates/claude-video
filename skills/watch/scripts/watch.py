@@ -7,8 +7,10 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -19,10 +21,25 @@ from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+
+
+def _prune_stale_work_dirs(max_age_seconds: float = 3600.0) -> None:
+    """Delete watch-* tmp dirs from previous runs older than max_age_seconds.
+
+    Safety net for interrupted sessions that never reached cleanup — SKILL.md
+    normally rm -rf's its own work dir unconditionally at the end of a run.
+    """
+    now = time.time()
+    for entry in Path(tempfile.gettempdir()).glob("watch-*"):
+        try:
+            if entry.is_dir() and (now - entry.stat().st_mtime) > max_age_seconds:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def main() -> int:
+    _prune_stale_work_dirs()
     ap = argparse.ArgumentParser(
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
@@ -49,17 +66,6 @@ def main() -> int:
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
-    ap.add_argument(
-        "--no-whisper",
-        action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
-    )
-    ap.add_argument(
-        "--whisper",
-        choices=["groq", "openai"],
-        default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
-    )
     ap.add_argument(
         "--no-dedup",
         action="store_true",
@@ -236,32 +242,11 @@ def main() -> int:
         except Exception as exc:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
-    if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
-            try:
-                all_segments, used_backend = transcribe_video(
-                    video_path,
-                    work / "audio.mp3",
-                    backend=backend,
-                    api_key=api_key,
-                )
-                transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
-                transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
-            except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
-        else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
-            setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+    if not transcript_segments and video_path and meta.get("has_audio"):
+        print(
+            f"[watch] no captions available — audio for Voicebox transcription: {video_path}",
+            file=sys.stderr,
+        )
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
@@ -367,19 +352,16 @@ def main() -> int:
         print("```")
     elif detail == "transcript":
         print(
-            "_No transcript available at transcript detail. Captions were missing and Whisper was "
-            "unavailable or failed, so there is no visual fallback here. Re-run with "
-            "`--detail balanced` for frames._"
+            "_No native captions found at transcript detail. If a transcript hasn't already been "
+            "resolved via youtube-data MCP or Voicebox, do that before deciding whether frames are "
+            "worth pulling — see SKILL.md's transcript resolution + frame-extraction gate._"
         )
     elif focused and dl.get("subtitle_path"):
         print(f"_No transcript lines fell inside {format_time(effective_start)} → {format_time(effective_end)}._")
     else:
-        setup_py = SCRIPT_DIR / "setup.py"
         print(
-            "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
-            "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+            "_No transcript available from this script (no native captions found). "
+            "If a transcript was already resolved via youtube-data MCP or Voicebox, use that instead._"
         )
 
     print()
