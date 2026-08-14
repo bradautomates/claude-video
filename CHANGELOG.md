@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.3.0] — 2026-08-14
+
+### Added
+- **Gemini transcription backend.** `GEMINI_API_KEY` in `~/.config/watch/.env` (or `--whisper gemini`) enables Gemini as a third transcription fallback behind Groq and OpenAI Whisper. Gemini has no purpose-built ASR endpoint, so `whisper.py` prompts it to transcribe the extracted audio clip and return timestamped JSON directly, then validates/parses that into the same segment shape Whisper returns — the rest of the pipeline (chunking, range filtering, formatting) doesn't need to know which backend produced it. Uses `generativelanguage.googleapis.com` `generateContent` with inline base64 audio, authenticated via the `x-goog-api-key` header (never a URL query param). Model defaults to the `gemini-flash-latest` rolling alias (verified end-to-end against a real key; the initial `gemini-2.5-flash` pin 404'd — "no longer available to new users" — despite still being listed by the models API, so an alias is used instead of a dated version), overridable with `GEMINI_MODEL`.
+- **Structural / beat analysis mode.** New `SKILL.md` section guiding Step 4 when the user's question is about *how* a video is built (structure, pacing, hooks) rather than *what's* in it: merge frames + transcript into timestamped beats, read across them for opening/hold/turn/close, and mark every claim as observed, inference, or a sampling gap.
+
+### Changed
+- Refactored the shared HTTP retry/backoff loop out of `_post_whisper` in `whisper.py` into `_send_with_retries`, reused by the new Gemini request path instead of duplicating it.
+- `--whisper` now accepts `groq|openai|gemini` (was `groq|openai`); `--no-whisper` disables all three.
+- Chunking uses a per-backend upload ceiling — Gemini's inline-audio request caps lower (~15 MB raw) than Groq/OpenAI's ~24 MB, so it splits into more chunks on the same file.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

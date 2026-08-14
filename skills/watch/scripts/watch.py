@@ -52,13 +52,15 @@ def main() -> int:
     ap.add_argument(
         "--no-whisper",
         action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
+        help="Disable the transcription fallback (Whisper or Gemini). Report frames-only "
+             "if no captions available.",
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "gemini"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific transcription backend. Default: prefer Groq, fall back to "
+             "OpenAI, then Gemini.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -248,18 +250,18 @@ def main() -> int:
                 )
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
+                transcript_source = used_backend if used_backend == "gemini" else f"whisper ({used_backend})"
             except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                print(f"[watch] {backend} transcription fallback failed: {exc}", file=sys.stderr)
         else:
             hint = (
                 f"--whisper {args.whisper} was set but the matching API key is missing"
                 if args.whisper else
-                "no subtitles and no Whisper API key found"
+                "no subtitles and no transcription API key found"
             )
             setup_py = SCRIPT_DIR / "setup.py"
             print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+                f"[watch] {hint} — run `python3 {setup_py}` to enable the transcription fallback",
                 file=sys.stderr,
             )
     elif not transcript_segments and video_path and not meta.get("has_audio"):

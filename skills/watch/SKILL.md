@@ -1,7 +1,7 @@
 ---
 name: watch
-version: "0.2.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
+version: "0.3.0"
+description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or a Whisper/Gemini API fallback), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
 homepage: https://github.com/bradautomates/claude-video
@@ -13,7 +13,7 @@ user-invocable: true
 
 # /watch
 
-You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Whisper API as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
+You don't have a video input; this skill gives you one. A Python script gets captions first, optionally downloads the video, extracts frames as JPEGs (scene-aware, or fast keyframes at `efficient` detail), gets a timestamped transcript (native captions first, then Groq/OpenAI Whisper or Gemini as fallback), and prints frame paths. You then `Read` each frame path to see the images and combine them with the transcript to answer the user.
 
 ## Resolve `SKILL_DIR` (do this before any command)
 
@@ -48,14 +48,14 @@ python3 "${SKILL_DIR}/scripts/setup.py" --json
 
 Branch on two fields:
 
-- **`can_proceed: true` and `first_run: false`** → setup is already done (the user may have deliberately skipped a Whisper key — that's allowed). Proceed to Step 1 without comment.
+- **`can_proceed: true` and `first_run: false`** → setup is already done (the user may have deliberately skipped a transcription key — that's allowed). Proceed to Step 1 without comment.
 - **`first_run: true`** → genuine first-time setup. Do these in order:
   1. If `missing_binaries` is non-empty, run the installer first (it auto-installs on macOS / prints commands elsewhere — see below) and confirm the binaries land. **Do not skip this and jump to preferences.**
   2. Run the installer once more if needed so it scaffolds `~/.config/watch/.env` (it only writes the template when the file is absent, so let it create the file *before* you write any values into it).
-  3. Encourage a Whisper API key and ask the watch-preference questions below, then write the selected values into `~/.config/watch/.env` and set `SETUP_COMPLETE=true`.
+  3. Encourage a transcription API key (Groq, OpenAI, or Gemini) and ask the watch-preference questions below, then write the selected values into `~/.config/watch/.env` and set `SETUP_COMPLETE=true`.
 - **`can_proceed: false` and `first_run: false`** → setup was finished before but the environment regressed (e.g. `missing_binaries` after an OS change). Run the installer to remediate, then proceed. Don't re-ask preferences.
 
-A missing Whisper key is *encouraged to fix, not required*: on a genuine first run `status` will read `needs_key` even when binaries are present — that's your cue to encourage a key, not a blocker.
+A missing transcription key is *encouraged to fix, not required*: on a genuine first run `status` will read `needs_key` even when binaries are present — that's your cue to encourage a key, not a blocker.
 
 On follow-up `/watch` calls in the same session, use the silent check:
 
@@ -63,14 +63,14 @@ On follow-up `/watch` calls in the same session, use the silent check:
 python3 "${SKILL_DIR}/scripts/setup.py" --check
 ```
 
-This is a <100ms lookup. Exit 0 means /watch can run — this **includes a user who finished setup without a Whisper key** (keyless is allowed). On exit 0 the script emits **nothing** — proceed to Step 1 without comment. **Do NOT announce "setup is complete" to the user** — they don't need a status message on every turn. The only acceptable user-visible output from Step 0 is when remediation is required.
+This is a <100ms lookup. Exit 0 means /watch can run — this **includes a user who finished setup without a transcription key** (keyless is allowed). On exit 0 the script emits **nothing** — proceed to Step 1 without comment. **Do NOT announce "setup is complete" to the user** — they don't need a status message on every turn. The only acceptable user-visible output from Step 0 is when remediation is required.
 
 On non-zero exit, follow the table:
 
 | Exit | Meaning | Action |
 |------|---------|--------|
 | `2` | Missing binaries (`ffmpeg` / `ffprobe` / `yt-dlp`) | Run installer |
-| `3` | Genuine first run with no Whisper API key | Run installer to scaffold `.env`, then encourage a key (the user may decline — proceed with `--no-whisper`) |
+| `3` | Genuine first run with no transcription API key (Groq/OpenAI/Gemini) | Run installer to scaffold `.env`, then encourage a key (the user may decline — proceed with `--no-whisper`) |
 | `4` | Both missing | Run installer, then encourage a key |
 
 Exit `3` only fires before the user has completed setup. Once `SETUP_COMPLETE=true` is written, a keyless install returns exit 0 and is never nagged again.
@@ -83,7 +83,7 @@ python3 "${SKILL_DIR}/scripts/setup.py"
 
 On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
 
-**If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
+**If an API key is still missing after install:** use `AskUserQuestion` to ask the user which key they have — Groq (preferred — cheaper, faster), OpenAI, or Gemini (fallback; no purpose-built ASR endpoint, so it's prompted to transcribe rather than using a dedicated speech API). Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...`, `OPENAI_API_KEY=...`, or `GEMINI_API_KEY=...` line. If they don't want to set up transcription, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
 
 **First-run watch preference:** after the installer has scaffolded `~/.config/watch/.env`, use `AskUserQuestion` to ask one question:
 
@@ -110,6 +110,7 @@ Within a single session, you can skip Step 0 on follow-up `/watch` calls — onc
 - User pastes a video URL (YouTube, Vimeo, X, TikTok, Twitch clip, most yt-dlp-supported sites) and asks about it.
 - User points at a local video file (`.mp4`, `.mov`, `.mkv`, `.webm`, etc.) and asks about it.
 - User types `/watch <url-or-path> [question]`.
+- User asks *how* the video is built rather than *what* happens in it — "break down the structure," "why does the hook work," "analyze the pacing," "storyboard this," or a bare "analyze this video." See **Structural / beat analysis mode** below.
 
 ## Recommended limits
 
@@ -186,11 +187,31 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
 
-If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
+If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content. If the question is about *how* the video is built rather than *what's* in it, use **Structural / beat analysis mode** below instead of a plain recap.
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
 **Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+
+## Structural / beat analysis mode
+
+Use this mode for Step 4 when the user's question is about *how* the video is put together rather than *what* happens in it — "break down the structure," "why does the hook work," "analyze the pacing," "storyboard this," "what's the retention strategy," or a bare "analyze this video" with no specific question.
+
+You're holding two separate streams of evidence — frames (what was seen) and transcript (what was said). Merge them into a single timeline before drawing any conclusion:
+
+1. **Build beats, not a frame-by-frame log.** A beat is a unit of change: `(timestamp, what's on screen, what's spoken, what changed since the last beat)`. Merge frames and transcript by timestamp — a beat can be frame-only (visual change, no speech), transcript-only (speech continues over a static frame), or both.
+2. **Read across the timeline for structure**, not just within each beat:
+   - **Opens** — what does the first 1-3 seconds do to earn attention?
+   - **Holds** — what sustains attention through the middle: pacing, visual changes, verbal hooks, pattern interrupts?
+   - **Turns** — is there a pivot, reveal, or tonal shift? Where, and what triggers it?
+   - **Closes** — payoff, CTA, loop-back to the opening?
+3. **Report only what the frames or transcript actually show.** Mark every claim as one of:
+   - **Observed** — directly visible in a frame or audible in the transcript (e.g. "the frame changes from a face to a product shot at 0:04").
+   - **Inference** — a conclusion you're drawing, not directly observing (e.g. "this cut is likely meant to reset attention").
+   - **Gap** — something the sampling could have missed. Sparse sampling (long videos, `efficient` detail, uniform fallback, or a low frame budget relative to cut frequency) can skip fast cuts or on-screen text between sampled frames — flag where this could hide something the timeline doesn't show. If gaps look load-bearing for the answer, prefer re-running focused on that section (`--start`/`--end`) over guessing.
+4. **Finish with the three highest-signal observations**, each with a cited timestamp. Prioritize observations that explain *why* the video works or doesn't (structure, pacing, hook strength) over a plain recap of content.
+
+This mode is a different lens on the same Step 4 output — it doesn't change how frames/transcript are gathered (Steps 1-3 still apply as normal).
 
 ## Detail and frames
 
@@ -223,19 +244,23 @@ Behavior:
 The script gets a timestamped transcript in one of two ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+2. **Transcription API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and sends it to whichever backend has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
+   - **Gemini** — no dedicated ASR endpoint; the script prompts it to transcribe the audio and return timestamped JSON directly. Fallback behind both Whisper backends. Get a key at aistudio.google.com/apikey. Model defaults to `gemini-flash-latest` (Google's rolling alias, not a pinned version — pinned dated models get retired without notice, e.g. `gemini-2.5-flash` returning 404 "no longer available to new users" while still listed by the models API); override with `GEMINI_MODEL` in `~/.config/watch/.env` for a specific version.
 
-Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are set; override with `--whisper openai` to force OpenAI. Use `--no-whisper` to skip the fallback entirely.
+All three keys live in `~/.config/watch/.env`. The script prefers Groq, then OpenAI, then Gemini, in that order when more than one is set; override with `--whisper openai` or `--whisper gemini` to force a specific backend. Use `--no-whisper` to skip the fallback entirely.
+
+Gemini's inline-audio request has a lower per-chunk ceiling than the Whisper APIs (~15 MB raw audio vs. ~24 MB), so on long/local files without captions it splits into more chunks than Groq/OpenAI would for the same file — the report's chunk count reflects that.
 
 ## Failure modes and handling
 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
-- **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
+- **No transcript available** → captions missing AND (no transcription key OR every configured backend failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
 - **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
-- **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
+- **Transcription request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the backend's upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` or `--whisper gemini` if the preferred backend failed.
+- **Gemini returned malformed JSON** → the prompt asks Gemini for a strict JSON array; if it wraps the answer in prose or markdown fences the script strips fences but still expects valid JSON underneath. A malformed response fails that chunk (or the whole segment for short audio) with the raw text logged to stderr — retry with `--whisper groq` or `--whisper openai` rather than re-running Gemini blindly.
 
 ## Token efficiency
 
@@ -250,19 +275,20 @@ If you already watched a video this session and the user asks a follow-up, do **
 
 **What this skill does:**
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
-- Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
+- Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when a transcription fallback is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
+- Sends the extracted audio clip (base64-encoded, inline in the request body) to Google's Gemini API (`generativelanguage.googleapis.com/v1beta/models/*/generateContent`) when `GEMINI_API_KEY` is set and neither Groq nor OpenAI is, or when `--whisper gemini` is forced — the audio is accompanied by a text prompt instructing Gemini to transcribe it
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
-- Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
+- Reads / creates `~/.config/watch/.env` (mode `0600`) to store the transcription API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
-- Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
+- Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND the transcription fallback is not disabled with `--no-whisper`
 - Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
-- Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
+- Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`, Gemini key only goes to `generativelanguage.googleapis.com`, sent as an `x-goog-api-key` header — never appended to the URL as a query parameter, so it can't leak into logs or error messages that echo the request URL)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + transcription orchestration), `scripts/whisper.py` (Groq / OpenAI / Gemini clients), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.
