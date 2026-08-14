@@ -66,7 +66,50 @@ def main() -> int:
         help="Disable near-duplicate frame removal. Keeps visually identical "
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
+    ap.add_argument(
+        "--cookies",
+        type=str,
+        default=None,
+        help="Path to a Netscape-format cookies.txt file for login-walled sites "
+             "(e.g. Douyin, Bilibili). Export via a browser extension like "
+             "'Get cookies.txt LOCALLY'.",
+    )
+    ap.add_argument(
+        "--cookie-string",
+        type=str,
+        default=None,
+        help='Raw Cookie header string (e.g. from F12 Network tab → Request Headers → Cookie). '
+        'Automatically converted to a temp cookies.txt for yt-dlp. '
+        'Use this when --cookies-from-browser fails due to Chrome App-Bound encryption.',
+    )
+    ap.add_argument(
+        "--cdp-port",
+        type=int,
+        default=9222,
+        help="Chrome DevTools Protocol port for automatic cookie extraction "
+        "(default 9222, set to 0 to disable). Requires Chrome launched with "
+        "--remote-debugging-port=PORT. Bypasses App-Bound encryption on "
+        "Windows + Chrome 127+.",
+    )
+    ap.add_argument(
+        "--save-cookie",
+        type=str,
+        default=None,
+        metavar="COOKIE_STRING",
+        help="Save a raw Cookie header string to ~/.workbuddy/cookies/ for "
+        "automatic reuse. After saving once, future runs auto-load cookies "
+        "for that domain without needing --cookies or --cookie-string. "
+        "Get the string via F12 console: copy(document.cookie).",
+    )
     args = ap.parse_args()
+
+    # Save cookie if requested (saves and exits)
+    if args.save_cookie:
+        from download import save_cookie_string
+        saved_path = save_cookie_string(args.save_cookie, args.source)
+        print(f"[watch] cookies saved to: {saved_path}", file=sys.stderr)
+        print(f"[watch] future runs will auto-load these cookies for this domain", file=sys.stderr)
+        return 0
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -96,7 +139,13 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(
+            args.source,
+            work / "download",
+            cookies_file=args.cookies,
+            cookie_string=args.cookie_string,
+            cdp_port=args.cdp_port if args.cdp_port > 0 else None,
+        )
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -122,6 +171,9 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                cookies_file=args.cookies,
+                cookie_string=args.cookie_string,
+                cdp_port=args.cdp_port if args.cdp_port > 0 else None,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
