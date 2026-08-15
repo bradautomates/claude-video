@@ -222,7 +222,7 @@ Behavior:
 
 The script gets a timestamped transcript in one of two ways:
 
-1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
+1. **Native captions (free, preferred).** yt-dlp probes the source's advertised language, then requests one exact manual or auto-generated caption track in that language. If metadata probing fails, it uses a bounded original/English fallback rather than fetching every auto-translation.
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.

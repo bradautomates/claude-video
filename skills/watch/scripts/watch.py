@@ -126,6 +126,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                caption_languages=dl.get("caption_languages"),
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
