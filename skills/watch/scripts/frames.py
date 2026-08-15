@@ -37,6 +37,7 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+_VFR_ARGS: tuple[str, str] | None = None
 
 
 def _scale_filter(resolution: int) -> str:
@@ -44,6 +45,33 @@ def _scale_filter(resolution: int) -> str:
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
+
+
+def _vfr_args() -> list[str]:
+    """Return the variable-frame-rate option supported by this ffmpeg build.
+
+    ``-vsync`` was removed in newer ffmpeg releases, while older distro builds
+    may predate ``-fps_mode``. Probe the actual option list once instead of
+    parsing vendor-specific version strings.
+    """
+    global _VFR_ARGS
+    if _VFR_ARGS is None:
+        supported = ""
+        try:
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "full"],
+                capture_output=True,
+                text=True,
+            )
+            supported = (probe.stdout or "") + (probe.stderr or "")
+        except OSError:
+            pass
+        _VFR_ARGS = (
+            ("-fps_mode", "vfr")
+            if "-fps_mode" in supported or "-vsync" not in supported
+            else ("-vsync", "vfr")
+        )
+    return list(_VFR_ARGS)
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -253,7 +281,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +640,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_args(),
         "-q:v", "4",
         output_pattern,
     ]

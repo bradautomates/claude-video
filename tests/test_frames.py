@@ -3,7 +3,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import frames
+
+
+@pytest.fixture(autouse=True)
+def reset_vfr_probe():
+    frames._VFR_ARGS = None
+    yield
+    frames._VFR_ARGS = None
+
+
+def test_vfr_probe_prefers_fps_mode(monkeypatch):
+    class Result:
+        stdout = "-fps_mode[:stream_spec] set framerate mode"
+        stderr = ""
+
+    monkeypatch.setattr(frames.subprocess, "run", lambda *args, **kwargs: Result())
+    assert frames._vfr_args() == ["-fps_mode", "vfr"]
+
+
+def test_vfr_probe_falls_back_to_legacy_vsync(monkeypatch):
+    class Result:
+        stdout = "-vsync set video sync method globally"
+        stderr = ""
+
+    monkeypatch.setattr(frames.subprocess, "run", lambda *args, **kwargs: Result())
+    assert frames._vfr_args() == ["-vsync", "vfr"]
 
 
 def test_keyframe_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):
