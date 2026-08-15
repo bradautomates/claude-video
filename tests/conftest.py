@@ -11,6 +11,30 @@ import pytest
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
+
+@pytest.fixture(scope="session")
+def isolated_home(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A stable empty home shared by subprocess-based tests."""
+    return tmp_path_factory.mktemp("home")
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_state(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_home: Path,
+    tmp_path: Path,
+) -> None:
+    """Keep real watch config, API keys, and work dirs out of the test suite."""
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
+    for name in ("WATCH_DETAIL", "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE"):
+        monkeypatch.delenv(name, raising=False)
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(temp_root))
+
 # 14 visually distinct fills → 14 abrupt cuts → x264 emits a keyframe per cut.
 COLORS = [
     "red", "green", "blue", "white", "black", "yellow", "cyan",
