@@ -15,6 +15,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from runtime import configure_utf8_output
+
+
+configure_utf8_output()
+
 
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
@@ -37,6 +42,7 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+_VFR_ARGS: tuple[str, str] | None = None
 
 
 def _scale_filter(resolution: int) -> str:
@@ -44,6 +50,35 @@ def _scale_filter(resolution: int) -> str:
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
+
+
+def _vfr_args() -> list[str]:
+    """Return the variable-frame-rate option supported by this ffmpeg build.
+
+    ``-vsync`` was removed in newer ffmpeg releases, while older distro builds
+    may predate ``-fps_mode``. Probe the actual option list once instead of
+    parsing vendor-specific version strings.
+    """
+    global _VFR_ARGS
+    if _VFR_ARGS is None:
+        supported = ""
+        try:
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "full"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            supported = (probe.stdout or "") + (probe.stderr or "")
+        except OSError:
+            pass
+        _VFR_ARGS = (
+            ("-fps_mode", "vfr")
+            if "-fps_mode" in supported or "-vsync" not in supported
+            else ("-vsync", "vfr")
+        )
+    return list(_VFR_ARGS)
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -98,6 +133,8 @@ def get_metadata(video_path: str) -> dict:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
@@ -197,7 +234,9 @@ def extract(
         output_pattern,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
@@ -253,7 +292,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -261,7 +300,9 @@ def extract_scene_candidates(
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
@@ -371,7 +412,9 @@ def extract_at_timestamps(
             "-q:v", "4",
             str(path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
         if result.returncode == 0 and path.exists():
             out.append({
                 "index": len(out),
@@ -612,11 +655,13 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_args(),
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
 

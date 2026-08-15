@@ -38,3 +38,6 @@ skills/watch/.skillignore           export-ignore
 # Build config itself
 .gitignore      export-ignore
 .gitattributes  export-ignore
+
+# Shell entry points must stay executable by Bash on native Windows checkouts.
+*.sh text eol=lf

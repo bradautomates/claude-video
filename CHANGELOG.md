@@ -2,6 +2,20 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- Cross-platform GitHub Actions coverage for Linux (Python 3.10 and 3.14), Windows, and macOS, including real ffmpeg/ffprobe integration tests.
+
+### Changed
+- Native caption selection now probes yt-dlp metadata and requests one exact source-language track. A bounded original/English selector is used when probing fails, avoiding the translated-track fan-out caused by `en.*`.
+
+### Fixed
+- Frame extraction now feature-detects `-fps_mode` versus legacy `-vsync`, restoring automatic frame selection on FFmpeg 8/9 while retaining compatibility with older builds.
+- Windows report output is forced to UTF-8, and captured ffmpeg/ffprobe output is decoded as UTF-8 with replacement, preventing crashes on Unicode titles and paths.
+- Windows no longer receives an inapplicable `chmod 600` warning based on synthetic NTFS mode bits; the SessionStart hook also survives unreadable config files.
+- Tests no longer read the developer's real watch config or depend on POSIX path separators.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

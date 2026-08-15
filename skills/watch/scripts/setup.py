@@ -29,6 +29,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+from runtime import configure_utf8_output  # noqa: E402
+
+configure_utf8_output()
+
 from config import get_config  # noqa: E402
 
 
@@ -73,6 +77,11 @@ _PERM_WARNED: set[str] = set()
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
     world/group readable."""
+    if os.name == "nt":
+        # Windows st_mode bits do not describe the NTFS ACL, and chmod 600
+        # cannot make this check pass. Avoid a permanent false warning with an
+        # inapplicable remediation command.
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return

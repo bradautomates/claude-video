@@ -6,8 +6,19 @@ set -euo pipefail
 
 CONFIG_FILE="$HOME/.config/watch/.env"
 
-# Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# POSIX mode bits are synthetic on Windows/MSYS and on Windows drives mounted
+# into WSL. In those environments chmod 600 cannot validate the real NTFS ACL,
+# so stay silent instead of emitting a permanent false warning.
+WINDOWS_PATH=""
+case "${OS:-}:${OSTYPE:-}:$(uname -s 2>/dev/null || true)" in
+  *Windows_NT*|*msys*|*cygwin*|*MINGW*|*MSYS*|*CYGWIN*) WINDOWS_PATH="yes" ;;
+esac
+if [[ "$CONFIG_FILE" =~ ^/(mnt/)?[A-Za-z]/ ]]; then
+  WINDOWS_PATH="yes"
+fi
+
+# Warn if a readable secrets file has loose POSIX permissions.
+if [[ -z "$WINDOWS_PATH" && -r "$CONFIG_FILE" ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
@@ -22,7 +33,7 @@ read_key() {
     echo "${!name}"
     return
   fi
-  if [[ -f "$CONFIG_FILE" ]]; then
+  if [[ -r "$CONFIG_FILE" ]]; then
     awk -F= -v k="$name" '
       /^[[:space:]]*#/ { next }
       $1 == k {
@@ -30,7 +41,7 @@ read_key() {
         gsub(/^["'\'']|["'\'']$/, "", $2);
         print $2; exit
       }
-    ' "$CONFIG_FILE"
+    ' "$CONFIG_FILE" || true
   fi
 }
 
