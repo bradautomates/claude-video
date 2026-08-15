@@ -29,6 +29,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+from runtime import configure_utf8_output  # noqa: E402
+
+configure_utf8_output()
+
 from config import get_config  # noqa: E402
 
 

@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from runtime import configure_utf8_output
+
+
+configure_utf8_output()
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 

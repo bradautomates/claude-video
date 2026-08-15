@@ -215,6 +215,7 @@ Other knobs (passed to `scripts/watch.py`):
 │       ├── watch.py              # entry point — orchestrates download → frames → transcript
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction + auto-fps logic
+│       ├── runtime.py            # cross-platform process output helpers
 │       ├── transcribe.py         # VTT parsing + dedupe + Whisper orchestration
 │       ├── whisper.py            # Groq / OpenAI clients (pure stdlib)
 │       ├── config.py             # shared config (~/.config/watch/.env)

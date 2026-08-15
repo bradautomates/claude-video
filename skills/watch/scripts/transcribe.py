@@ -10,6 +10,11 @@ import re
 import sys
 from pathlib import Path
 
+from runtime import configure_utf8_output
+
+
+configure_utf8_output()
+
 
 TS_RE = re.compile(
     r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
