@@ -26,6 +26,7 @@ def parse_vtt(path: str) -> list[dict]:
     lines = text.splitlines()
 
     segments: list[dict] = []
+    prev_lines: list[str] = []
     i = 0
     while i < len(lines):
         match = TS_RE.match(lines[i])
@@ -44,12 +45,27 @@ def parse_vtt(path: str) -> list[dict]:
                 cue_lines.append(cleaned)
             i += 1
 
+        # YouTube auto-subs scroll: each cue is [tail of previous cue] + [new
+        # line]. Drop the leading lines that merely repeat the previous cue's
+        # tail so every spoken line lands in the transcript exactly once.
+        cue_lines = _strip_rollover(prev_lines, cue_lines)
+        if cue_lines:
+            prev_lines = cue_lines
+
         cue_text = " ".join(cue_lines).strip()
         if cue_text:
             segments.append({"start": round(start, 2), "end": round(end, 2), "text": cue_text})
         i += 1
 
     return _dedupe(segments)
+
+
+def _strip_rollover(prev_lines: list[str], cue_lines: list[str]) -> list[str]:
+    """Drop the longest prefix of `cue_lines` that equals a suffix of `prev_lines`."""
+    for n in range(min(len(prev_lines), len(cue_lines)), 0, -1):
+        if prev_lines[-n:] == cue_lines[:n]:
+            return cue_lines[n:]
+    return cue_lines
 
 
 def _dedupe(segments: list[dict]) -> list[dict]:
