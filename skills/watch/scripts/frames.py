@@ -39,6 +39,30 @@ DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
+_VFR_FLAG_CACHE: list[str] | None = None
+
+
+def _vfr_flag() -> list[str]:
+    """Variable-frame-rate flag for the installed ffmpeg.
+
+    `-vsync` was deprecated in ffmpeg 5.0 and removed outright in 9.0; the
+    replacement `-fps_mode` only exists from 5.0 onward. Probe once and cache so
+    the same tree works against both old and new builds.
+    """
+    global _VFR_FLAG_CACHE
+    if _VFR_FLAG_CACHE is None:
+        try:
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "full"],
+                capture_output=True, text=True, timeout=20,
+            )
+            has_fps_mode = "-fps_mode" in (probe.stdout + probe.stderr)
+        except (OSError, subprocess.SubprocessError):
+            has_fps_mode = False
+        _VFR_FLAG_CACHE = ["-fps_mode", "vfr"] if has_fps_mode else ["-vsync", "vfr"]
+    return list(_VFR_FLAG_CACHE)
+
+
 def _scale_filter(resolution: int) -> str:
     return (
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
@@ -253,8 +277,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
-    ]
+    ] + _vfr_flag()
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
     cmd += [
@@ -612,7 +635,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+    ] + _vfr_flag() + [
         "-q:v", "4",
         output_pattern,
     ]
