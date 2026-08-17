@@ -16,6 +16,7 @@ def _run(args, *, home=None, extra_env=None):
     # Don't let a real key in the developer's shell env leak into the test.
     env.pop("GROQ_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
+    env.pop("ATLASCLOUD_API_KEY", None)
     env.pop("SETUP_COMPLETE", None)
     if home is not None:
         env["HOME"] = str(home)
@@ -45,7 +46,10 @@ def test_json_reports_watch_detail():
 
 def test_keyless_completed_setup_proceeds_silently(tmp_path):
     """A user who finished setup without a key must NOT be nagged forever."""
-    _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\nSETUP_COMPLETE=true\n")
+    _write_env(
+        tmp_path,
+        "GROQ_API_KEY=\nOPENAI_API_KEY=\nATLASCLOUD_API_KEY=\nSETUP_COMPLETE=true\n",
+    )
     chk = _run(["--check"], home=tmp_path)
     assert chk.returncode == 0, f"keyless-complete should pass --check; got {chk.returncode}: {chk.stderr}"
     assert chk.stdout == "" and chk.stderr == ""
@@ -60,7 +64,7 @@ def test_keyless_completed_setup_proceeds_silently(tmp_path):
 
 def test_keyless_first_run_is_encouraged(tmp_path):
     """Genuine first run with no key: --check reports exit 3 (encourage a key)."""
-    _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+    _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\nATLASCLOUD_API_KEY=\n")
     chk = _run(["--check"], home=tmp_path)
     assert chk.returncode == 3, chk.stderr
 
@@ -78,3 +82,13 @@ def test_key_present_is_ready(tmp_path):
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
     assert js["whisper_backend"] == "groq"
+
+
+def test_atlas_key_is_ready(tmp_path):
+    _write_env(tmp_path, "ATLASCLOUD_API_KEY=atlas-test-key\n")
+    chk = _run(["--check"], home=tmp_path)
+    assert chk.returncode == 0, chk.stderr
+
+    js = json.loads(_run(["--json"], home=tmp_path).stdout)
+    assert js["status"] == "ready"
+    assert js["whisper_backend"] == "atlas"

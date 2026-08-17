@@ -41,6 +41,7 @@ command -v yt-dlp >/dev/null 2>&1 && HAS_YTDLP="yes"
 
 HAS_GROQ="$(read_key GROQ_API_KEY)"
 HAS_OPENAI="$(read_key OPENAI_API_KEY)"
+HAS_ATLAS="$(read_key ATLASCLOUD_API_KEY)"
 SETUP_COMPLETE="$(read_key SETUP_COMPLETE)"
 
 # Fully configured → silent (Claude can surface status on demand via --check).
@@ -51,8 +52,8 @@ fi
 # First-run / partially-configured → one-line hint.
 if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
   echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/skills/watch/scripts/setup.py\` once to install and scaffold config."
-elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
-  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
+elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" && -z "$HAS_ATLAS" ]]; then
+  echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred), OPENAI_API_KEY, or ATLASCLOUD_API_KEY to ~/.config/watch/.env to unlock transcription fallback."
 else
   echo "/watch: ready."
 fi
