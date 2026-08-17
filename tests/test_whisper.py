@@ -1,14 +1,14 @@
 """Whisper auto-chunking: plan, split, and timestamp stitching."""
 from __future__ import annotations
 
+import json
 import math
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import pytest
-
 import whisper
-
 
 MB = 1024 * 1024
 
@@ -155,3 +155,147 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
+class TestAtlasCloud:
+    def test_default_backend_order_stays_groq_first(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "openai-test-key")
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-test-key")
+        assert whisper.load_api_key() == ("groq", "groq-test-key")
+
+    def test_explicit_key_selection(self, monkeypatch):
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ATLASCLOUD_API_KEY", "atlas-test-key")
+        assert whisper.load_api_key("atlas") == ("atlas", "atlas-test-key")
+
+    def test_prefers_utterance_segments(self):
+        data = {
+            "stt_result": {
+                "text": "Hello world.",
+                "duration": 2.0,
+                "words": [
+                    {"text": "Hello", "start": 0.0, "end": 0.5, "type": "word"},
+                    {"text": "Hello world.", "start": 0.0, "end": 2.0, "type": "utterance"},
+                ],
+            }
+        }
+        assert whisper._segments_from_atlas_response(data) == [
+            {"start": 0.0, "end": 2.0, "text": "Hello world."}
+        ]
+
+    def test_falls_back_to_full_transcript(self):
+        data = {"stt_result": {"text": "Fallback text", "duration": 3.25}}
+        assert whisper._segments_from_atlas_response(data) == [
+            {"start": 0.0, "end": 3.25, "text": "Fallback text"}
+        ]
+
+    def test_merges_word_level_segments(self):
+        data = {
+            "stt_result": {
+                "words": [
+                    {"text": "Atlas", "start": 0.16, "end": 0.44, "type": "word"},
+                    {"text": "Cloud", "start": 0.6, "end": 0.68, "type": "word"},
+                    {
+                        "text": "transcription",
+                        "start": 0.68,
+                        "end": 1.36,
+                        "type": "word",
+                    },
+                    {"text": "works.", "start": 1.4, "end": 1.9, "type": "word"},
+                ]
+            }
+        }
+        assert whisper._segments_from_atlas_response(data) == [
+            {"start": 0.16, "end": 1.9, "text": "Atlas Cloud transcription works."}
+        ]
+
+    def test_word_merging_honors_pauses_and_cjk_spacing(self):
+        entries = [
+            {"text": "你好", "start": 0.0, "end": 0.4},
+            {"text": "世界。", "start": 0.4, "end": 0.8},
+            {"text": "Next", "start": 2.2, "end": 2.5},
+            {"text": "sentence", "start": 2.5, "end": 3.0},
+        ]
+        assert whisper._merge_atlas_words(entries) == [
+            {"start": 0.0, "end": 0.8, "text": "你好世界。"},
+            {"start": 2.2, "end": 3.0, "text": "Next sentence"},
+        ]
+
+    def test_upload_submit_and_bounded_poll(self, monkeypatch, tmp_path: Path):
+        audio = tmp_path / "audio.mp3"
+        audio.write_bytes(b"fake-mp3")
+        responses = [
+            {"code": 200, "data": {"download_url": "https://media.example/audio.mp3"}},
+            {"code": 200, "data": {"id": "prediction-123"}},
+            {"code": 200, "data": {"id": "prediction-123", "status": "processing"}},
+            {
+                "code": 200,
+                "data": {
+                    "id": "prediction-123",
+                    "status": "completed",
+                    "stt_result": {
+                        "words": [
+                            {
+                                "text": "Atlas works.",
+                                "start": 0.1,
+                                "end": 1.2,
+                                "type": "utterance",
+                            }
+                        ]
+                    },
+                },
+            },
+        ]
+        requests = []
+
+        def fake_urlopen(request, **_kwargs):
+            requests.append(request)
+            return _FakeResponse(responses.pop(0))
+
+        monkeypatch.setattr(whisper, "urlopen", fake_urlopen)
+        monkeypatch.setattr(whisper.time, "sleep", lambda _seconds: None)
+
+        segments = whisper._transcribe_file("atlas", "secret", audio)
+
+        assert segments == [{"start": 0.1, "end": 1.2, "text": "Atlas works."}]
+        assert [request.get_method() for request in requests] == ["POST", "POST", "GET", "GET"]
+        assert requests[0].full_url == whisper.ATLAS_UPLOAD_ENDPOINT
+        assert requests[1].full_url == whisper.ATLAS_GENERATE_ENDPOINT
+        submitted = json.loads(requests[1].data.decode("utf-8"))
+        assert submitted == {
+            "model": whisper.ATLAS_MODEL,
+            "audio_url": "https://media.example/audio.mp3",
+            "format": "mp3",
+            "enable_itn": True,
+            "enable_punc": True,
+            "show_utterances": True,
+        }
+
+    def test_submission_network_error_is_not_retried(self, monkeypatch):
+        calls = 0
+
+        def fail_once(_request, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise urllib.error.URLError("offline")
+
+        monkeypatch.setattr(whisper, "urlopen", fail_once)
+        with pytest.raises(SystemExit, match="Atlas Cloud ASR submission failed"):
+            whisper._atlas_submit_transcription("secret", "https://media.example/audio.mp3")
+        assert calls == 1

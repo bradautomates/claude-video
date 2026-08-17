@@ -11,13 +11,24 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from frames import (  # noqa: E402
+    MAX_FPS,
+    auto_fps,
+    auto_fps_focus,
+    extract_at_timestamps,
+    extract_keyframes,
+    extract_scene_or_uniform,
+    format_time,
+    get_metadata,
+    merge_frames,
+    parse_time,
+    parse_timestamps,
+)
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
@@ -52,13 +63,16 @@ def main() -> int:
     ap.add_argument(
         "--no-whisper",
         action="store_true",
-        help="Disable Whisper fallback. Report frames-only if no captions available.",
+        help="Disable API transcription fallback. Report frames-only if captions are missing.",
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "atlas"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help=(
+            "Force a transcription backend. Default: prefer Groq, then OpenAI, "
+            "then Atlas Cloud."
+        ),
     )
     ap.add_argument(
         "--no-dedup",
@@ -248,18 +262,22 @@ def main() -> int:
                 )
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
-                transcript_source = f"whisper ({used_backend})"
+                transcript_source = (
+                    "atlas cloud asr"
+                    if used_backend == "atlas"
+                    else f"whisper ({used_backend})"
+                )
             except SystemExit as exc:
-                print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
+                print(f"[watch] transcription fallback failed: {exc}", file=sys.stderr)
         else:
             hint = (
                 f"--whisper {args.whisper} was set but the matching API key is missing"
                 if args.whisper else
-                "no subtitles and no Whisper API key found"
+                "no subtitles and no transcription API key found"
             )
             setup_py = SCRIPT_DIR / "setup.py"
             print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
+                f"[watch] {hint} — run `python3 {setup_py}` to enable transcription fallback",
                 file=sys.stderr,
             )
     elif not transcript_segments and video_path and not meta.get("has_audio"):
@@ -367,7 +385,7 @@ def main() -> int:
         print("```")
     elif detail == "transcript":
         print(
-            "_No transcript available at transcript detail. Captions were missing and Whisper was "
+            "_No transcript available at transcript detail. Captions were missing and API transcription was "
             "unavailable or failed, so there is no visual fallback here. Re-run with "
             "`--detail balanced` for frames._"
         )
@@ -377,9 +395,9 @@ def main() -> int:
         setup_py = SCRIPT_DIR / "setup.py"
         print(
             "_No transcript available — proceed with frames only. "
-            "Captions were missing and the Whisper fallback was unavailable "
+            "Captions were missing and API transcription was unavailable "
             "(no API key set, or `--no-whisper` was used). "
-            f"Run `python3 {setup_py}` to enable Whisper, then re-run._"
+            f"Run `python3 {setup_py}` to enable transcription, then re-run._"
         )
 
     print()
