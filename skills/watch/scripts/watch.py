@@ -15,6 +15,16 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
+# Windows: when stdout/stderr are redirected (any non-interactive invocation,
+# which is how every harness runs this script), Python falls back to the
+# system ANSI codepage (e.g. cp949 on Korean Windows) instead of UTF-8. The
+# report below uses U+2014 (em dash) and U+2192 (arrow), which cp949 cannot
+# encode, crashing with UnicodeEncodeError before any output is produced.
+if sys.platform == "win32":
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
