@@ -16,7 +16,7 @@ def _run(clip: Path, *args: str, env_extra: dict | None = None) -> str:
         env.update(env_extra)
     proc = subprocess.run(
         [sys.executable, str(WATCH), str(clip), "--no-whisper", *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", env=env,
     )
     assert proc.returncode == 0, proc.stderr
     return proc.stdout
@@ -70,7 +70,9 @@ def test_timestamps_with_transcript_detail_is_cue_only(cut_clip: Path):
 
 
 def _frame_lines(out: str) -> int:
-    return sum(1 for line in out.splitlines() if "/frames/frame_" in line and "(t=" in line)
+    # watch.py prints native paths, so the separator is "\" on Windows.
+    marker = os.path.join("frames", "frame_")
+    return sum(1 for line in out.splitlines() if marker in line and "(t=" in line)
 
 
 def test_dedup_collapses_static_by_default(static_clip: Path):

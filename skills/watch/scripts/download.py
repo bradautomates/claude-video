@@ -14,6 +14,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import force_utf8_stdio, missing_binary_message  # noqa: E402
+
+
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
 
@@ -65,7 +71,7 @@ def _pick_video(out_dir: Path) -> Path | None:
 def fetch_captions(url: str, out_dir: Path) -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
     if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+        raise SystemExit(missing_binary_message("yt-dlp"))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -118,7 +124,7 @@ def download_url(
     audio_only: bool = False,
 ) -> dict:
     if shutil.which("yt-dlp") is None:
-        raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+        raise SystemExit(missing_binary_message("yt-dlp"))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -173,6 +179,7 @@ def download(
 
 
 if __name__ == "__main__":
+    force_utf8_stdio()
     if len(sys.argv) < 3:
         print("usage: download.py <url-or-path> <out-dir>", file=sys.stderr)
         raise SystemExit(2)

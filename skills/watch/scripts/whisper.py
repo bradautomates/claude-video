@@ -26,6 +26,12 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import force_utf8_stdio, missing_binary_message, python_command  # noqa: E402
+
+
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
 
@@ -115,7 +121,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
 def extract_audio(video_path: str, out_path: Path) -> Path:
     """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit."""
     if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+        raise SystemExit(missing_binary_message("ffmpeg"))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -142,7 +148,7 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
 def audio_duration(audio_path: Path) -> float:
     """Return the duration of an audio file in seconds via ffprobe."""
     if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+        raise SystemExit(missing_binary_message("ffprobe"))
 
     result = subprocess.run(
         [
@@ -172,7 +178,7 @@ def split_audio(
     mp3 frame boundaries are close enough for transcription's purposes.
     """
     if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+        raise SystemExit(missing_binary_message("ffmpeg"))
 
     work_dir.mkdir(parents=True, exist_ok=True)
     chunks: list[tuple[Path, float]] = []
@@ -431,7 +437,7 @@ def transcribe_video(
         raise SystemExit(
             "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
             "in the environment or in ~/.config/watch/.env. "
-            f"Run `python3 {setup_py}` to configure."
+            f"Run `{python_command()} {setup_py}` to configure."
         )
 
     print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
@@ -466,6 +472,7 @@ def transcribe_video(
 
 
 if __name__ == "__main__":
+    force_utf8_stdio()
     if len(sys.argv) < 2:
         print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
         raise SystemExit(2)

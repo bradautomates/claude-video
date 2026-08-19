@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import platform
+import sys
 from pathlib import Path
 
 
@@ -12,6 +14,69 @@ CONFIG_FILE = CONFIG_DIR / ".env"
 DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
+
+# Package name to install for each required binary, per platform. ffprobe ships
+# inside the ffmpeg package everywhere, so it maps to the same hint.
+INSTALL_HINTS: dict[str, dict[str, str]] = {
+    "Darwin": {
+        "ffmpeg": "brew install ffmpeg",
+        "yt-dlp": "brew install yt-dlp",
+    },
+    "Linux": {
+        "ffmpeg": "sudo apt install ffmpeg  (or: sudo dnf install ffmpeg)",
+        "yt-dlp": "pipx install yt-dlp  (or: pip install --user yt-dlp)",
+    },
+    "Windows": {
+        "ffmpeg": "winget install Gyan.FFmpeg",
+        "yt-dlp": "winget install yt-dlp.yt-dlp  (or: pip install --user yt-dlp)",
+    },
+}
+
+
+def force_utf8_stdio() -> None:
+    """Make stdout/stderr UTF-8 no matter what the console codepage is.
+
+    On Windows the interpreter picks its stdio encoding from the system
+    codepage, and the report text is not ASCII: it carries em dashes (U+2014,
+    absent from cp949) and arrows (U+2192, absent from cp1252). Printing one
+    raises UnicodeEncodeError and kills the run *after* the download, frame
+    extraction, and transcription have already been paid for. The report is
+    consumed by an agent reading a pipe, so UTF-8 is what the receiver wants
+    regardless of the console. ``errors="replace"`` keeps a hostile
+    PYTHONIOENCODING from being fatal too.
+
+    Call once at the top of every entry point, before the first print.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # a replaced/wrapped stream, e.g. under pytest
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+def python_command() -> str:
+    """Interpreter name to print in a copy-pasteable hint.
+
+    `python3` does not resolve on Windows — it is the Microsoft Store stub,
+    which opens the Store instead of running the script. SKILL.md already tells
+    the agent to substitute `python` there; these hints must agree.
+    """
+    return "python" if os.name == "nt" else "python3"
+
+
+def install_hint(binary: str, system: str | None = None) -> str:
+    """Platform-correct install command for one required binary."""
+    package = "ffmpeg" if binary in ("ffmpeg", "ffprobe") else binary
+    hints = INSTALL_HINTS.get(system or platform.system(), {})
+    return hints.get(package, f"install {package} and put it on your PATH")
+
+
+def missing_binary_message(binary: str) -> str:
+    """The SystemExit text used everywhere a required binary is absent."""
+    return f"{binary} is not installed. Install with: {install_hint(binary)}"
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:

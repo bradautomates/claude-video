@@ -35,6 +35,10 @@ def _capture_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return _Result()
 
     monkeypatch.setattr(download.subprocess, "run", fake_run)
+    # These tests inspect the argv download.py builds; the binary guard that
+    # runs before it would otherwise make them pass only on a host that
+    # happens to have yt-dlp installed.
+    monkeypatch.setattr(download.shutil, "which", lambda name: "/stub/bin/" + name)
     return calls
 
 

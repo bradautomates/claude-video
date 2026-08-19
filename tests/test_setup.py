@@ -3,11 +3,21 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
+
+_MISSING = [b for b in ("ffmpeg", "ffprobe", "yt-dlp") if shutil.which(b) is None]
+# --check gates on binary presence before it ever looks at the key state, so
+# the exit-code assertions below only mean anything with the binaries there.
+requires_binaries = pytest.mark.skipif(
+    bool(_MISSING), reason="needs on PATH: " + ", ".join(_MISSING)
+)
 
 
 def _run(args, *, home=None, extra_env=None):
@@ -24,7 +34,7 @@ def _run(args, *, home=None, extra_env=None):
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", env=env,
     )
 
 
@@ -43,6 +53,7 @@ def test_json_reports_watch_detail():
     assert data["watch_detail"] == "balanced"
 
 
+@requires_binaries
 def test_keyless_completed_setup_proceeds_silently(tmp_path):
     """A user who finished setup without a key must NOT be nagged forever."""
     _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\nSETUP_COMPLETE=true\n")
@@ -58,6 +69,7 @@ def test_keyless_completed_setup_proceeds_silently(tmp_path):
     assert js["status"] == "needs_key"
 
 
+@requires_binaries
 def test_keyless_first_run_is_encouraged(tmp_path):
     """Genuine first run with no key: --check reports exit 3 (encourage a key)."""
     _write_env(tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
@@ -69,6 +81,7 @@ def test_keyless_first_run_is_encouraged(tmp_path):
     assert js["first_run"] is True
 
 
+@requires_binaries
 def test_key_present_is_ready(tmp_path):
     _write_env(tmp_path, "GROQ_API_KEY=sk-test-abc\n")
     chk = _run(["--check"], home=tmp_path)
