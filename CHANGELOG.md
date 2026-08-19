@@ -2,6 +2,15 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **`/watch` crashed on any Windows console whose codepage is not UTF-8.** The report text carries em dashes (U+2014, absent from cp949) and arrows (U+2192, absent from cp1252), and Python takes its stdio encoding from the codepage — so printing the report raised `UnicodeEncodeError` and killed the run *after* the download, frame extraction, and transcription had already been paid for. Korean/Japanese/Chinese Windows hit it on every run; Western Windows hit it whenever `--start`/`--end` printed the focus range. Every entry point now forces UTF-8 stdio (`config.force_utf8_stdio`) before its first print.
+- **"not installed" errors told every platform to run `brew install`.** `setup.py` already printed `winget` / `apt` hints, but the eight mid-run failure paths in `download.py`, `frames.py`, and `whisper.py` did not. Both now read one table (`config.INSTALL_HINTS`), so the installer and a mid-run failure cannot disagree.
+- **Hints told Windows users to run `python3`**, which there is the Microsoft Store stub and does not run the script — the same substitution `SKILL.md` already documents for the agent. Now resolved per platform (`config.python_command`).
+- **`setup.py` warned on every Windows run** that `~/.config/watch/.env` "is readable by other users. Run: chmod 600 …". `st_mode` on Windows is a synthesized value that reports `0o666` for any writable file regardless of its ACL, so the check always fired — and `chmod` does not exist there. The POSIX permission check is now skipped on Windows.
+- Test-suite portability on Windows: `test_download` stubs the binary guard instead of requiring `yt-dlp` on the host, `test_watch` matches frame paths with the platform separator instead of a hardcoded `/`, `test_setup`'s exit-code assertions skip with a reason when the media binaries are absent, and the subprocess helpers decode UTF-8 instead of the ambient locale encoding. 71 pass on Korean Windows (cp949), where 15 failed before.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

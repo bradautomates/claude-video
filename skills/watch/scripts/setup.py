@@ -29,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import get_config  # noqa: E402
+from config import force_utf8_stdio, get_config, install_hint, python_command  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
@@ -72,7 +72,14 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    Skipped on Windows: ``st_mode`` there is a synthesized stand-in that reports
+    0o666 for any writable file regardless of its ACL, so the check fires on
+    every run — and the remedy it prints (``chmod``) does not exist.
+    """
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
@@ -163,7 +170,11 @@ def _write_setup_complete() -> None:
         pass
 
 
-def _brew_pkg(missing: list[str]) -> list[str]:
+def _packages_for(missing: list[str]) -> list[str]:
+    """Collapse missing binaries to the packages that provide them.
+
+    ffmpeg and ffprobe ship together in one package on every platform.
+    """
     pkgs: list[str] = []
     for bin_name in missing:
         if bin_name in ("ffmpeg", "ffprobe"):
@@ -181,9 +192,9 @@ def _install_macos(missing: list[str]) -> tuple[bool, str]:
     if _which("brew") is None:
         return False, (
             "Homebrew is not installed. Install it from https://brew.sh, then re-run setup. "
-            "Or install manually: `brew install " + " ".join(_brew_pkg(missing)) + "`"
+            "Or install manually: `brew install " + " ".join(_packages_for(missing)) + "`"
         )
-    pkgs = _brew_pkg(missing)
+    pkgs = _packages_for(missing)
     if not pkgs:
         return True, "nothing to install"
     cmd = ["brew", "install", *pkgs]
@@ -194,23 +205,15 @@ def _install_macos(missing: list[str]) -> tuple[bool, str]:
     return True, f"installed via brew: {', '.join(pkgs)}"
 
 
-def _install_hint_linux(missing: list[str]) -> str:
-    pkgs = _brew_pkg(missing)
-    hints = []
-    if "ffmpeg" in pkgs:
-        hints.append("apt: `sudo apt install ffmpeg` or dnf: `sudo dnf install ffmpeg`")
-    if "yt-dlp" in pkgs:
-        hints.append("`pipx install yt-dlp` (recommended) or `pip install --user yt-dlp`")
-    return "\n  ".join(hints) if hints else "nothing to install"
+def _install_hints(missing: list[str], system: str) -> str:
+    """One install line per missing package, from config.INSTALL_HINTS.
 
-
-def _install_hint_windows(missing: list[str]) -> str:
-    pkgs = _brew_pkg(missing)
-    hints = []
-    if "ffmpeg" in pkgs:
-        hints.append("winget: `winget install Gyan.FFmpeg`")
-    if "yt-dlp" in pkgs:
-        hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
+    Shares that table with the `missing_binary_message` used by the ffmpeg /
+    yt-dlp error paths in download.py, frames.py, and whisper.py, so the
+    installer and a mid-run failure never disagree about how to install a
+    dependency.
+    """
+    hints = [f"`{install_hint(pkg, system)}`" for pkg in _packages_for(missing)]
     return "\n  ".join(hints) if hints else "nothing to install"
 
 
@@ -280,7 +283,7 @@ def cmd_check() -> int:
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
-        f"Run: python3 {installer}\n"
+        f"Run: {python_command()} {installer}\n"
     )
     sys.stderr.flush()
 
@@ -314,11 +317,11 @@ def cmd_install() -> int:
             installed_deps = True
         elif system == "Linux":
             print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
+            print("  " + _install_hints(missing, system), file=sys.stderr)
             return 2
         elif system == "Windows":
             print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
-            print("  " + _install_hint_windows(missing), file=sys.stderr)
+            print("  " + _install_hints(missing, system), file=sys.stderr)
             return 2
         else:
             print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
@@ -351,6 +354,7 @@ def cmd_install() -> int:
 
 
 def main() -> int:
+    force_utf8_stdio()
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         if arg == "--check":
