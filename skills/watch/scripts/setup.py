@@ -2,9 +2,12 @@
 """Setup / preflight for /watch.
 
 Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
-  setup.py --json       Machine-readable status for Claude to parse.
-  setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
+  setup.py --check          Silent preflight. Exit 0 if ready, 2/3/4 on failure.
+  setup.py --json           Machine-readable status for Claude to parse.
+  setup.py --set-key NAME   Interactively store a Whisper key (TTY ONLY).
+  setup.py --set-detail M   Store the default detail mode (non-secret).
+  setup.py --complete       Mark setup complete.
+  setup.py                  Installer. Auto-installs deps, scaffolds .env.
 
 Design:
 - Silent on success: --check exits 0 with no output when everything's ready so
@@ -15,13 +18,22 @@ Design:
   through a successful installer run at least once.
 - Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
 - Never write an API key to disk automatically — only scaffold placeholders.
+- Credentials are entered by the HUMAN, never by an agent. `--set-key` reads the
+  key from an interactive terminal with getpass and refuses to run when stdin
+  is not a TTY, so an agent driving this script through a non-interactive shell
+  cannot supply, capture, or echo the secret. The key is never accepted as a
+  command-line argument (argv is readable via the process table) and is never
+  printed back.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import platform
+import re
 import shutil
+import threading
 import subprocess
 import sys
 from pathlib import Path
@@ -48,6 +60,11 @@ ENV_TEMPLATE = """# /watch API configuration
 #
 # Leave both blank to disable Whisper — /watch will still work, but videos
 # without native captions will come back frames-only.
+#
+# Add a key YOURSELF, either by editing the line below in your own editor or by
+# running this in your own terminal (input is hidden, never echoed):
+#   python3 <skill>/scripts/setup.py --set-key groq
+# Never paste an API key into a chat with an agent.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
@@ -72,7 +89,15 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    POSIX only: on Windows `st_mode` always reports the group/other read bits
+    regardless of the actual NTFS ACL, so this check fires on every single call
+    and drowns the silent-on-success contract in false warnings. Access control
+    there comes from the profile ACL, not mode bits.
+    """
+    if os.name != "posix":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
@@ -340,23 +365,187 @@ def cmd_install() -> int:
         return 0
 
     print("")
-    print("[setup] one step left: add a Whisper API key.")
+    print("[setup] optional step left: add a Whisper API key (you, not the agent).")
     print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
-    print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
-    print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
+    print("  In YOUR OWN terminal, run one of these (input is hidden, never echoed):")
+    print(f"    python3 {Path(__file__).resolve()} --set-key groq     (preferred: console.groq.com/keys)")
+    print(f"    python3 {Path(__file__).resolve()} --set-key openai   (fallback: platform.openai.com/api-keys)")
+    print("")
+    print(f"  Or edit {CONFIG_FILE} yourself and fill in the blank key line.")
+    print("  Never paste an API key into a chat with an agent.")
     print("")
     print("  Without a key, /watch still works but videos without captions come back frames-only.")
+    print(f"  To proceed keyless and stop being asked: python3 {Path(__file__).resolve()} --complete")
     return 3
+
+
+VALID_KEY_NAMES = {"GROQ_API_KEY", "OPENAI_API_KEY"}
+_KEY_CHARS_RE = re.compile(r"^[A-Za-z0-9_\-.]{16,256}$")
+
+
+def _upsert_env(name: str, value: str) -> None:
+    """Set (or append) `name=value` in the config file, preserving everything
+    else. Creates the file from the template when absent, re-asserts 0600."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    if CONFIG_FILE.exists():
+        text = CONFIG_FILE.read_text(encoding="utf-8")
+    else:
+        text = ENV_TEMPLATE
+    lines = text.splitlines()
+    replaced = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{name}="):
+            lines[i] = f"{name}={value}"
+            replaced = True
+            break
+    if not replaced:
+        lines.append(f"{name}={value}")
+    CONFIG_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
+# A TTY check alone is not a reliable human check: an agent harness can hand the
+# script a pty. So the read is also bounded -- if nobody types a key within
+# SECRET_READ_TIMEOUT seconds we refuse rather than block the caller forever.
+# Net effect: an agent invoking this either gets an immediate refusal or a
+# timeout refusal, and never a channel through which it could pass a secret.
+SECRET_READ_TIMEOUT = 60.0
+
+
+def _read_secret_interactive(name: str, which: str) -> str | None:
+    """Read a secret from a real human at the terminal, or return None.
+
+    The value is never echoed and never leaves this function except into
+    `_upsert_env`, which writes it to a 0600 file.
+    """
+    sys.stderr.write(
+        "[setup] Interactive key entry for {0}.\n"
+        "        Type it at the prompt within {1:.0f}s. Input is hidden.\n"
+        "        If you are an automated agent: abort now -- you must not handle\n"
+        "        this credential. Tell the user to run this command themselves.\n".format(
+            name, SECRET_READ_TIMEOUT
+        )
+    )
+    sys.stderr.flush()
+
+    box: dict[str, str] = {}
+
+    def _read() -> None:
+        try:
+            box["value"] = getpass.getpass(f"Paste your {name} (hidden): ").strip()
+        except (EOFError, KeyboardInterrupt, OSError):
+            box["value"] = ""
+
+    thread = threading.Thread(target=_read, daemon=True)
+    thread.start()
+    thread.join(SECRET_READ_TIMEOUT)
+    if thread.is_alive():
+        sys.stderr.write(
+            "\n[setup] timed out waiting for interactive input; nothing written.\n"
+            f"        Run this yourself in your own terminal:\n"
+            f"          python3 {Path(__file__).resolve()} --set-key {which}\n"
+            f"        or edit {CONFIG_FILE} and set {name}=... by hand.\n"
+        )
+        sys.stderr.flush()
+        # The reader thread is parked on a blocking read; abandon the process
+        # rather than leave the caller hanging.
+        os._exit(2)
+    return box.get("value", "")
+
+
+def cmd_set_key(argv: list[str]) -> int:
+    """Store a Whisper API key typed by the human at an interactive terminal.
+
+    Hard requirements, by design:
+      * the key is NEVER read from argv (the process table is readable);
+      * stdin must be a TTY, so a non-interactive agent shell can neither pipe
+        a secret in nor scrape the prompt;
+      * the value is never echoed, logged, or printed back.
+    """
+    which = (argv[0] if argv else "").strip().lower()
+    if which in ("groq", "groq_api_key"):
+        name = "GROQ_API_KEY"
+    elif which in ("openai", "openai_api_key"):
+        name = "OPENAI_API_KEY"
+    else:
+        sys.stderr.write("usage: setup.py --set-key groq|openai\n")
+        return 2
+    if len(argv) > 1:
+        sys.stderr.write(
+            "[setup] refusing: the key must not be passed as an argument. "
+            "Run `--set-key groq` with no value and type it at the prompt.\n"
+        )
+        return 2
+    if not sys.stdin.isatty():
+        sys.stderr.write(
+            "[setup] refusing: no interactive terminal.\n"
+            "        API keys are entered by you, not by an agent. Open your own\n"
+            f"        terminal and run:  python3 {Path(__file__).resolve()} --set-key {which}\n"
+            f"        or edit {CONFIG_FILE} directly and set {name}=...\n"
+        )
+        return 2
+    secret = _read_secret_interactive(name, which)
+    if secret is None:
+        return 2
+    if not secret:
+        sys.stderr.write("[setup] no key entered; nothing written.\n")
+        return 2
+    if not _KEY_CHARS_RE.match(secret):
+        sys.stderr.write(
+            "[setup] that does not look like an API key "
+            "(expected 16-256 chars of A-Z a-z 0-9 _ - .); nothing written.\n"
+        )
+        return 2
+    _upsert_env(name, secret)
+    del secret
+    print(f"[setup] stored {name} in {CONFIG_FILE} (mode 0600). Value not echoed.")
+    _write_setup_complete()
+    return 0
+
+
+def cmd_set_detail(argv: list[str]) -> int:
+    """Store the default detail mode. Non-secret, safe for an agent to call."""
+    from config import DETAILS
+
+    mode = (argv[0] if argv else "").strip()
+    if mode not in DETAILS:
+        sys.stderr.write("usage: setup.py --set-detail " + "|".join(sorted(DETAILS)) + "\n")
+        return 2
+    _upsert_env("WATCH_DETAIL", mode)
+    print(f"[setup] WATCH_DETAIL={mode}")
+    return 0
+
+
+def cmd_complete() -> int:
+    """Mark setup complete so keyless users are never nagged again."""
+    _scaffold_env()
+    _write_setup_complete()
+    print(f"[setup] setup marked complete in {CONFIG_FILE}")
+    return 0
 
 
 def main() -> int:
     if len(sys.argv) > 1:
         arg = sys.argv[1]
+        rest = sys.argv[2:]
         if arg == "--check":
             return cmd_check()
         if arg == "--json":
             return cmd_json()
+        if arg == "--set-key":
+            return cmd_set_key(rest)
+        if arg == "--set-detail":
+            return cmd_set_detail(rest)
+        if arg == "--complete":
+            return cmd_complete()
+        if arg in ("-h", "--help"):
+            print(__doc__)
+            return 0
+        sys.stderr.write(f"[setup] unknown option: {arg}\n")
+        return 2
     return cmd_install()
 
 

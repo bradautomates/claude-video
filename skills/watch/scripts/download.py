@@ -7,6 +7,7 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -16,12 +17,37 @@ from urllib.parse import urlparse
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
+# Hardening applied to every yt-dlp call (W011 mitigation).
+#   --ignore-config            ignore ~/.config/yt-dlp/config so a stale or
+#                              hostile local config cannot inject arguments
+#   --no-cookies*              never attach the user's browser session to a
+#                              third-party request (no logged-in / private data)
+#   --no-exec                  never run post-processing shell commands
+#   --no-playlist              one video per invocation, no fan-out
+#   --max-filesize             bound what an untrusted URL can write to disk
+YTDLP_HARDENING = [
+    "--ignore-config",
+    "--no-cookies",
+    "--no-cookies-from-browser",
+    "--no-exec",
+    "--no-playlist",
+]
+MAX_FILESIZE = os.environ.get("WATCH_MAX_FILESIZE", "2G")
+
 
 def is_url(source: str) -> bool:
     if source.startswith("-"):
         return False
     parsed = urlparse(source)
-    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    if "@" in parsed.netloc:
+        # userinfo@host would hand credentials to a third-party host.
+        raise SystemExit(
+            "Refusing a URL with embedded credentials (user:pass@host). "
+            "Pass a plain public URL."
+        )
+    return True
 
 
 def resolve_local(path: str) -> dict:
@@ -78,7 +104,8 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
-        "--no-playlist",
+        *YTDLP_HARDENING,
+        "--max-filesize", MAX_FILESIZE,
         "--ignore-errors",
         "-o", output_template,
         "--",
@@ -135,7 +162,8 @@ def download_url(
         "--sub-langs", "en.*",
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
-        "--no-playlist",
+        *YTDLP_HARDENING,
+        "--max-filesize", MAX_FILESIZE,
         "--ignore-errors",
         "-o", output_template,
         "--",
