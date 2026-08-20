@@ -28,6 +28,7 @@ SCENE_MIN_FRAMES = 8
 # (very short or oddly encoded), so the cheap tier falls back to uniform.
 KEYFRAME_MIN = 4
 MAX_READ_DIMENSION = 1998
+_VFR_FLAG_CACHE: list[str] | None = None
 # Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB
 # grayscale thumbnail and treat two frames as near-identical when their mean
 # per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
@@ -37,6 +38,33 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+def _vfr_flag() -> list[str]:
+    """Return the variable-frame-rate flag this ffmpeg understands.
+
+    `-vsync` was deprecated in ffmpeg 5.0 and REMOVED in 9.0 ("Unrecognized
+    option 'vsync'"), which breaks frame extraction outright on current builds.
+    `-fps_mode` is the replacement and exists from 5.0 onward, so probe once and
+    cache: modern builds get -fps_mode, pre-5.0 builds keep -vsync.
+    """
+    global _VFR_FLAG_CACHE
+    if _VFR_FLAG_CACHE is not None:
+        return list(_VFR_FLAG_CACHE)
+    flag = ["-fps_mode", "vfr"]
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+        ).stdout
+        match = re.search(r"ffmpeg version n?(\d+)", out)
+        if match and int(match.group(1)) < 5:
+            flag = ["-vsync", "vfr"]
+    except (OSError, ValueError):
+        pass
+    _VFR_FLAG_CACHE = flag
+    return list(flag)
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +281,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +640,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_flag(),
         "-q:v", "4",
         output_pattern,
     ]
