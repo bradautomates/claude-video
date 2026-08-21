@@ -8,6 +8,7 @@ zooming in for detail).
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
@@ -37,6 +38,29 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+# ffmpeg 5.0 renamed -vsync to -fps_mode and ffmpeg 8 removed -vsync outright,
+# so neither spelling works everywhere: -fps_mode breaks the 4.x still shipped
+# by older LTS distros, -vsync breaks any build from 8 on. Probe the version
+# once per process and use whichever this build accepts.
+FFMPEG_VERSION_RE = re.compile(r"ffmpeg version n?(\d+)\.")
+
+
+@functools.lru_cache(maxsize=1)
+def _fps_mode_flag() -> str:
+    """Return the frame-sync flag name this ffmpeg build accepts."""
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-version"],
+            capture_output=True,
+            text=True,
+        ).stdout
+    except OSError:
+        return "-fps_mode"
+    match = FFMPEG_VERSION_RE.search(out)
+    # Unparseable versions are git/dated snapshot builds, which are recent.
+    if match and int(match.group(1)) < 5:
+        return "-vsync"
+    return "-fps_mode"
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +277,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        _fps_mode_flag(), "vfr",
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +636,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        _fps_mode_flag(), "vfr",
         "-q:v", "4",
         output_pattern,
     ]

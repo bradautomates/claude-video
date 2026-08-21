@@ -68,3 +68,30 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_fps_mode_flag_matches_local_ffmpeg():
+    """The probe agrees with the ffmpeg actually on PATH (it just ran the fixtures)."""
+    assert frames._fps_mode_flag() in {"-fps_mode", "-vsync"}
+
+
+def test_fps_mode_flag_picks_spelling_by_major_version(monkeypatch):
+    """ffmpeg <5 only knows -vsync; 5+ knows -fps_mode and 8+ dropped -vsync."""
+    cases = [
+        ("ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021", "-vsync"),
+        ("ffmpeg version n4.3.1 Copyright (c) 2000-2020", "-vsync"),
+        ("ffmpeg version 5.1.4 Copyright (c) 2000-2023", "-fps_mode"),
+        ("ffmpeg version n6.0 Copyright (c) 2000-2023", "-fps_mode"),
+        ("ffmpeg version 9.0.1 Copyright (c) 2000-2026", "-fps_mode"),
+        # Git/dated snapshot builds carry no parseable major; assume modern.
+        ("ffmpeg version N-113402-g1a2b3c4d Copyright (c) 2000-2026", "-fps_mode"),
+    ]
+    for banner, expected in cases:
+        frames._fps_mode_flag.cache_clear()
+        monkeypatch.setattr(
+            frames.subprocess,
+            "run",
+            lambda *a, **k: type("R", (), {"stdout": banner})(),
+        )
+        assert frames._fps_mode_flag() == expected, banner
+    frames._fps_mode_flag.cache_clear()
