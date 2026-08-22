@@ -197,6 +197,10 @@ This holds for `transcript` detail too: even with no frames, produce a **summary
 Default behavior comes from `~/.config/watch/.env`:
 
 - `WATCH_DETAIL=transcript|efficient|balanced|token-burner` (default: `balanced`)
+- `WATCH_SUBLANGS=<yt-dlp --sub-langs selector>` (default: `.*-orig,en.*` — the video's own
+  original-language track plus English). Only set this if you want a specific set, e.g.
+  `es.*,en.*`. Never set it to `all`: that pulls YouTube's hundreds of auto-translated
+  tracks and stalls the run for minutes.
 
 At `transcript` detail, captions are enough to return a report without downloading video. If captions are missing, the script downloads audio only and tries Whisper. If no transcript can be produced, it reports the limitation clearly; re-run with `--detail balanced` for frames.
 
@@ -222,7 +226,7 @@ Behavior:
 
 The script gets a timestamped transcript in one of two ways:
 
-1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
+1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available. It requests the video's own original-language track plus English (`WATCH_SUBLANGS`), and prefers the original track over a machine translation of it.
 2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.

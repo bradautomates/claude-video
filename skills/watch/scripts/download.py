@@ -14,6 +14,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+SCRIPT_DIR = Path(__file__).parent.resolve()
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from config import sub_langs  # noqa: E402
+
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
 
@@ -45,9 +50,16 @@ def _pick_subtitle(out_dir: Path) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
+    # The video's own language wins: a "-orig" track is what was actually
+    # spoken, while a same-run "en" track on a non-English video is a machine
+    # translation of it. Sorting alone would pick "video.en.vtt" over
+    # "video.pt-orig.vtt" and silently transcribe the translation.
+    for c in candidates:
+        if "-orig." in c.name:
+            return c
     preferred = [
         c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
+        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB."))
     ]
     return preferred[0] if preferred else candidates[0]
 
@@ -75,7 +87,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", sub_langs(),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -132,7 +144,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", sub_langs(),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
