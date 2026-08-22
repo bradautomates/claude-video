@@ -56,6 +56,12 @@ OPENAI_API_KEY=
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.
 # WATCH_DETAIL=balanced
+
+# Which caption tracks to request (yt-dlp --sub-langs). The default asks for the
+# video's own original-language track plus English, which works for any language.
+# Only set this to pin a specific set, e.g. es.*,en.* — never "all", that pulls
+# hundreds of auto-translated tracks and stalls the run.
+# WATCH_SUBLANGS=.*-orig,en.*
 """
 
 

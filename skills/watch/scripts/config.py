@@ -13,6 +13,19 @@ DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
+# yt-dlp --sub-langs selector: the video's own original-language track, plus
+# English. ".*-orig" is a regex yt-dlp matches against the available tracks, so
+# it resolves to "pt-orig", "de-orig", … whatever the video was published in.
+#
+# Requesting "en.*" alone breaks every non-English video: YouTube has no native
+# English track, so it tries to machine-translate one on demand, rate-limits
+# (HTTP 429), and the run ends with no captions at all — indistinguishable from
+# a video that genuinely has none.
+#
+# Must stay bounded. "all" pulls YouTube's hundreds of auto-translated tracks
+# and stalls the run for minutes; see tests/test_download.py.
+DEFAULT_SUBLANGS = ".*-orig,en.*"
+
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     if path is None:
@@ -60,6 +73,22 @@ def get_config() -> dict[str, object]:
         "detail": detail,
         "config_file": str(CONFIG_FILE),
     }
+
+
+def sub_langs(file_values: dict[str, str] | None = None) -> str:
+    """Resolve the yt-dlp --sub-langs selector.
+
+    Override with WATCH_SUBLANGS (env var or ~/.config/watch/.env) when you
+    want a specific set, e.g. "es.*,en.*". Falls back to DEFAULT_SUBLANGS.
+    """
+    if file_values is None:
+        file_values = read_env_file()
+    value = (
+        os.environ.get("WATCH_SUBLANGS")
+        or file_values.get("WATCH_SUBLANGS")
+        or DEFAULT_SUBLANGS
+    )
+    return value.strip() or DEFAULT_SUBLANGS
 
 
 def frame_cap(detail: str) -> int | None:
