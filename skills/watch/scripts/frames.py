@@ -39,6 +39,29 @@ DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
+_VFR_FLAGS: list[str] | None = None
+
+
+def _vfr_flags() -> list[str]:
+    """Variable-frame-rate flag for the local ffmpeg.
+
+    ffmpeg 5.0 introduced ``-fps_mode`` and ffmpeg 9.0 removed the ``-vsync``
+    alias, so probe once and use whichever this build accepts.
+    """
+    global _VFR_FLAGS
+    if _VFR_FLAGS is None:
+        try:
+            probe = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "full"],
+                capture_output=True, text=True,
+            )
+            supported = "-fps_mode" in probe.stdout
+        except Exception:
+            supported = False
+        _VFR_FLAGS = ["-fps_mode", "vfr"] if supported else ["-vsync", "vfr"]
+    return list(_VFR_FLAGS)
+
+
 def _scale_filter(resolution: int) -> str:
     return (
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
@@ -253,7 +276,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_flags(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +635,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_flags(),
         "-q:v", "4",
         output_pattern,
     ]
