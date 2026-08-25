@@ -12,6 +12,17 @@ import tempfile
 from pathlib import Path
 
 
+# A default Windows console uses a legacy code page (cp1252) that can't encode
+# the Unicode in the report (e.g. the "→" in coverage/focus lines), so printing
+# it raises UnicodeEncodeError after frames are already extracted. Force UTF-8
+# on stdout/stderr so /watch runs on any console (Python >= 3.7).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
