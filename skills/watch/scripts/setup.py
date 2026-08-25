@@ -29,6 +29,15 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+
+# Installer messages use em dashes and arrows, which a cp1252 Windows console
+# cannot encode. Without this the installer crashes while reporting success.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # not a TextIOWrapper, or already detached
+        pass
+
 from config import get_config  # noqa: E402
 
 

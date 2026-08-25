@@ -15,6 +15,16 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
+# The report uses em dashes, ellipses and arrows. A Windows console defaults to
+# cp1252, which cannot encode them, so printing raises UnicodeEncodeError and
+# kills the run after the frames were already extracted. Reconfiguring here also
+# covers the modules imported below, since they print to these same streams.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # not a TextIOWrapper, or already detached
+        pass
+
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
