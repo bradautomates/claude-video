@@ -2,6 +2,21 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **On-device Whisper backend** — `pip install "faster-whisper>=1.0"` and transcription runs locally, with no API key and no audio leaving the machine. Uses CUDA when it is usable and falls back to CPU automatically; the fallback wraps the full transcription, not just model load, because CTranslate2 resolves its CUDA libraries lazily and a broken install only surfaces at the first matmul. pip-installed CUDA wheels (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`) land outside the dynamic loader path, so their `.so` files are preloaded before the model is built.
+- **`WATCH_WHISPER`** — pin the backend to `auto` (default), `local`, `groq`, or `openai`; `--whisper local` does the same per-run.
+- **`WATCH_WHISPER_MODEL` / `WATCH_WHISPER_DEVICE` / `WATCH_WHISPER_COMPUTE` / `WATCH_WHISPER_LANGUAGE`** — tune the local backend (model size or an HF repo id, `cpu`/`cuda`, quantization, forced language).
+- `tests/test_local_whisper.py` — 42 tests covering availability detection, runtime resolution, CUDA preloading, VAD-vs-device error classification, backend precedence, dispatch, focused-range extraction, the `{start, end, text}` segment contract, progress reporting, and the cuda-to-cpu retry loop. The retry is tested in both shapes it has to survive: a failure at model load, and a failure part-way through the segment generator — the stub yields a segment and only then raises, which is what CTranslate2's lazy CUDA resolution actually does. The suite passes both with and without faster-whisper installed.
+- Tested against faster-whisper 1.2.1, CTranslate2 4.8.0, onnxruntime 1.23.2, huggingface-hub 1.19.0. The install command pins a floor (`>=1.0`) rather than that exact set — the floor guards against resolving a pre-1.0 release with an incompatible API, and is not a claim that every version above it was exercised.
+
+### Changed
+- **`--start` / `--end` now clip the audio before transcription.** `extract_audio` seeks on the input side (`-ss`/`-to` before `-i`) and segment timestamps are shifted back into source time, so a focused run transcribes ~30 seconds of audio instead of the whole video.
+- **Setup treats local Whisper as a first-class way to satisfy the check.** `setup.py --check`, `--json`, and the `SessionStart` hook are now satisfied by *either* an API key or an importable `faster_whisper`, and the install path offers `pip install "faster-whisper>=1.0"` before the key placeholders.
+- Backend resolution is API-first when unpinned, so an existing key holder never silently trades a five-second API call for a multi-minute local transcode. Local is the fallback; `WATCH_WHISPER=local` makes it the default outright.
+- The `SessionStart` hook no longer reads API key *values* into shell variables — it only tests for presence.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

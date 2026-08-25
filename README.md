@@ -16,13 +16,13 @@ npx skills add bradautomates/claude-video -g
 
 More install options (claude.ai web, manual) in the [Install](#install) section below.
 
-Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. When a video has no captions, Whisper transcribes it — on your own machine with `pip install "faster-whisper>=1.0"`, or via a Groq / OpenAI key.
 
 ---
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
+With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper as fallback — locally or via API), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -45,7 +45,7 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
-4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
+4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and run Whisper on it — on this machine via [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (no key, no upload), or through Groq's `whisper-large-v3` or OpenAI's `whisper-1`.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
 7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
@@ -152,25 +152,39 @@ For claude.ai, build the `.skill` bundle from source: `bash skills/watch/scripts
 
 ## First run
 
-On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
+On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper backend is available, it walks you through fixing it:
 
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
 - **Windows** — prints the `winget` / `pip` commands.
-- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
+- **Transcription** — offers `pip install "faster-whisper>=1.0"` (runs locally, no account) and scaffolds `~/.config/watch/.env` (mode `0600`) with placeholders for `GROQ_API_KEY` and `OPENAI_API_KEY`. Either one clears the check.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
-## Bring your own keys
+## Transcription backends
 
 Captions cover the majority of public videos for free. The Whisper fallback only kicks in when a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload.
 
 | Capability | What you need | Cost |
 |------------|---------------|------|
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper on this machine | `pip install "faster-whisper>=1.0"` | Free; one-time model download, then CPU/GPU time |
+| Whisper via Groq | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
+| Whisper via OpenAI | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+
+**The local backend needs no account and never uploads your audio.** The only thing it sends over the network is a request for model weights from Hugging Face — a full download on first use (2.9 GB for the `large-v3` default, 464 MB with `WATCH_WHISPER_MODEL=small`, 75 MB with `tiny`, cached in `~/.cache/huggingface`), then a revision check on later loads, since faster-whisper resolves the model with `local_files_only=False` and falls back to the cache only when that check fails. Set `HF_HUB_OFFLINE=1` to suppress the check once the weights are cached. Your audio is never part of any of these requests. It uses the GPU when one is usable and falls back to CPU otherwise, so it is also the slow backend: roughly real-time or better on a GPU, several times slower than real-time on CPU with `large-v3`. Drop to `small` or `distil-large-v3` if that matters more than accuracy.
+
+**Which backend runs:** `--whisper <backend>` wins, then `WATCH_WHISPER` in `~/.config/watch/.env`, then `auto` — which uses an API key if one is set and falls back to `local`. Installing faster-whisper therefore never changes what an existing key-holder gets; set `WATCH_WHISPER=local` to make on-device the default outright.
+
+```bash
+# ~/.config/watch/.env
+WATCH_WHISPER=local            # auto | local | groq | openai
+WATCH_WHISPER_MODEL=large-v3   # tiny|base|small|medium|large-v3|distil-large-v3, an HF repo id, or a path
+WATCH_WHISPER_DEVICE=auto      # auto | cpu | cuda
+WATCH_WHISPER_COMPUTE=auto     # auto | int8 | int8_float16 | float16 | float32
+WATCH_WHISPER_LANGUAGE=        # blank = auto-detect
+```
 
 ## Usage
 
@@ -195,7 +209,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
-- `--whisper groq|openai` — force a specific Whisper backend.
+- `--whisper local|groq|openai` — force a specific Whisper backend. `local` runs on this machine and needs no key.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
@@ -204,6 +218,7 @@ Other knobs (passed to `scripts/watch.py`):
 
 - **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
+- **The local Whisper backend trades speed for privacy.** With no usable GPU, `large-v3` on CPU can take several times the clip's own runtime, and the first run downloads 2.9 GB of weights. Set `WATCH_WHISPER_MODEL=small` (464 MB, much faster, less accurate) if that's the shape you're on — or use a Groq key, which returns in seconds. Either way this only applies to videos with no captions.
 
 ## Structure
 
@@ -216,7 +231,8 @@ Other knobs (passed to `scripts/watch.py`):
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction + auto-fps logic
 │       ├── transcribe.py         # VTT parsing + dedupe + Whisper orchestration
-│       ├── whisper.py            # Groq / OpenAI clients (pure stdlib)
+│       ├── whisper.py            # backend selection + Groq / OpenAI clients (pure stdlib)
+│       ├── local_whisper.py      # on-device backend (optional: faster-whisper)
 │       ├── config.py             # shared config (~/.config/watch/.env)
 │       ├── setup.py              # preflight + installer
 │       └── build-skill.sh        # build dist/watch.skill for claude.ai upload (dev-only)
@@ -247,7 +263,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 MIT license.
 
-Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
+Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription on-device via [faster-whisper](https://github.com/SYSTRAN/faster-whisper), or through [Groq](https://groq.com) / [OpenAI](https://openai.com).
 
 Built by Brad Bonanno — I make content about building with AI on [YouTube (@bradbonanno)](https://www.youtube.com/@bradbonanno), and build AI operating systems for businesses at [Solaris Automation](https://www.solarisautomation.io/). If `/watch` saves you from scrubbing through a video, come say hi on the channel.
 

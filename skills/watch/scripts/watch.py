@@ -19,7 +19,7 @@ from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import LOCAL_BACKEND, resolve_backend, transcribe_video  # noqa: E402
 
 
 def main() -> int:
@@ -56,9 +56,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["local", "groq", "openai"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. 'local' runs faster-whisper on "
+             "this machine and needs no API key. Default: use an API key if one "
+             "is set, else fall back to local.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -70,6 +72,15 @@ def main() -> int:
 
     config = get_config()
     detail = args.detail or str(config["detail"])
+    # --whisper wins over WATCH_WHISPER; "auto" means "let resolve_backend decide".
+    configured_whisper = str(config["whisper"])
+    whisper_choice = args.whisper or (configured_whisper if configured_whisper != "auto" else None)
+    whisper_options = {
+        "model": config["whisper_model"],
+        "device": config["whisper_device"],
+        "compute": config["whisper_compute"],
+        "language": config["whisper_language"],
+    }
     configured_cap = frame_cap(detail)
     if args.max_frames is not None:
         max_frames = args.max_frames
@@ -237,31 +248,42 @@ def main() -> int:
             print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
-        backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        backend, api_key = resolve_backend(whisper_choice)
+        # The local backend needs no key — only the API backends gate on one.
+        if backend and (backend == LOCAL_BACKEND or api_key):
             try:
+                # Pass the range down rather than transcribing the whole video
+                # and discarding most of it: on the local backend that waste is
+                # minutes of compute, not a throwaway API call.
                 all_segments, used_backend = transcribe_video(
                     video_path,
                     work / "audio.mp3",
                     backend=backend,
                     api_key=api_key,
+                    options=whisper_options,
+                    start_seconds=start_sec,
+                    end_seconds=end_sec,
                 )
+                # filter_range still runs: Whisper can emit a segment that
+                # straddles the boundary of the clip it was handed.
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)
                 transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:
                 print(f"[watch] whisper fallback failed: {exc}", file=sys.stderr)
         else:
-            hint = (
-                f"--whisper {args.whisper} was set but the matching API key is missing"
-                if args.whisper else
-                "no subtitles and no Whisper API key found"
-            )
             setup_py = SCRIPT_DIR / "setup.py"
-            print(
-                f"[watch] {hint} — run `python3 {setup_py}` to enable the Whisper fallback",
-                file=sys.stderr,
-            )
+            if whisper_choice == LOCAL_BACKEND:
+                hint = ("whisper backend 'local' was requested but faster-whisper is not "
+                        "installed — run `pip install \"faster-whisper>=1.0\"`")
+            elif whisper_choice:
+                hint = (f"whisper backend '{whisper_choice}' was requested but its API key "
+                        f"is missing — run `python3 {setup_py}` to set one")
+            else:
+                hint = ("no subtitles and no transcription backend — run "
+                        "`pip install \"faster-whisper>=1.0\"` to transcribe on-device, or "
+                        f"`python3 {setup_py}` to set an API key")
+            print(f"[watch] {hint}", file=sys.stderr)
     elif not transcript_segments and video_path and not meta.get("has_audio"):
         print("[watch] no audio stream found — proceeding without transcription", file=sys.stderr)
 
