@@ -72,7 +72,15 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    No-op on Windows: access there is governed by ACLs, not POSIX mode bits.
+    ``os.chmod`` only toggles the read-only flag, so ``st_mode`` always reports
+    group/other read and this would warn on every invocation — with a `chmod`
+    command that does not apply to the platform.
+    """
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
