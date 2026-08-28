@@ -38,6 +38,37 @@ DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
+_RATE_FLAG: list[str] | None = None
+
+
+def _rate_control_flag() -> list[str]:
+    """Return the variable-frame-rate flag this ffmpeg build accepts.
+
+    ffmpeg 8 removed the long-deprecated ``-vsync``; ``-fps_mode`` replaced it
+    in ffmpeg 5.0. Both eras are still in the wild — Ubuntu 22.04 LTS ships
+    4.4, while Homebrew and winget ship 8+ — so ask the local binary which one
+    it takes instead of pinning a minimum version. Probed once per process
+    against a 16x16 null encode (~90ms).
+    """
+    global _RATE_FLAG
+    if _RATE_FLAG is not None:
+        return _RATE_FLAG
+    _RATE_FLAG = ["-vsync", "vfr"]
+    try:
+        probe = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.1",
+                "-fps_mode", "vfr", "-f", "null", "-",
+            ],
+            capture_output=True,
+        )
+        if probe.returncode == 0:
+            _RATE_FLAG = ["-fps_mode", "vfr"]
+    except OSError:
+        pass
+    return _RATE_FLAG
+
 
 def _scale_filter(resolution: int) -> str:
     return (
@@ -253,7 +284,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_rate_control_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +643,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_rate_control_flag(),
         "-q:v", "4",
         output_pattern,
     ]

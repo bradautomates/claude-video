@@ -68,3 +68,28 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_rate_control_flag_is_accepted_by_local_ffmpeg():
+    """The chosen vfr flag must actually work on the installed ffmpeg.
+
+    ffmpeg 8 removed -vsync and ffmpeg <5 has no -fps_mode, so hardcoding
+    either one breaks half the distros in the wild.
+    """
+    import subprocess
+
+    flag = frames._rate_control_flag()
+    assert flag in (["-fps_mode", "vfr"], ["-vsync", "vfr"])
+    probe = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "color=c=black:s=16x16:d=0.1",
+            *flag, "-f", "null", "-",
+        ],
+        capture_output=True,
+    )
+    assert probe.returncode == 0, probe.stderr.decode(errors="replace")
+
+
+def test_rate_control_flag_is_cached():
+    assert frames._rate_control_flag() is frames._rate_control_flag()
