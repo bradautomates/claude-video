@@ -239,10 +239,18 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 
 ## Token efficiency
 
-This skill burns tokens primarily on frames. Order of magnitude:
-- 80 frames at 512px wide is roughly 50-80k image tokens depending on aspect ratio.
+This skill burns tokens primarily on frames. Claude prices an image in 28x28-pixel
+patches, so one frame costs `ceil(width / 28) * ceil(height / 28)` visual tokens
+([vision docs](https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost)).
+Cost tracks pixel area, not image count:
+- At the default 512px width a 16:9 frame is 512x288, so `19 * 11 = 209` tokens.
+  80 of them is about **17k**.
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
-- Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
+- Bumping `--resolution` to 1024 makes a frame `37 * 21 = 777` tokens - 3.7x more.
+  Only do it when necessary.
+- Because cost follows pixel area, tiling frames into contact sheets saves nothing:
+  the same nine frames cost the same whether sent as nine images or one 3x3 sheet.
+  Lower `--resolution` or `--max-frames` to actually spend less.
 
 If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
 
