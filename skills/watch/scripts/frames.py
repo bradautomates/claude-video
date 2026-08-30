@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -44,6 +45,29 @@ def _scale_filter(resolution: int) -> str:
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
+
+
+@lru_cache(maxsize=1)
+def _vfr_args() -> tuple[str, ...]:
+    """Variable-frame-rate flag for this ffmpeg, resolved once per process.
+
+    Neither spelling covers every ffmpeg we run on. `-vsync` was deprecated in
+    5.1 and *removed* in 9.0, where it aborts the run outright ("Unrecognized
+    option 'vsync'"). Its replacement `-fps_mode` only exists from 5.1 on, and
+    Ubuntu 22.04 LTS still ships 4.4. So probe the capability instead of
+    committing to one: `-h long` lists the option and costs ~14 KB of output,
+    against ~1 MB for `-h full`. Probing beats parsing `-version`, which git
+    builds ("N-109848-g4b5b8b1") render meaningless.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "long"], capture_output=True, text=True
+        )
+    except OSError:
+        # No ffmpeg to probe — the extraction call right behind this raises the
+        # real "ffmpeg is not installed" error; assume the modern spelling.
+        return ("-fps_mode", "vfr")
+    return ("-fps_mode", "vfr") if "-fps_mode" in result.stdout else ("-vsync", "vfr")
 
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
@@ -253,7 +277,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +636,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_args(),
         "-q:v", "4",
         output_pattern,
     ]

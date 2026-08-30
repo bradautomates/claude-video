@@ -1,6 +1,7 @@
 """Keyframe engine + preserved scene/uniform fallbacks."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import frames
@@ -68,3 +69,30 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_vfr_flag_is_accepted_by_installed_ffmpeg(cut_clip: Path, tmp_path: Path):
+    """The variable-frame-rate flag we emit must exist in the local ffmpeg.
+
+    `-vsync` was removed in ffmpeg 9.0 and `-fps_mode` only landed in 5.1, so
+    either spelling hardcoded breaks every extraction engine on one side of
+    that split. Feed the resolved flag to ffmpeg for real instead of trusting
+    the probe to have read the help text correctly.
+    """
+    flag, value = frames._vfr_args()
+    assert flag in ("-fps_mode", "-vsync")
+
+    out = tmp_path / "probe.jpg"
+    result = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-v", "error",
+            "-i", str(cut_clip),
+            flag, value,
+            "-frames:v", "1", "-y", str(out),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Unrecognized option" not in result.stderr
+    assert out.exists()
