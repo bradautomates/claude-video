@@ -147,6 +147,34 @@ def download_url(
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
     if video is None:
+        # YouTube's SABR rollout blocks most formats without a PO token. The
+        # android client is exempt but only serves format 18 (360p mp4).
+        # Retry once with that before giving up.
+        print(
+            "[watch] primary download failed (likely YouTube PO-token/SABR block) — "
+            "retrying with android client, format 18 (360p)…",
+            file=sys.stderr,
+        )
+        fallback_fmt = "18/ba" if audio_only else "18"
+        fallback_cmd = [
+            "yt-dlp",
+            "--extractor-args", "youtube:player_client=android",
+            "-f", fallback_fmt,
+            "--write-info-json",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-langs", "en.*",
+            "--sub-format", "vtt",
+            "--convert-subs", "vtt",
+            "--no-playlist",
+            "--ignore-errors",
+            "-o", output_template,
+            "--",
+            url,
+        ]
+        result = subprocess.run(fallback_cmd, stdout=sys.stderr, stderr=sys.stderr)
+        video = _pick_video(out_dir)
+    if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
