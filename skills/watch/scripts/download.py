@@ -7,6 +7,7 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,21 @@ def _pick_video(out_dir: Path) -> Path | None:
             return candidate
     return None
 
+def _cookie_args() -> list[str]:
+    """yt-dlp cookie flags from the environment.
+
+    WATCH_COOKIES_FILE=/path/to/cookies.txt   -> --cookies
+    WATCH_COOKIES_FROM_BROWSER=chrome|safari  -> --cookies-from-browser
+    Set either to get past sites that require a signed-in session.
+    """
+    jar = os.environ.get("WATCH_COOKIES_FILE", "").strip()
+    if jar:
+        return ["--cookies", jar]
+    browser = os.environ.get("WATCH_COOKIES_FROM_BROWSER", "").strip()
+    if browser:
+        return ["--cookies-from-browser", browser]
+    return []
+
 
 def fetch_captions(url: str, out_dir: Path) -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
@@ -71,6 +87,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
         "yt-dlp",
+        *_cookie_args(),
         "--skip-download",
         "--write-info-json",
         "--write-subs",
@@ -126,6 +143,7 @@ def download_url(
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
         "yt-dlp",
+        *_cookie_args(),
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
