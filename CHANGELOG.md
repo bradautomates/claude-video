@@ -2,6 +2,13 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **YouTube auto-caption transcripts were roughly 2x their real length.** Auto-subs use a rolling cue format: each cue repeats the tail of the previous one as a plain carry-over line before adding new words, and ~10ms "settle" cues re-state the line just completed. The old dedup only caught cues that repeated the previous one *in full*, so every rolling cue slipped through. Only lines carrying inline word-timing tags hold new content, so those now identify the real text; a word-overlap guard catches leftovers. On an 18:30 talk this cut the transcript from 6,499 words to 3,035 (the true count at 164 wpm) with no loss of content or timestamp precision. Tracks without inline tags (manual subtitles, Whisper output) are left structurally untouched.
+- **Cue bodies beginning with a whitespace-only padding line were dropped.** The parser ended the cue body at the first line that stripped to nothing, but YouTube pads bodies with a single-space line before the content — so those cues parsed as empty. Cue bodies now end at the real blank separator and skip padding, which also recovers a video's final caption line.
+- HTML entities in captions (`&gt;&gt;` for speaker changes) are now unescaped instead of appearing raw in the transcript.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
