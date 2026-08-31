@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -37,6 +38,26 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@lru_cache(maxsize=1)
+def _fps_mode_args() -> tuple[str, ...]:
+    """Return the ffmpeg flag pair that emits one output frame per selected input frame.
+
+    `-fps_mode` superseded `-vsync` in ffmpeg 5 and `-vsync` was removed outright
+    in ffmpeg 9, so neither spelling works everywhere. Probe once instead of
+    parsing the version banner, which varies across distro and Homebrew builds.
+    """
+    probe = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "quiet",
+            "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.1",
+            "-fps_mode", "vfr", "-frames:v", "1", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return ("-fps_mode", "vfr") if probe.returncode == 0 else ("-vsync", "vfr")
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +274,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_fps_mode_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +633,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_fps_mode_args(),
         "-q:v", "4",
         output_pattern,
     ]
