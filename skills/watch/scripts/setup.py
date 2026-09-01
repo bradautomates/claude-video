@@ -72,7 +72,16 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    Skipped on Windows: Path.stat().st_mode there only reflects the
+    read-only attribute bit, not NTFS ACLs — a writable file always
+    reports as group/other-readable regardless of its actual ACL, so this
+    check is a structural false positive on Windows. Real access control
+    on Windows is via icacls, which this check cannot see.
+    """
+    if platform.system() == "Windows":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
