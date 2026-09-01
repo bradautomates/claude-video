@@ -6,8 +6,23 @@ set -euo pipefail
 
 CONFIG_FILE="$HOME/.config/watch/.env"
 
+# Detect Windows / Git Bash (MSYS/MinGW/Cygwin) so the POSIX permission
+# check below can be skipped there — see note inline.
+IS_WINDOWS=""
+case "$(uname -s 2>/dev/null || echo "")" in
+  MINGW*|MSYS*|CYGWIN*) IS_WINDOWS="yes" ;;
+esac
+if [[ -z "$IS_WINDOWS" && "${OS:-}" == "Windows_NT" ]]; then
+  IS_WINDOWS="yes"
+fi
+
 # Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# Skipped on Windows: `stat`'s POSIX mode bits there don't reflect NTFS
+# ACLs — a writable file reports as group/other-readable (644/666)
+# regardless of the real ACL, so this check is a false positive by
+# construction on Windows. Real access control there is via icacls, which
+# this check has no way to inspect.
+if [[ -z "$IS_WINDOWS" && -f "$CONFIG_FILE" ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
