@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 
@@ -12,6 +13,29 @@ CONFIG_FILE = CONFIG_DIR / ".env"
 DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
+
+
+
+def force_utf8_output() -> None:
+    """Make stdout/stderr able to carry the report's non-ASCII characters.
+
+    The markdown report uses em dashes and arrows (``—``, ``→``). On Windows
+    the console encoding defaults to cp1252, which cannot encode them, so
+    printing the report raises UnicodeEncodeError partway through and the run
+    dies after the video has already been downloaded and transcribed.
+
+    Reconfiguring both streams once at entry fixes every print site at once.
+    ``errors="replace"`` keeps a genuinely undecodable terminal from crashing
+    the run.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # not a TextIOWrapper (e.g. captured in tests)
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
 
 
 def read_env_file(path: Path | None = None) -> dict[str, str]:
