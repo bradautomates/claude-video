@@ -15,7 +15,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import frame_cap, get_config  # noqa: E402
+from config import force_utf8_output, frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
@@ -23,6 +23,7 @@ from whisper import load_api_key, transcribe_video  # noqa: E402
 
 
 def main() -> int:
+    force_utf8_output()
     ap = argparse.ArgumentParser(
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
