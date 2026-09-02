@@ -46,6 +46,13 @@ def main() -> int:
              "e.g. transcript-flagged 'look here' moments. Added on top of the detail frames "
              "(reserved against the cap); with --detail transcript these become the only frames.",
     )
+    ap.add_argument(
+        "--lang",
+        type=str,
+        default="en,pt",
+        help="Comma-separated caption language codes in priority order "
+             "(default: en,pt). The first one that yields a track wins. e.g. pt, es,en.",
+    )
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
@@ -96,7 +103,7 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(args.source, work / "download", lang=args.lang)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -122,6 +129,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                lang=args.lang,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)

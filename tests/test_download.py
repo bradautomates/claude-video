@@ -2,8 +2,8 @@
 
 Regression guard: ``--sub-langs all`` makes yt-dlp fetch YouTube's hundreds of
 auto-translated caption tracks, which can take minutes and stalls before the
-video download even starts. We only support English, so the request must stay
-bounded to the English-only pattern.
+video download even starts. The request must stay bounded to the languages the
+caller actually asked for.
 """
 from __future__ import annotations
 
@@ -43,22 +43,80 @@ def _sub_langs(argv: list[str]) -> str:
     return argv[idx + 1]
 
 
-def _assert_english_only(langs: str) -> None:
+def _assert_bounded(langs: str, expected: list[str]) -> None:
     tokens = langs.split(",")
     assert "all" not in tokens, f"sub-langs must not request all languages, got {langs!r}"
-    assert all(t.startswith("en") for t in tokens), f"sub-langs must be English-only, got {langs!r}"
+    expanded = [v for code in expected for v in (code, f"{code}-orig")]
+    assert tokens == expanded, (
+        f"sub-langs must request exactly the caller's languages, got {langs!r}"
+    )
+    # A `code.*` glob would also pull YouTube's auto-translated pairs, which is
+    # the request explosion this guard exists to prevent.
+    assert not any("*" in t for t in tokens), f"sub-langs must not use globs, got {langs!r}"
 
 
-def test_fetch_captions_requests_english_only(monkeypatch, tmp_path):
+def test_fetch_captions_defaults_to_en_pt(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded(_sub_langs(calls[0]), ["en", "pt"])
 
 
-def test_download_url_requests_english_only(monkeypatch, tmp_path):
+def test_download_url_defaults_to_en_pt(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     # _pick_video returns None with no real file, which raises SystemExit after
     # the yt-dlp argv is already built — that's all we need to inspect.
     with pytest.raises(SystemExit):
         download.download_url(URL, tmp_path / "download")
-    _assert_english_only(_sub_langs(calls[0]))
+    _assert_bounded(_sub_langs(calls[0]), ["en", "pt"])
+
+
+def test_explicit_lang_is_honoured(monkeypatch, tmp_path):
+    calls = _capture_argv(monkeypatch)
+    download.fetch_captions(URL, tmp_path / "download", lang="es")
+    _assert_bounded(_sub_langs(calls[0]), ["es"])
+
+
+def test_lang_list_normalises_regions_and_dedupes():
+    assert download._lang_list("en,pt") == ["en", "pt"]
+    assert download._lang_list("pt-BR, EN") == ["pt", "en"]
+    assert download._lang_list("en,en-US") == ["en"]
+    assert download._lang_list("") == ["en"]
+
+
+def test_pick_subtitle_follows_priority_order(tmp_path):
+    for name in ("video.en.vtt", "video.pt.vtt"):
+        (tmp_path / name).touch()
+    assert download._pick_subtitle(tmp_path, "en,pt").name == "video.en.vtt"
+    assert download._pick_subtitle(tmp_path, "pt,en").name == "video.pt.vtt"
+
+
+def test_pick_subtitle_skips_languages_that_produced_no_file(tmp_path):
+    # yt-dlp commonly fails one variant (429, no such track) while another
+    # succeeds; the first *available* requested language must win.
+    (tmp_path / "video.pt-orig.vtt").touch()
+    assert download._pick_subtitle(tmp_path, "en,pt").name == "video.pt-orig.vtt"
+
+
+def test_pick_subtitle_prefers_original_over_a_translation(tmp_path):
+    # A Portuguese video that also publishes an English auto-translation. Under
+    # the default `en,pt` the priority order alone would hand back the English
+    # translation; the `-orig` track is the language actually spoken, so it wins.
+    for name in ("video.en.vtt", "video.pt.vtt", "video.pt-orig.vtt"):
+        (tmp_path / name).touch()
+    assert download._pick_subtitle(tmp_path, "en,pt").name == "video.pt-orig.vtt"
+
+
+def test_pick_subtitle_prefers_requested_original_when_several_exist(tmp_path):
+    for name in ("video.en-orig.vtt", "video.pt-orig.vtt"):
+        (tmp_path / name).touch()
+    assert download._pick_subtitle(tmp_path, "en,pt").name == "video.en-orig.vtt"
+    assert download._pick_subtitle(tmp_path, "pt,en").name == "video.pt-orig.vtt"
+
+
+def test_pick_subtitle_falls_back_to_any_track(tmp_path):
+    (tmp_path / "video.de.vtt").touch()
+    assert download._pick_subtitle(tmp_path, "en,pt").name == "video.de.vtt"
+
+
+def test_pick_subtitle_returns_none_when_empty(tmp_path):
+    assert download._pick_subtitle(tmp_path, "en,pt") is None

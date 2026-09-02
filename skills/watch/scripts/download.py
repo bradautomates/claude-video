@@ -41,15 +41,64 @@ def resolve_local(path: str) -> dict:
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+def _lang_list(lang: str) -> list[str]:
+    """Split a comma-separated priority list into base codes ('pt-BR' -> 'pt')."""
+    out: list[str] = []
+    for part in str(lang).split(","):
+        base = part.strip().split("-")[0].lower()
+        if base and base not in out:
+            out.append(base)
+    return out or ["en"]
+
+
+def _sub_langs_arg(lang: str) -> str:
+    """Build yt-dlp's --sub-langs value from the priority list.
+
+    Exact codes, deliberately not a `code.*` glob. yt-dlp matches --sub-langs
+    case-insensitively, so `pt.*` also selects YouTube's auto-translated pairs
+    (`pt-en`, `pt-de`, `pt-PT-en`, ...). On a video that offers several source
+    languages that turns one caption fetch into seven, and the extra requests
+    draw HTTP 429s that can cost the transcript entirely. `-orig` is yt-dlp's
+    own name for the untranslated track, so it is the one variant worth asking
+    for by name.
+    """
+    return ",".join(f"{code},{code}-orig" for code in _lang_list(lang))
+
+
+def _pick_subtitle(out_dir: Path, lang: str = "en,pt") -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [
-        c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
-    ]
-    return preferred[0] if preferred else candidates[0]
+
+    def _match(base: str, suffix: str | None) -> Path | None:
+        want = f".{base}-orig." if suffix == "orig" else None
+        for c in candidates:
+            name = c.name.lower()
+            if want is not None:
+                if want in name:
+                    return c
+            elif f".{base}." in name or f".{base}-" in name:
+                return c
+        return None
+
+    bases = _lang_list(lang)
+    # Pass 1 — `-orig` is yt-dlp's name for the track in the language actually
+    # spoken in the video, so it outranks the caller's ordering entirely. Without
+    # this, a Portuguese video that also publishes an English auto-translation
+    # returns the translation under the default `en,pt`: `en` wins the priority
+    # loop, and the user silently gets machine-translated English instead of the
+    # original speech.
+    for base in bases:
+        hit = _match(base, "orig")
+        if hit is not None:
+            return hit
+    # Pass 2 — no original-language track among the requested languages, so fall
+    # back to the caller's priority order.
+    for base in bases:
+        hit = _match(base, None)
+        if hit is not None:
+            return hit
+    return candidates[0]
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -62,7 +111,7 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def fetch_captions(url: str, out_dir: Path) -> dict:
+def fetch_captions(url: str, out_dir: Path, lang: str = "en,pt") -> dict:
     """Fetch metadata and best available VTT captions without downloading video."""
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -75,7 +124,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", _sub_langs_arg(lang),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -85,7 +134,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         url,
     ]
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    subtitle = _pick_subtitle(out_dir)
+    subtitle = _pick_subtitle(out_dir, lang)
     info = _read_info(out_dir / "video.info.json", url)
     return {
         "video_path": None,
@@ -116,6 +165,7 @@ def download_url(
     url: str,
     out_dir: Path,
     audio_only: bool = False,
+    lang: str = "en,pt",
 ) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
@@ -132,7 +182,7 @@ def download_url(
         "--write-info-json",
         "--write-subs",
         "--write-auto-subs",
-        "--sub-langs", "en.*",
+        "--sub-langs", _sub_langs_arg(lang),
         "--sub-format", "vtt",
         "--convert-subs", "vtt",
         "--no-playlist",
@@ -151,7 +201,7 @@ def download_url(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
 
-    subtitle = _pick_subtitle(out_dir)
+    subtitle = _pick_subtitle(out_dir, lang)
     info = _read_info(out_dir / "video.info.json", url)
 
     return {
@@ -166,9 +216,10 @@ def download(
     source: str,
     out_dir: Path,
     audio_only: bool = False,
+    lang: str = "en,pt",
 ) -> dict:
     if is_url(source):
-        return download_url(source, out_dir, audio_only=audio_only)
+        return download_url(source, out_dir, audio_only=audio_only, lang=lang)
     return resolve_local(source)
 
 
