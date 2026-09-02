@@ -7,6 +7,7 @@ then Reads each frame path to see the video.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -16,7 +17,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
-from download import download, fetch_captions, is_url  # noqa: E402
+from download import download, fetch_captions, fetch_storyboard, is_url  # noqa: E402
+import storyboard as storyboard_mod  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -93,6 +95,7 @@ def main() -> int:
     transcript_text: str | None = None
     transcript_source: str | None = None
     video_path: str | None = None
+    storyboard_mhtml = None
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
@@ -118,11 +121,34 @@ def main() -> int:
                 else "[watch] downloading video via yt-dlp…",
                 file=sys.stderr,
             )
-            dl = download(
-                args.source,
-                work / "download",
-                audio_only=audio_only,
-            )
+            try:
+                dl = download(
+                    args.source,
+                    work / "download",
+                    audio_only=audio_only,
+                )
+            except SystemExit as exc:
+                # Media formats are gated (typically YouTube's datacenter-IP
+                # bot gate) but the page may still resolve. Recover real frames
+                # from the storyboard rather than aborting with nothing.
+                print(f"[watch] {exc}", file=sys.stderr)
+                print("[watch] falling back to storyboard frames\u2026", file=sys.stderr)
+                storyboard_mhtml = fetch_storyboard(args.source, work / "download")
+                if storyboard_mhtml is None:
+                    raise
+                sb_info = storyboard_mhtml.parent / "storyboard.info.json"
+                if sb_info.exists():
+                    try:
+                        raw = json.loads(sb_info.read_text(encoding="utf-8"))
+                        info = dl.get("info") or {}
+                        for k, src in (("duration", "duration"), ("title", "title")):
+                            if not info.get(k):
+                                info[k] = raw.get(src)
+                        if not info.get("uploader"):
+                            info["uploader"] = raw.get("uploader") or raw.get("channel")
+                        dl["info"] = info
+                    except Exception:
+                        pass
         else:
             print("[watch] using local file…", file=sys.stderr)
             dl = download(args.source, work / "download")
@@ -193,7 +219,22 @@ def main() -> int:
             )
 
     detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
-    if detail != "transcript" and video_path and detail_budget != 0:
+    if storyboard_mhtml is not None and detail_budget != 0:
+        frames = storyboard_mod.extract_frames(
+            storyboard_mhtml,
+            work / "frames",
+            duration=full_duration or None,
+            max_frames=detail_budget or max_frames or 60,
+            resolution=args.resolution,
+        )
+        frame_meta = {
+            "engine": "storyboard",
+            "candidate_count": len(frames),
+            "selected_count": len(frames),
+            "fallback": True,
+            "deduped_count": 0,
+        }
+    elif detail != "transcript" and video_path and detail_budget != 0:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -307,6 +348,13 @@ def main() -> int:
         )
     if frames:
         print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    if frame_meta.get("engine") == "storyboard":
+        print(
+            "- **Degraded mode:** media download was refused, so frames came from the "
+            "storyboard mosaic. Coverage spans the whole video but resolution is low "
+            "(on-screen text is often unreadable) and there is no audio, so Whisper "
+            "cannot run."
+        )
     if transcript_segments:
         in_range = " in range" if focused else ""
         print(
