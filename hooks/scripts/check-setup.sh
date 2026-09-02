@@ -7,13 +7,22 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
-  perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
-  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $CONFIG_FILE"
-  fi
-fi
+# Skip on Windows Git Bash / Cygwin: those mounts are typically `noacl`, so
+# `stat` always reports 644 for a writable file regardless of the real Windows
+# ACL, producing a permanent false warning. Access there is governed by NTFS
+# ACLs (set via icacls), not POSIX mode.
+case "$(uname -s 2>/dev/null || echo)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+    if [[ -f "$CONFIG_FILE" ]]; then
+      perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
+      if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+        echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
+        echo "  Fix: chmod 600 $CONFIG_FILE"
+      fi
+    fi
+    ;;
+esac
 
 # Load API keys from the config file without exporting them.
 read_key() {
