@@ -72,7 +72,16 @@ _PERM_WARNED: set[str] = set()
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    POSIX only. Windows does not implement the group/other mode bits: st_mode
+    reports 0o666 for any writable file no matter how the ACL is actually set,
+    so this check fires on every single run there. That both breaks the
+    "silent on success" contract of `--check` and hands the user a `chmod 600`
+    that would not do anything on their platform.
+    """
+    if os.name == "nt":
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
