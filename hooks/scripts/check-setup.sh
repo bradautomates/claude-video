@@ -7,13 +7,23 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
-  perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
-  if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $CONFIG_FILE"
-  fi
-fi
+# Skipped on Git Bash / MSYS2 / Cygwin: those mount NTFS `noacl`, so the mode `stat`
+# reports is synthesised from the DOS read-only attribute alone (644 or 444, never 600
+# or 400), and `chmod 600` exits 0 without changing it. The warning would fire on every
+# session forever with a fix that cannot clear it. NTFS permissions are the ACL
+# (`icacls`), which this check does not read.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*) ;;
+  *)
+    if [[ -f "$CONFIG_FILE" ]]; then
+      perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
+      if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
+        echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
+        echo "  Fix: chmod 600 $CONFIG_FILE"
+      fi
+    fi
+    ;;
+esac
 
 # Load API keys from the config file without exporting them.
 read_key() {

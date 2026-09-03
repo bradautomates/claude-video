@@ -2,6 +2,13 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **ffmpeg 9 frame extraction.** Both extraction passes used `-vsync vfr`, which ffmpeg 9 removed (`Unrecognized option 'vsync'`), so every `/watch` on a video died before producing a frame. Now `-fps_mode vfr`, the replacement ffmpeg has shipped since 5.1.
+- **Permanent permissions warning on Windows.** The SessionStart hook and `setup.py` warned that `~/.config/watch/.env` was not mode 600 and told the user to `chmod 600` it. On Git Bash / MSYS2 the mode is synthesised from the read-only attribute (always 644 or 444) and `chmod` cannot change it, so the warning fired every session with a fix that did nothing. Both checks now skip on Windows; NTFS permissions are the ACL, which they never read.
+- **Test helper on Windows.** `tests/test_watch.py::_frame_lines` only recognised `/frames/frame_`, so two report assertions counted zero frames on Windows.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
