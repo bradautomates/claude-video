@@ -76,6 +76,12 @@ def _check_file_permissions(path: Path) -> None:
     key = str(path)
     if key in _PERM_WARNED:
         return
+    # On Windows st_mode is synthesised from the read-only attribute (0o666 or
+    # 0o444), so 0o044 is always set and chmod(0o600) cannot clear it. NTFS
+    # permissions are the ACL, which this check does not read; skip rather than
+    # warn forever with a fix that does nothing.
+    if os.name == "nt":
+        return
     try:
         mode = path.stat().st_mode
         if mode & 0o044:
