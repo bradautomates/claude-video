@@ -16,6 +16,8 @@ def _run(args, *, home=None, extra_env=None):
     # Don't let a real key in the developer's shell env leak into the test.
     env.pop("GROQ_API_KEY", None)
     env.pop("OPENAI_API_KEY", None)
+    env.pop("MUAPI_API_KEY", None)
+    env.pop("MU_API_KEY", None)
     env.pop("SETUP_COMPLETE", None)
     if home is not None:
         env["HOME"] = str(home)
@@ -78,3 +80,14 @@ def test_key_present_is_ready(tmp_path):
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
     assert js["whisper_backend"] == "groq"
+
+
+def test_muapi_key_present_is_ready(tmp_path):
+    _write_env(tmp_path, "MUAPI_API_KEY=mu-test-abc\n")
+    chk = _run(["--check"], home=tmp_path)
+    assert chk.returncode == 0, chk.stderr
+
+    js = json.loads(_run(["--json"], home=tmp_path).stdout)
+    assert js["status"] == "ready"
+    assert js["can_proceed"] is True
+    assert js["whisper_backend"] == "muapi"

@@ -45,7 +45,7 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
 2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
-4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
+4. **The transcript uses native captions when available, then a Whisper fallback.** `yt-dlp` first pulls manual or auto-generated captions from the source — free, instant, accurate-ish. When captions are missing, the script extracts a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and sends it to one of three configured backends: Groq's `whisper-large-v3` (preferred — cheaper and faster), OpenAI's `whisper-1`, or MuAPI's hosted async Whisper endpoint.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
 7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
@@ -157,7 +157,7 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
 - **Windows** — prints the `winget` / `pip` commands.
-- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
+- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred), `OPENAI_API_KEY`, and `MUAPI_API_KEY`.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
@@ -170,6 +170,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (hosted async) | [MuAPI API key](https://muapi.ai/speech-to-text) — `openai-whisper` | Upload + bounded polling |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage
@@ -195,7 +196,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
-- `--whisper groq|openai` — force a specific Whisper backend.
+- `--whisper groq|openai|muapi` — force a specific Whisper backend.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
@@ -216,7 +217,7 @@ Other knobs (passed to `scripts/watch.py`):
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction + auto-fps logic
 │       ├── transcribe.py         # VTT parsing + dedupe + Whisper orchestration
-│       ├── whisper.py            # Groq / OpenAI clients (pure stdlib)
+│       ├── whisper.py            # Groq / OpenAI / MuAPI clients (pure stdlib)
 │       ├── config.py             # shared config (~/.config/watch/.env)
 │       ├── setup.py              # preflight + installer
 │       └── build-skill.sh        # build dist/watch.skill for claude.ai upload (dev-only)
@@ -247,7 +248,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 MIT license.
 
-Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
+Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com), [OpenAI](https://openai.com), or [MuAPI](https://muapi.ai/speech-to-text).
 
 Built by Brad Bonanno — I make content about building with AI on [YouTube (@bradbonanno)](https://www.youtube.com/@bradbonanno), and build AI operating systems for businesses at [Solaris Automation](https://www.solarisautomation.io/). If `/watch` saves you from scrubbing through a video, come say hi on the channel.
 
