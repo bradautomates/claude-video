@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transcribe a video via Groq or OpenAI Whisper API.
+"""Transcribe a video via Groq, OpenAI, or MuAPI Whisper APIs.
 
 Strategy: extract audio (mono 16kHz mp3, tiny payload), upload to whichever
 API has a key. Returns segments in the same shape as transcribe.parse_vtt so
@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -31,6 +32,12 @@ GROQ_MODEL = "whisper-large-v3"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
+
+MUAPI_BASE_URL = "https://api.muapi.ai/api/v1"
+MUAPI_UPLOAD_ENDPOINT = f"{MUAPI_BASE_URL}/upload_file"
+MUAPI_SUBMIT_ENDPOINT = f"{MUAPI_BASE_URL}/openai-whisper"
+MUAPI_POLL_INTERVAL = 2.0
+MUAPI_POLL_TIMEOUT = 300.0
 
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
@@ -63,9 +70,10 @@ def plan_chunks(
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+    """Return (backend, api_key). Prefers Groq, then OpenAI, then MuAPI.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    If `preferred` is "groq", "openai", or "muapi", only that backend's key
+    is considered.
     """
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
@@ -95,7 +103,12 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    candidates = (
+        ("GROQ_API_KEY", "groq"),
+        ("OPENAI_API_KEY", "openai"),
+        ("MUAPI_API_KEY", "muapi"),
+        ("MU_API_KEY", "muapi"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
@@ -306,6 +319,105 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     )
 
 
+def _muapi_request_json(
+    url: str,
+    api_key: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str = "application/json",
+) -> dict:
+    """Make one authenticated MuAPI JSON request without sending the key to output hosts."""
+    headers = {
+        "x-api-key": api_key,
+        "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
+    }
+    if content_type:
+        headers["Content-Type"] = content_type
+
+    request = Request(url, data=body, headers=headers, method=method)
+    context = ssl.create_default_context()
+    try:
+        with urlopen(request, timeout=300, context=context) as response:
+            payload = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        detail = _read_error_body(exc)
+        raise SystemExit(f"MuAPI request failed: {exc}{detail}") from exc
+    except (urllib.error.URLError, TimeoutError, ConnectionResetError, OSError) as exc:
+        raise SystemExit(f"MuAPI request failed: {type(exc).__name__}: {exc}") from exc
+
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"MuAPI returned non-JSON response: {exc}: {payload[:200]}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit("MuAPI returned a non-object JSON response")
+    return data
+
+
+def _muapi_payload(data: dict) -> dict:
+    nested = data.get("data")
+    return nested if isinstance(nested, dict) else data
+
+
+def _require_https_url(value: object, context: str) -> str:
+    if not isinstance(value, str):
+        raise SystemExit(f"MuAPI {context} did not return a URL")
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise SystemExit(f"MuAPI {context} must be an HTTPS URL")
+    return value
+
+
+def _post_muapi(
+    api_key: str,
+    audio_path: Path,
+    *,
+    poll_interval: float = MUAPI_POLL_INTERVAL,
+    timeout: float = MUAPI_POLL_TIMEOUT,
+) -> dict:
+    """Upload audio, submit MuAPI Whisper, and return its completed result."""
+    body, boundary = _build_multipart({}, audio_path)
+    upload = _muapi_payload(
+        _muapi_request_json(
+            MUAPI_UPLOAD_ENDPOINT,
+            api_key,
+            method="POST",
+            body=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        )
+    )
+    audio_url = _require_https_url(upload.get("url") or upload.get("download_url"), "upload")
+
+    submit = _muapi_payload(
+        _muapi_request_json(
+            MUAPI_SUBMIT_ENDPOINT,
+            api_key,
+            method="POST",
+            body=json.dumps(
+                {"audio_url": audio_url, "response_format": "verbose_json"}
+            ).encode("utf-8"),
+        )
+    )
+    request_id = submit.get("request_id") or submit.get("id")
+    if not request_id:
+        raise SystemExit("MuAPI Whisper submission returned no request ID")
+
+    result_url = f"{MUAPI_BASE_URL}/predictions/{request_id}/result"
+    deadline = time.monotonic() + timeout
+    while True:
+        result = _muapi_payload(_muapi_request_json(result_url, api_key))
+        status = str(result.get("status", "")).lower()
+        if status in {"completed", "succeeded", "success"}:
+            return result
+        if status in {"failed", "error", "canceled", "cancelled"}:
+            raise SystemExit(f"MuAPI Whisper request {request_id} ended with status {status}")
+        if time.monotonic() >= deadline:
+            raise SystemExit(f"MuAPI Whisper request {request_id} timed out")
+        if poll_interval > 0:
+            time.sleep(poll_interval)
+
+
 def _read_error_body(exc: urllib.error.HTTPError) -> str:
     try:
         body = exc.read()
@@ -362,6 +474,10 @@ def _segments_from_response(data: dict) -> list[dict]:
 
     if not out:
         full = (data.get("text") or "").strip()
+        if not full and isinstance(data.get("output"), dict):
+            full = (data["output"].get("text") or "").strip()
+        elif not full and isinstance(data.get("output"), str):
+            full = data["output"].strip()
         if full:
             out.append({"start": 0.0, "end": 0.0, "text": full})
 
@@ -406,6 +522,8 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend == "muapi":
+        response = _post_muapi(api_key, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
@@ -429,7 +547,8 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
+            "No Whisper API key available. Set GROQ_API_KEY (preferred), OPENAI_API_KEY, "
+            "or MUAPI_API_KEY (or MU_API_KEY) "
             "in the environment or in ~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
@@ -467,7 +586,7 @@ def transcribe_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai|muapi]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]

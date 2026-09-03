@@ -56,9 +56,9 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "muapi"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default: prefer Groq, then OpenAI, then MuAPI.",
     )
     ap.add_argument(
         "--no-dedup",

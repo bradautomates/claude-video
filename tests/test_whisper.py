@@ -1,6 +1,7 @@
 """Whisper auto-chunking: plan, split, and timestamp stitching."""
 from __future__ import annotations
 
+import json
 import math
 import subprocess
 from pathlib import Path
@@ -11,6 +12,44 @@ import whisper
 
 
 MB = 1024 * 1024
+
+
+def test_load_api_key_supports_muapi(monkeypatch):
+    monkeypatch.delenv("MUAPI_API_KEY", raising=False)
+    monkeypatch.setenv("MU_API_KEY", "mu-test-key")
+    assert whisper.load_api_key("muapi") == ("muapi", "mu-test-key")
+
+
+def test_muapi_upload_submit_and_poll(monkeypatch, tmp_path: Path):
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"audio bytes")
+    responses = iter([
+        {"url": "https://cdn.muapi.ai/audio.mp3"},
+        {"request_id": "req-1", "status": "processing"},
+        {"request_id": "req-1", "status": "completed", "output": {"text": "hello from muapi"}},
+    ])
+    calls = []
+
+    def fake_request(url, api_key, **kwargs):
+        calls.append((url, api_key, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(whisper, "_muapi_request_json", fake_request)
+    result = whisper._post_muapi("mu-test-key", audio, poll_interval=0, timeout=1)
+
+    assert result["output"]["text"] == "hello from muapi"
+    assert calls[0][0] == whisper.MUAPI_UPLOAD_ENDPOINT
+    assert calls[0][1] == "mu-test-key"
+    assert calls[0][2]["method"] == "POST"
+    assert b"audio bytes" in calls[0][2]["body"]
+    assert calls[0][2]["content_type"].startswith("multipart/form-data; boundary=")
+    assert calls[1][0] == whisper.MUAPI_SUBMIT_ENDPOINT
+    assert calls[1][2]["method"] == "POST"
+    assert json.loads(calls[1][2]["body"].decode("utf-8")) == {
+        "audio_url": "https://cdn.muapi.ai/audio.mp3",
+        "response_format": "verbose_json",
+    }
+    assert calls[2][0] == f"{whisper.MUAPI_BASE_URL}/predictions/req-1/result"
 
 
 class TestPlanChunks:
