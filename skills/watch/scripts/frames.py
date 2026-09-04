@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -37,6 +38,32 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@lru_cache(maxsize=1)
+def _fps_mode_flag() -> list[str]:
+    """The framerate-mode flag this ffmpeg actually understands.
+
+    `-vsync` was deprecated in ffmpeg 5.1 in favour of `-fps_mode`, and removed
+    outright in ffmpeg 8. Homebrew now ships ffmpeg 9, where every extraction
+    here failed with `Unrecognized option 'vsync'`. It failed late — the
+    download and the transcript both succeeded first — so the install looks
+    healthy right up until frames are written.
+
+    Probed rather than version-parsed: `ffmpeg -version` strings vary by distro
+    and build, and the only thing that matters is whether this binary takes the
+    flag. Older ffmpeg keeps `-vsync`.
+    """
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        # Probe failed; prefer the modern flag — the legacy one no longer
+        # exists on any ffmpeg still receiving updates.
+        return ["-fps_mode", "vfr"]
+    return ["-fps_mode", "vfr"] if "-fps_mode" in out else ["-vsync", "vfr"]
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +280,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_fps_mode_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +639,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_fps_mode_flag(),
         "-q:v", "4",
         output_pattern,
     ]
