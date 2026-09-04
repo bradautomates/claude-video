@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **DashScope transcription backend** (Alibaba Bailian qwen omni ASR) — a third transcription fallback for networks where Groq/OpenAI endpoints are unreachable (e.g. mainland China). Selected automatically when `DASHSCOPE_API_KEY` is set (priority: Groq > OpenAI > DashScope), or forced with `--whisper dashscope`. Requires the `dashscope` SDK (`pip install dashscope`); audio is chunked at 5 minutes per request (omni quality degrades on longer single requests) and each chunk becomes one transcript segment spanning its real duration. Override the model with `DASHSCOPE_ASR_MODEL` (default `qwen3.5-omni-plus`).
+
 ## [0.2.0] — 2026-06-29
 
 ### Added

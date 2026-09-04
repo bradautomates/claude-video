@@ -32,6 +32,16 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+# DashScope (Alibaba Bailian) — qwen omni ASR via the native MultiModal
+# Conversation API. The China-accessible fallback: Groq/OpenAI endpoints are
+# unreachable from mainland networks. Requires the `dashscope` SDK
+# (pip install dashscope); audio stays local until the SDK uploads it.
+DASHSCOPE_ASR_MODEL_DEFAULT = "qwen3.5-omni-plus"
+# omni audio-understanding quality degrades on long single requests — cap
+# chunks at ~5 minutes. extract_audio encodes 64 kbps mono mp3 → 8 kB/s.
+DASHSCOPE_MAX_CHUNK_SECONDS = 300
+DASHSCOPE_BYTES_PER_SECOND = 8 * 1024
+
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
@@ -63,9 +73,10 @@ def plan_chunks(
 
 
 def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+    """Return (backend, api_key). Prefers Groq, then OpenAI, then DashScope.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    If `preferred` is "groq", "openai" or "dashscope", only that backend's key
+    is considered.
     """
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
@@ -95,7 +106,11 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
         Path.cwd() / ".env",
     ]
 
-    candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
+    candidates = (
+        ("GROQ_API_KEY", "groq"),
+        ("OPENAI_API_KEY", "openai"),
+        ("DASHSCOPE_API_KEY", "dashscope"),
+    )
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
@@ -400,15 +415,62 @@ def transcribe_chunks(
     return segments
 
 
+def _transcribe_dashscope(audio_path: Path, api_key: str) -> list[dict]:
+    """Transcribe one audio file via DashScope qwen-omni. Returns 0-based segments.
+
+    The omni chat API returns plain text (no per-phrase timestamps), so each
+    chunk becomes a single segment spanning the chunk's actual duration
+    (probed with ffprobe). Local files are passed as file:// URIs — the SDK
+    uploads them, so no public URL is needed.
+    """
+    try:
+        from dashscope import MultiModalConversation
+    except ImportError:
+        raise SystemExit(
+            "dashscope backend requires the SDK: pip install dashscope"
+        )
+
+    model = os.environ.get("DASHSCOPE_ASR_MODEL") or DASHSCOPE_ASR_MODEL_DEFAULT
+    local = str(audio_path.resolve()).replace("\\", "/")
+    rsp = MultiModalConversation.call(
+        api_key=api_key,
+        model=model,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"audio": f"file://{local}"},
+                {"text": "请逐字转写这段音频的全部语音内容，输出简体中文。"
+                         "保留原话，不要总结、不要省略。"},
+            ],
+        }],
+        result_format="message",
+    )
+    if rsp.status_code != 200:
+        raise SystemExit(
+            f"DashScope request failed: {rsp.status_code} {rsp.code}: {rsp.message}"
+        )
+    content = rsp.output.choices[0].message.content
+    text = "".join(
+        item.get("text", "") for item in content if isinstance(item, dict)
+    ).strip()
+    if not text:
+        return []
+    end = audio_duration(audio_path)
+    return [{"start": 0.0, "end": round(end, 2), "text": text}]
+
+
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
     if backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
+        return _segments_from_response(response)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+        return _segments_from_response(response)
+    elif backend == "dashscope":
+        return _transcribe_dashscope(audio_path, api_key)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
-    return _segments_from_response(response)
 
 
 def transcribe_video(
@@ -429,8 +491,9 @@ def transcribe_video(
     if not backend or not api_key:
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
-            "in the environment or in ~/.config/watch/.env. "
+            "No Whisper API key available. Set GROQ_API_KEY (preferred), OPENAI_API_KEY, "
+            "or DASHSCOPE_API_KEY (China-accessible) in the environment or in "
+            "~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
 
@@ -438,10 +501,19 @@ def transcribe_video(
     audio_path = extract_audio(video_path, audio_out)
     audio_bytes = audio_path.stat().st_size
 
+    # DashScope omni ASR degrades on long single requests — cap chunks at
+    # ~5 minutes of 64 kbps mono audio instead of the 24 MB upload limit.
+    max_bytes = MAX_UPLOAD_BYTES
+    if backend == "dashscope":
+        max_bytes = min(
+            max_bytes,
+            DASHSCOPE_MAX_CHUNK_SECONDS * DASHSCOPE_BYTES_PER_SECOND,
+        )
+
     def transcribe_one(path: Path) -> list[dict]:
         return _transcribe_file(backend, api_key, path)
 
-    if audio_bytes <= MAX_UPLOAD_BYTES:
+    if audio_bytes <= max_bytes:
         print(
             f"[watch] audio: {audio_bytes / 1024:.0f} kB — uploading to {backend} Whisper…",
             file=sys.stderr,
@@ -449,10 +521,10 @@ def transcribe_video(
         segments = transcribe_one(audio_path)
     else:
         duration = audio_duration(audio_path)
-        plan = plan_chunks(duration, audio_bytes, MAX_UPLOAD_BYTES)
+        plan = plan_chunks(duration, audio_bytes, max_bytes)
         print(
             f"[watch] audio: {audio_bytes / (1024 * 1024):.0f} MB exceeds "
-            f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB — splitting into {len(plan)} chunks…",
+            f"{max_bytes // (1024 * 1024) or 1} MB — splitting into {len(plan)} chunks…",
             file=sys.stderr,
         )
         chunks = split_audio(audio_path, audio_out.parent / "chunks", plan)
@@ -467,7 +539,7 @@ def transcribe_video(
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai]", file=sys.stderr)
+        print("usage: whisper.py <video-path> [<audio-out.mp3>] [--backend groq|openai|dashscope]", file=sys.stderr)
         raise SystemExit(2)
 
     video = sys.argv[1]
