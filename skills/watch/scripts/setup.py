@@ -41,16 +41,21 @@ ENV_TEMPLATE = """# /watch API configuration
 # (or when you point /watch at a local file with no subtitles).
 #
 # Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
-# and is faster in practice. OpenAI is the compatible fallback.
+# and is faster in practice. OpenAI is the compatible fallback. DashScope
+# (Alibaba Bailian, qwen omni ASR) is the China-accessible fallback — it needs
+# `pip install dashscope` and reaches dashscope.aliyuncs.com, which works from
+# mainland networks where Groq/OpenAI do not.
 #
 # Get a Groq key:  https://console.groq.com/keys
 # Get an OpenAI key:  https://platform.openai.com/api-keys
+# DashScope key:  https://bailian.console.aliyun.com/ (API-KEY 管理)
 #
-# Leave both blank to disable Whisper — /watch will still work, but videos
+# Leave all blank to disable Whisper — /watch will still work, but videos
 # without native captions will come back frames-only.
 
 GROQ_API_KEY=
 OPENAI_API_KEY=
+DASHSCOPE_API_KEY=
 
 # Default watch behavior (the /watch first-run wizard sets this for you).
 # Allowed values: transcript | efficient | balanced | token-burner
@@ -118,6 +123,8 @@ def _have_api_key() -> tuple[bool, str | None]:
         return True, "groq"
     if _read_env_key("OPENAI_API_KEY"):
         return True, "openai"
+    if _read_env_key("DASHSCOPE_API_KEY"):
+        return True, "dashscope"
     return False, None
 
 
@@ -276,7 +283,7 @@ def cmd_check() -> int:
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
     if not s["has_api_key"] and not s["setup_complete"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+        parts.append("no Whisper API key (GROQ_API_KEY, OPENAI_API_KEY, or DASHSCOPE_API_KEY)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
@@ -345,6 +352,7 @@ def cmd_install() -> int:
     print(f"  Edit {CONFIG_FILE} and set either:")
     print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
     print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
+    print("    DASHSCOPE_API_KEY=...  (China-accessible fallback; bailian.console.aliyun.com)")
     print("")
     print("  Without a key, /watch still works but videos without captions come back frames-only.")
     return 3
