@@ -25,12 +25,26 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+import config
+
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
 
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
+
+# Optional self-hosted backend. Any server exposing OpenAI's transcriptions
+# route works — whisper.cpp `server`, faster-whisper-server, speaches, LM Studio.
+# Set WATCH_WHISPER_BASE_URL in the environment or ~/.config/watch/.env; when it
+# is set, local wins over Groq/OpenAI, so configuring it is the way to guarantee
+# audio never leaves the machine. WATCH_WHISPER_API_KEY is optional because most
+# local servers take no auth.
+LOCAL_BASE_URL_VAR = "WATCH_WHISPER_BASE_URL"
+LOCAL_MODEL_VAR = "WATCH_WHISPER_MODEL"
+LOCAL_KEY_VAR = "WATCH_WHISPER_API_KEY"
+LOCAL_MODEL_DEFAULT = "whisper-1"
+TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions"
 
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
@@ -62,11 +76,49 @@ def plan_chunks(
     return plan
 
 
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+def _lookup(name: str) -> str | None:
+    """Read a setting: environment first, then ~/.config/watch/.env, then ./.env.
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+    Same precedence and the same file parser load_api_key() uses, so a value set
+    either way behaves identically.
     """
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip()
+    for path in (config.CONFIG_FILE, Path.cwd() / ".env"):
+        found = config.read_env_file(path).get(name)
+        if found and found.strip():
+            return found.strip()
+    return None
+
+
+def local_endpoint() -> tuple[str, str, str] | None:
+    """Return (endpoint, model, api_key) for a configured local backend, else None.
+
+    The base URL may be given as a bare origin ("http://localhost:8080") or as a
+    full transcriptions URL; the route is appended only when it is absent, so
+    both spellings work. api_key is "" when the server needs no auth.
+    """
+    base = _lookup(LOCAL_BASE_URL_VAR)
+    if not base:
+        return None
+    base = base.rstrip("/")
+    endpoint = base if base.endswith("/audio/transcriptions") else base + TRANSCRIPTIONS_PATH
+    return endpoint, _lookup(LOCAL_MODEL_VAR) or LOCAL_MODEL_DEFAULT, _lookup(LOCAL_KEY_VAR) or ""
+
+
+def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
+    """Return (backend, api_key). Prefers a configured local server, then Groq, then OpenAI.
+
+    If `preferred` is "local", "groq" or "openai", only that backend is considered.
+    The local backend returns an empty api_key when the server needs no auth, so
+    callers must test `backend is not None` rather than the key's truthiness.
+    """
+    if preferred in (None, "local"):
+        local = local_endpoint()
+        if local is not None:
+            return "local", local[2]
+
     def _from_env(name: str) -> str | None:
         value = os.environ.get(name)
         return value.strip() if value else None
@@ -242,13 +294,15 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     }
     body, boundary = _build_multipart(fields, audio_path)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         # Groq sits behind Cloudflare — the default `Python-urllib/3.x` UA
         # trips WAF rule 1010 (403) before auth even runs. Any non-default
         # UA clears it; we identify honestly.
         "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
     }
+    # Local servers typically take no auth; sending an empty bearer breaks some.
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     context = ssl.create_default_context()
     rate_limit_hits = 0
@@ -406,6 +460,16 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend == "local":
+        local = local_endpoint()
+        if local is None:
+            raise SystemExit(
+                f"--whisper local was selected but {LOCAL_BASE_URL_VAR} is not set. "
+                f"Set it in the environment or {config.CONFIG_FILE}, e.g. "
+                f"{LOCAL_BASE_URL_VAR}=http://localhost:8080"
+            )
+        endpoint, model, key = local
+        response = _post_whisper(endpoint, key, model, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
@@ -426,10 +490,13 @@ def transcribe_video(
         backend = backend or detected_backend
         api_key = api_key or detected_key
 
-    if not backend or not api_key:
+    # A local backend may legitimately have an empty key, so only Groq/OpenAI
+    # require one.
+    if not backend or (not api_key and backend != "local"):
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
+            "No Whisper backend available. Set GROQ_API_KEY or OPENAI_API_KEY, or point "
+            f"{LOCAL_BASE_URL_VAR} at a local OpenAI-compatible transcription server, "
             "in the environment or in ~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )
