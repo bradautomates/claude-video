@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **`--force-whisper`** — ignore native captions and transcribe with Whisper anyway. On non-English videos the platform's auto-captions are often machine-translated into English and arrive with rolling duplicate lines, which makes them a worse transcript than transcribing the original audio. Mutually exclusive with `--no-whisper`.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
