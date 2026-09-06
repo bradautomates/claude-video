@@ -253,7 +253,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        "-fps_mode", "vfr",
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +612,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        "-fps_mode", "vfr",
         "-q:v", "4",
         output_pattern,
     ]
