@@ -13,6 +13,22 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+
+
+def _force_utf8_stdio() -> None:
+    """Keep the report printable on Windows consoles that default to cp1252.
+
+    The report uses non-ASCII characters (arrows, ellipses, em dashes), and any
+    of them raises UnicodeEncodeError under the legacy code page. Reconfiguring
+    to UTF-8 with errors="replace" keeps output readable instead of aborting.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_force_utf8_stdio()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
