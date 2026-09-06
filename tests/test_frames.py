@@ -68,3 +68,19 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_vfr_flag_is_accepted_by_the_installed_ffmpeg(cut_clip: Path, tmp_path: Path):
+    """The VFR flag must match the ffmpeg actually present.
+
+    ffmpeg 8.0 removed ``-vsync``, so a hardcoded one aborts the whole command
+    with ``Unrecognized option 'vsync'`` before decoding and takes the scene and
+    keyframe engines down with it.
+    """
+    flag = frames.vfr_flag()
+    assert flag in (["-fps_mode", "vfr"], ["-vsync", "vfr"])
+    assert frames.vfr_flag() is flag, "probe result should be cached"
+
+    # The real proof: an engine that uses the flag runs to completion.
+    out = frames.extract_scene_candidates(str(cut_clip), tmp_path / "vfr")
+    assert out

@@ -39,6 +39,31 @@ DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
+_VFR_FLAG: list[str] | None = None
+
+
+def vfr_flag() -> list[str]:
+    """Variable-frame-rate output flag, matched to the installed ffmpeg.
+
+    ``-vsync`` was deprecated in ffmpeg 5.0 and **removed in 8.0**, where it now
+    fails the whole command with ``Unrecognized option 'vsync'`` before any
+    decoding starts. ``-fps_mode`` is the replacement and exists from 5.0 on, so
+    probe ``-h full`` once and pick whichever this build understands.
+    """
+    global _VFR_FLAG
+    if _VFR_FLAG is None:
+        try:
+            help_text = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-h", "full"],
+                capture_output=True,
+                text=True,
+            ).stdout
+        except OSError:
+            help_text = ""
+        _VFR_FLAG = ["-fps_mode", "vfr"] if "-fps_mode" in help_text else ["-vsync", "vfr"]
+    return _VFR_FLAG
+
+
 def _scale_filter(resolution: int) -> str:
     return (
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
@@ -253,7 +278,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *vfr_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +637,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *vfr_flag(),
         "-q:v", "4",
         output_pattern,
     ]
