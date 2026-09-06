@@ -346,6 +346,40 @@ def _even_indices(count: int, n: int) -> list[int]:
     return [round(i * (count - 1) / (n - 1)) for i in range(n)]
 
 
+def _even_time_indices(times: list[float], n: int) -> list[int]:
+    """Indices of ``n`` candidates spread evenly over the *timeline* (first and
+    last always kept), each interior slot taking the candidate nearest its
+    evenly-spaced target time.
+
+    Index-spacing hands a cluster its share of the budget: 36 keyframes packed
+    into 6% of a video keep ~90% of the slots and the other 94% of the runtime
+    gets what's left. Spacing by timestamp gives every stretch of runtime the
+    same shot at a frame. Degenerate timelines (all one instant) fall back to
+    index-spacing.
+
+    ponytail: O(n * len(times)) nearest-search, fine for the ~10^3 frames these
+    engines produce; sort the targets and merge if that ever stops being true.
+    """
+    count = len(times)
+    if n >= count:
+        return list(range(count))
+    if n <= 1:
+        return [0]
+
+    span = times[-1] - times[0]
+    if span <= 0:
+        return _even_indices(count, n)
+
+    chosen = {0, count - 1}
+    for i in range(1, n - 1):
+        target = times[0] + span * i / (n - 1)
+        chosen.add(min(
+            (j for j in range(1, count - 1) if j not in chosen),
+            key=lambda j: (abs(times[j] - target), j),
+        ))
+    return sorted(chosen)
+
+
 def parse_timestamps(value: str | None) -> list[float]:
     """Parse a comma-separated list of times (SS, MM:SS, HH:MM:SS) into a
     sorted, de-duplicated list of seconds. Empty/blank tokens are skipped;
@@ -406,7 +440,9 @@ def extract_at_timestamps(
     dropped = len(requested) - len(in_window)
 
     if max_frames is not None and len(in_window) > max_frames:
-        points = [in_window[i] for i in _even_indices(len(in_window), max_frames)]
+        # in_window is already sorted times, so thin it the same way the frame
+        # engines do: by timestamp, not by position in the list.
+        points = [in_window[i] for i in _even_time_indices(in_window, max_frames)]
     else:
         points = in_window
 
@@ -445,14 +481,17 @@ def extract_at_timestamps(
 
 
 def _even_sample(candidates: list[dict], n: int) -> list[dict]:
-    """Pick ``n`` evenly-spaced candidates (always including first and last),
-    delete the JPEGs we drop, and reindex the survivors 0..len-1.
+    """Pick ``n`` candidates evenly spaced *in time* (always including first and
+    last), delete the JPEGs we drop, and reindex the survivors 0..len-1.
 
     Shared by every capped engine so all detail modes sample the same way:
     detect all candidates across the full range, then thin down to the cap.
     ``n >= len(candidates)`` keeps everything (the uncapped / under-cap case).
+    Spacing is by timestamp, not position in the list, so a burst of cuts in a
+    short stretch cannot eat the budget and leave the rest of the video bare.
     """
-    selected = [candidates[i] for i in _even_indices(len(candidates), n)]
+    times = [cand["timestamp_seconds"] for cand in candidates]
+    selected = [candidates[i] for i in _even_time_indices(times, n)]
 
     keep_paths = {sel["path"] for sel in selected}
     for cand in candidates:
