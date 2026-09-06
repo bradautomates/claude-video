@@ -83,3 +83,12 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     out = _run(static_clip, "--no-dedup")
     assert "near-duplicate" not in out
     assert _frame_lines(out) > 1
+
+
+def test_force_whisper_conflicts_with_no_whisper(cut_clip: Path):
+    proc = subprocess.run(
+        [sys.executable, str(WATCH), str(cut_clip), "--force-whisper", "--no-whisper"],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode != 0
+    assert "mutually exclusive" in proc.stderr
