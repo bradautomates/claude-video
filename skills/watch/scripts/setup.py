@@ -69,10 +69,24 @@ def _check_binaries() -> list[str]:
 
 _PERM_WARNED: set[str] = set()
 
+# ponytail: POSIX mode bits do not govern access on Windows and cannot be set
+# from Python — os.chmod there only toggles the read-only attribute, verified by
+# creating a file with and without chmod(0o600) and diffing icacls: identical,
+# both inheriting SYSTEM / Administrators / user. So the mode is neither
+# meaningful to read nor settable to write, and both halves are skipped below.
+_IS_WINDOWS = os.name == "nt"
+
 
 def _check_file_permissions(path: Path) -> None:
     """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
+    world/group readable.
+
+    No-op on Windows: st_mode there is synthesized from the read-only attribute,
+    so the group/other bits are always set and this would warn on every run with
+    a `chmod 600` fix that cannot change anything.
+    """
+    if _IS_WINDOWS:
+        return
     key = str(path)
     if key in _PERM_WARNED:
         return
@@ -126,16 +140,31 @@ def is_first_run() -> bool:
     return _read_env_key("SETUP_COMPLETE") != "true"
 
 
+def _restrict_config_file() -> None:
+    """Restrict .env to the owner where the platform supports it.
+
+    POSIX: mode 0600. Windows: nothing — the file keeps the ACL it inherits from
+    the user profile, which grants the user, SYSTEM and Administrators. That is
+    the normal posture for user secrets on Windows (an administrator can read
+    any file regardless), and no other ordinary user is granted access. Locking
+    it further would mean icacls /inheritance:r, which mostly breaks backup and
+    AV agents for no gain against an attacker who is already an admin.
+    """
+    if _IS_WINDOWS:
+        return
+    try:
+        CONFIG_FILE.chmod(0o600)
+    except OSError:
+        pass
+
+
 def _scaffold_env() -> bool:
     """Create ~/.config/watch/.env with placeholders if missing."""
     if CONFIG_FILE.exists():
         return False
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(ENV_TEMPLATE, encoding="utf-8")
-    try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+    _restrict_config_file()
     return True
 
 
@@ -157,10 +186,7 @@ def _write_setup_complete() -> None:
         CONFIG_FILE.write_text(existing + "SETUP_COMPLETE=true\n", encoding="utf-8")
     else:
         CONFIG_FILE.write_text(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n", encoding="utf-8")
-    try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+    _restrict_config_file()
 
 
 def _brew_pkg(missing: list[str]) -> list[str]:

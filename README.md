@@ -157,7 +157,7 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
 - **Windows** — prints the `winget` / `pip` commands.
-- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
+- **API key** — scaffolds `~/.config/watch/.env` with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`. Restricted to mode `0600` on macOS/Linux; on Windows it keeps the inherited profile ACL (you, SYSTEM, Administrators) — POSIX modes are not settable there.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
