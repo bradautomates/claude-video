@@ -289,7 +289,13 @@ def main() -> int:
     if detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
-        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
+        # Say *why* the engine fell back — "uniform with uniform fallback" told nobody
+        # anything, and the coverage fallback fires often enough to be worth naming.
+        _why = {
+            "sparse": " — too few scene changes to work with",
+            "coverage": " — scene changes were bunched, so they missed most of the range",
+        }
+        fallback = _why.get(frame_meta.get("fallback_reason"), "") if frame_meta.get("fallback") else ""
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(
