@@ -68,3 +68,27 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_even_time_indices_spreads_over_clustered_candidates():
+    """36 of 40 candidates packed into the first 6% of a 100s clip: index
+    spacing keeps ~90% of the budget inside that 6%, time spacing must not."""
+    times = [i * 0.17 for i in range(36)] + [40.0, 60.0, 80.0, 100.0]
+
+    picked = [times[i] for i in frames._even_time_indices(times, 5)]
+    assert picked == sorted(picked)
+    assert picked[0] == times[0] and picked[-1] == times[-1]
+    assert sum(1 for t in picked if t <= 6.0) <= 2  # index spacing gives 4
+
+    # Contract kept from _even_indices.
+    assert frames._even_time_indices(times, 99) == list(range(len(times)))
+    assert frames._even_time_indices(times, 1) == [0]
+    assert frames._even_time_indices([5.0] * 10, 3) == [0, 4, 9]  # flat → index
+
+
+def test_extract_lowers_fps_so_cap_spans_the_range(cut_clip: Path, tmp_path: Path):
+    """4 frames at 2fps covers only the opening 2s of a 5.6s clip; the cap has
+    to stretch over the whole range instead of clumping at the head."""
+    out = frames.extract(str(cut_clip), tmp_path / "f", fps=2.0, max_frames=4)
+    assert len(out) == 4
+    assert out[-1]["timestamp_seconds"] > 3.0

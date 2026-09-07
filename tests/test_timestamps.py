@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 import frames
+import transcribe as frames_transcribe
 
 
 def test_parse_timestamps_mixed_formats():
@@ -85,3 +86,13 @@ def test_extract_at_timestamps_does_not_clobber_detail_frames(cut_clip: Path, tm
     cues, _ = frames.extract_at_timestamps(str(cut_clip), d, [1.0, 3.0])
     assert len(list(d.glob("frame_*.jpg"))) == len(scene)
     assert len(list(d.glob("cue_*.jpg"))) == len(cues)
+
+
+def test_format_transcript_marks_uncertain_segments():
+    """Local whisper flags segments it doubts; captions and the cloud path never do,
+    so an unflagged segment must render exactly as before."""
+    out = frames_transcribe.format_transcript([
+        {"start": 5.0, "end": 6.0, "text": "sure of this"},
+        {"start": 65.0, "end": 66.0, "text": "not sure of this", "uncertain": True},
+    ])
+    assert out.splitlines() == ["[00:05] sure of this", "[01:05] not sure of this [?]"]

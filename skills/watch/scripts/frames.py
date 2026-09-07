@@ -9,6 +9,7 @@ zooming in for detail).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -16,7 +17,14 @@ import sys
 from pathlib import Path
 
 
-MAX_FPS = 2.0
+# ponytail: 2.0 is the sane default ceiling, not a law of nature — a fight scene or
+# any fast choreography needs more. Raising it changes nothing on its own: auto_fps and
+# auto_fps_focus target a frame *budget*, so the ceiling only ever binds an explicit
+# --fps. Pair it with --start/--end and --max-frames on a short range:
+#   WATCH_MAX_FPS=24 watch.py clip.mp4 --start 1:10 --end 1:40 --fps 24 --max-frames 720
+# Cost is the real ceiling: ~200 tokens per 512px frame, so 24fps is affordable for
+# tens of seconds, not minutes.
+MAX_FPS = float(os.environ.get("WATCH_MAX_FPS", "2.0"))
 SCENE_THRESHOLD = 0.20
 # Keep scene-detection results once we have at least this many distinct shots.
 # Below this the video is effectively static (screen recording, talking head),
@@ -171,6 +179,22 @@ def extract(
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
+    # ponytail: `fps` and `-frames:v max_frames` together only cover
+    # max_frames/fps seconds — ffmpeg stops decoding there, so a cap smaller than
+    # fps*duration spends the whole budget at the head of the range and leaves the
+    # tail unwatched. Lower fps instead so the budget spans the requested range.
+    # Costs one ffprobe only when the range has no explicit end.
+    if fps > 0 and max_frames:
+        span_end = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
+        span = max(0.0, span_end - (start_seconds or 0.0))
+        if span > 0 and max_frames < int(round(fps * span)):
+            fps = max_frames / span
+            print(
+                f"[watch] fps lowered to {fps:.4f} so {max_frames} frames span the full "
+                f"{span:.0f}s (the requested fps would have covered only the opening seconds)",
+                file=sys.stderr,
+            )
+
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
@@ -292,6 +316,40 @@ def _even_indices(count: int, n: int) -> list[int]:
     return [round(i * (count - 1) / (n - 1)) for i in range(n)]
 
 
+def _even_time_indices(times: list[float], n: int) -> list[int]:
+    """Indices of ``n`` candidates spread evenly over the *timeline* (first and
+    last always kept), each interior slot taking the candidate nearest its
+    evenly-spaced target time.
+
+    Index-spacing hands a cluster its share of the budget: 36 keyframes packed
+    into 6% of a video keep ~90% of the slots and the other 94% of the runtime
+    gets what's left. Spacing by timestamp gives every stretch of runtime the
+    same shot at a frame. Degenerate timelines (all one instant) fall back to
+    index-spacing.
+
+    ponytail: O(n * len(times)) nearest-search, fine for the ~10^3 frames these
+    engines produce; sort the targets and merge if that ever stops being true.
+    """
+    count = len(times)
+    if n >= count:
+        return list(range(count))
+    if n <= 1:
+        return [0]
+
+    span = times[-1] - times[0]
+    if span <= 0:
+        return _even_indices(count, n)
+
+    chosen = {0, count - 1}
+    for i in range(1, n - 1):
+        target = times[0] + span * i / (n - 1)
+        chosen.add(min(
+            (j for j in range(1, count - 1) if j not in chosen),
+            key=lambda j: (abs(times[j] - target), j),
+        ))
+    return sorted(chosen)
+
+
 def parse_timestamps(value: str | None) -> list[float]:
     """Parse a comma-separated list of times (SS, MM:SS, HH:MM:SS) into a
     sorted, de-duplicated list of seconds. Empty/blank tokens are skipped;
@@ -352,7 +410,9 @@ def extract_at_timestamps(
     dropped = len(requested) - len(in_window)
 
     if max_frames is not None and len(in_window) > max_frames:
-        points = [in_window[i] for i in _even_indices(len(in_window), max_frames)]
+        # in_window is already sorted times, so thin it the same way the frame
+        # engines do: by timestamp, not by position in the list.
+        points = [in_window[i] for i in _even_time_indices(in_window, max_frames)]
     else:
         points = in_window
 
@@ -391,14 +451,17 @@ def extract_at_timestamps(
 
 
 def _even_sample(candidates: list[dict], n: int) -> list[dict]:
-    """Pick ``n`` evenly-spaced candidates (always including first and last),
-    delete the JPEGs we drop, and reindex the survivors 0..len-1.
+    """Pick ``n`` candidates evenly spaced *in time* (always including first and
+    last), delete the JPEGs we drop, and reindex the survivors 0..len-1.
 
     Shared by every capped engine so all detail modes sample the same way:
     detect all candidates across the full range, then thin down to the cap.
     ``n >= len(candidates)`` keeps everything (the uncapped / under-cap case).
+    Spacing is by timestamp, not position in the list, so a burst of cuts in a
+    short stretch cannot eat the budget and leave the rest of the video bare.
     """
-    selected = [candidates[i] for i in _even_indices(len(candidates), n)]
+    times = [cand["timestamp_seconds"] for cand in candidates]
+    selected = [candidates[i] for i in _even_time_indices(times, n)]
 
     keep_paths = {sel["path"] for sel in selected}
     for cand in candidates:

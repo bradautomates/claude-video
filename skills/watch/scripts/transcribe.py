@@ -85,7 +85,9 @@ def format_transcript(segments: list[dict]) -> str:
     for seg in segments:
         start = int(seg["start"])
         stamp = f"[{start // 60:02d}:{start % 60:02d}]"
-        lines.append(f"{stamp} {seg['text']}")
+        # Local whisper flags segments it doubts; captions and the cloud path never do.
+        mark = " [?]" if seg.get("uncertain") else ""
+        lines.append(f"{stamp} {seg['text']}{mark}")
     return "\n".join(lines)
 
 
