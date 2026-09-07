@@ -8,6 +8,7 @@ zooming in for detail).
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
@@ -37,6 +38,36 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@functools.lru_cache(maxsize=1)
+def _frame_rate_mode_flag() -> str:
+    """Return the frame-rate-mode flag this ffmpeg build understands.
+
+    ``-vsync`` was deprecated in ffmpeg 5.1 in favour of ``-fps_mode`` and
+    removed outright in 8.0, where passing it aborts the run before any
+    decoding with "Unrecognized option 'vsync'". Older builds still in wide
+    distribution (Ubuntu 22.04 ships 4.4, Debian bullseye 4.3) only understand
+    ``-vsync``, so neither spelling is safe to hardcode. Probe a null encode
+    once per process and cache the answer; the probe decodes a single 16x16
+    synthetic frame and costs well under a tenth of a second.
+
+    Fails open to ``-vsync``: if ffmpeg is missing entirely the caller's own
+    ``shutil.which`` guard reports it with a better message than this probe.
+    """
+    try:
+        probe = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04",
+                "-fps_mode", "vfr", "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return "-vsync"
+    return "-fps_mode" if probe.returncode == 0 else "-vsync"
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +284,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        _frame_rate_mode_flag(), "vfr",
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +643,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        _frame_rate_mode_flag(), "vfr",
         "-q:v", "4",
         output_pattern,
     ]
