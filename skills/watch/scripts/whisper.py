@@ -422,7 +422,10 @@ def transcribe_video(
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
     if backend is None or api_key is None:
-        detected_backend, detected_key = load_api_key()
+        # Scope the lookup to the requested backend. Without `preferred`, forcing
+        # `--whisper openai` with only GROQ_API_KEY set would load the Groq key and
+        # then post it to api.openai.com.
+        detected_backend, detected_key = load_api_key(preferred=backend)
         backend = backend or detected_backend
         api_key = api_key or detected_key
 
