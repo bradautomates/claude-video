@@ -55,24 +55,28 @@ def _frame_sync_args() -> list[str]:
     things like `N-109632-g5b3c8e0` or a bare date with no parseable number.
     """
     global _FRAME_SYNC_ARGS
-    if _FRAME_SYNC_ARGS is None:
-        _FRAME_SYNC_ARGS = ["-vsync", "vfr"]
-        try:
-            probe = subprocess.run(
-                [
-                    "ffmpeg", "-hide_banner", "-loglevel", "quiet",
-                    "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04",
-                    "-fps_mode", "vfr", "-frames:v", "1", "-f", "null", "-",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if probe.returncode == 0:
-                _FRAME_SYNC_ARGS = ["-fps_mode", "vfr"]
-        except OSError:
-            # ffmpeg missing or unrunnable; callers already raise a clear
-            # "ffmpeg is not installed" error, so don't mask it here.
-            pass
+    if _FRAME_SYNC_ARGS is not None:
+        return _FRAME_SYNC_ARGS
+
+    legacy = ["-vsync", "vfr"]
+    try:
+        probe = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "quiet",
+                "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04",
+                "-fps_mode", "vfr", "-frames:v", "1", "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        # ffmpeg is missing or unrunnable, so the probe answered nothing. Return
+        # the legacy flag without caching, letting a later call retry once
+        # ffmpeg is present. Callers already raise a clear "ffmpeg is not
+        # installed" error, so don't mask it here.
+        return legacy
+
+    _FRAME_SYNC_ARGS = ["-fps_mode", "vfr"] if probe.returncode == 0 else legacy
     return _FRAME_SYNC_ARGS
 
 

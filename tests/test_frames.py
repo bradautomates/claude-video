@@ -92,3 +92,29 @@ def test_frame_sync_flag_is_accepted_by_this_ffmpeg():
         text=True,
     )
     assert probe.returncode == 0, f"ffmpeg rejected {args}: {probe.stderr.strip()}"
+
+
+def test_frame_sync_probe_failure_is_not_cached(monkeypatch):
+    """A failed probe must not pin the fallback for the rest of the process.
+
+    ffmpeg can be absent when the first call happens and present later — a test
+    harness adjusting PATH, or a caller that installs it on demand. Caching the
+    fallback on OSError would keep returning `-vsync` on ffmpeg 8+, which is the
+    exact breakage this probe exists to avoid.
+    """
+    monkeypatch.setattr(frames, "_FRAME_SYNC_ARGS", None)
+
+    def _boom(*_args, **_kwargs):
+        raise OSError("ffmpeg not found")
+
+    monkeypatch.setattr(frames.subprocess, "run", _boom)
+    assert frames._frame_sync_args() == ["-vsync", "vfr"]
+    assert frames._FRAME_SYNC_ARGS is None, "failed probe must not be cached"
+
+    monkeypatch.setattr(
+        frames.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0),
+    )
+    assert frames._frame_sync_args() == ["-fps_mode", "vfr"]
+    assert frames._FRAME_SYNC_ARGS == ["-fps_mode", "vfr"], "success must be cached"
+
