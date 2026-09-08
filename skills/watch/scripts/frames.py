@@ -37,6 +37,43 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+# Resolved once per process by _frame_sync_args().
+_FRAME_SYNC_ARGS: list[str] | None = None
+
+
+def _frame_sync_args() -> list[str]:
+    """Return the frame-sync flag this ffmpeg build understands.
+
+    Selection filters drop frames, so the encoder must be told to emit them at
+    their own timestamps rather than pad to a constant rate. `-vsync vfr` did
+    that; it was deprecated in ffmpeg 5.0 and **removed in 8.0**, where passing
+    it aborts with "Unrecognized option 'vsync'" before any work happens.
+    `-fps_mode vfr` is the replacement and has existed since 5.0.
+
+    Neither flag alone spans every supported build, so probe the binary once.
+    Version strings are not a reliable substitute — git and distro builds report
+    things like `N-109632-g5b3c8e0` or a bare date with no parseable number.
+    """
+    global _FRAME_SYNC_ARGS
+    if _FRAME_SYNC_ARGS is None:
+        _FRAME_SYNC_ARGS = ["-vsync", "vfr"]
+        try:
+            probe = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "quiet",
+                    "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04",
+                    "-fps_mode", "vfr", "-frames:v", "1", "-f", "null", "-",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if probe.returncode == 0:
+                _FRAME_SYNC_ARGS = ["-fps_mode", "vfr"]
+        except OSError:
+            # ffmpeg missing or unrunnable; callers already raise a clear
+            # "ffmpeg is not installed" error, so don't mask it here.
+            pass
+    return _FRAME_SYNC_ARGS
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +290,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_frame_sync_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +649,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_frame_sync_args(),
         "-q:v", "4",
         output_pattern,
     ]

@@ -1,6 +1,7 @@
 """Keyframe engine + preserved scene/uniform fallbacks."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import frames
@@ -68,3 +69,26 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def test_frame_sync_flag_is_accepted_by_this_ffmpeg():
+    """The frame-sync flag must be one the installed ffmpeg actually accepts.
+
+    `-vsync` was removed in ffmpeg 8, so hardcoding it aborted every scene and
+    keyframe extraction with "Unrecognized option 'vsync'". Hardcoding
+    `-fps_mode` instead would break ffmpeg 4.x, which predates it. Guard the
+    resolved flag against the real binary so neither regression can return.
+    """
+    args = frames._frame_sync_args()
+    assert args in (["-fps_mode", "vfr"], ["-vsync", "vfr"])
+
+    probe = subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "nullsrc=s=16x16:d=0.04",
+            *args, "-frames:v", "1", "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, f"ffmpeg rejected {args}: {probe.stderr.strip()}"
