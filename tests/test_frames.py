@@ -68,3 +68,18 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+class TestFpsModeArgs:
+    """ffmpeg 8 removed -vsync; -fps_mode has been its replacement since 5.1."""
+
+    def test_prefers_fps_mode_when_ffmpeg_supports_it(self, monkeypatch):
+        monkeypatch.setattr(frames, "_supports_fps_mode", lambda: True)
+        assert frames.fps_mode_args() == ["-fps_mode", "vfr"]
+
+    def test_falls_back_to_vsync_on_older_ffmpeg(self, monkeypatch):
+        monkeypatch.setattr(frames, "_supports_fps_mode", lambda: False)
+        assert frames.fps_mode_args() == ["-vsync", "vfr"]
+
+    def test_probe_answers_without_raising_on_this_machine(self):
+        assert isinstance(frames._supports_fps_mode(), bool)
