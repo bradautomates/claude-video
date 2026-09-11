@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import watch
+
 WATCH = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "watch.py"
 
 
@@ -15,7 +17,7 @@ def _run(clip: Path, *args: str, env_extra: dict | None = None) -> str:
     if env_extra:
         env.update(env_extra)
     proc = subprocess.run(
-        [sys.executable, str(WATCH), str(clip), "--no-whisper", *args],
+        [sys.executable, str(WATCH), str(clip), *args],
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 0, proc.stderr
@@ -83,3 +85,17 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     out = _run(static_clip, "--no-dedup")
     assert "near-duplicate" not in out
     assert _frame_lines(out) > 1
+
+
+def test_prune_stale_work_dirs_removes_old_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(watch.tempfile, "gettempdir", lambda: str(tmp_path))
+    old_dir = tmp_path / "watch-old"
+    old_dir.mkdir()
+    os.utime(old_dir, (0, 0))  # epoch — ancient
+    fresh_dir = tmp_path / "watch-fresh"
+    fresh_dir.mkdir()
+
+    watch._prune_stale_work_dirs(max_age_seconds=3600.0)
+
+    assert not old_dir.exists()
+    assert fresh_dir.exists()

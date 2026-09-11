@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "watch",
-      "description": "Watch a video (URL or local path). Downloads with yt-dlp, extracts frames with ffmpeg, transcribes via captions or Whisper.",
+      "description": "Watch a video (URL or local path). Downloads with yt-dlp, extracts frames with ffmpeg, resolves a transcript via youtube-data MCP / native captions / local Voicebox (no paid API).",
       "author": {
         "name": "Bradley Bonanno"
       },

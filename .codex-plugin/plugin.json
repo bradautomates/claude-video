@@ -1,7 +1,7 @@
 {
   "name": "watch",
-  "version": "0.2.0",
-  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Whisper, and hands frames + transcript to Claude so it can answer questions about the video.",
+  "version": "0.3.0",
+  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, resolves a transcript via youtube-data MCP / native captions / local Voicebox (no paid API), and hands frames + transcript to Claude so it can answer questions about the video.",
   "author": {
     "name": "Bradley Bonanno"
   },
@@ -15,7 +15,7 @@
     "vimeo",
     "tiktok",
     "transcription",
-    "whisper",
+    "voicebox",
     "yt-dlp",
     "ffmpeg",
     "multimodal",
@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "watch",
     "shortDescription": "Give Claude a video input — paste a URL or path and ask about it.",
-    "longDescription": "watch adds a skill that lets the agent watch any video: it downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls a timestamped transcript from native captions (or the Whisper API as a fallback), and hands frames + transcript to the model so it can answer questions grounded in what's actually on screen and in the audio.",
+    "longDescription": "watch adds a skill that lets the agent watch any video: it downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, resolves a timestamped transcript via the youtube-data MCP, native captions, or local Voicebox (no paid API), and hands frames + transcript to the model so it can answer questions grounded in what's actually on screen and in the audio.",
     "developerName": "Bradley Bonanno",
     "category": "Productivity",
     "capabilities": [

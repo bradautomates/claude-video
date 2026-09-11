@@ -1,12 +1,13 @@
 # claude-video / watch skill
 
-Agent Skills package that gives an agent a video input. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, and 50+ other [Agent Skills](https://agentskills.io) hosts. Pure-stdlib Python that orchestrates `yt-dlp` + `ffmpeg` and an optional Whisper API.
+Agent Skills package that gives an agent a video input. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, and 50+ other [Agent Skills](https://agentskills.io) hosts. Pure-stdlib Python that orchestrates `yt-dlp` + `ffmpeg`, with transcript resolution via the `youtube-data` MCP, native captions, or local Voicebox — no paid API.
 
 ## Structure
 
 - `skills/watch/SKILL.md` — canonical skill contract the model reads when `/watch` fires. Source of truth for behavior across every host.
 - `skills/watch/scripts/watch.py` — entry point; orchestrates download → frames → transcript.
-- `skills/watch/scripts/{download,frames,transcribe,whisper,setup,config}.py` — yt-dlp wrapper, ffmpeg frame extraction + auto-fps, caption/Whisper transcription, preflight/installer, shared config.
+- `skills/watch/scripts/{download,frames,transcribe,whisper,setup,config}.py` — yt-dlp wrapper, ffmpeg frame extraction + auto-fps, caption parsing, audio extraction for the Voicebox fallback, preflight/installer, shared config.
+- `skills/watch/scripts/extract-audio.sh` — CLI wrapper around `whisper.py`'s `extract_audio()`, for the Voicebox transcription fallback.
 - `skills/watch/scripts/build-skill.sh` — builds `dist/watch.skill` for claude.ai upload (dev-only).
 - `hooks/` — Claude Code SessionStart setup-status hook (Claude Code only).
 - `.claude-plugin/` — `plugin.json` + `marketplace.json` (Claude Code plugin + local marketplace).
@@ -47,4 +48,4 @@ bash skills/watch/scripts/build-skill.sh   # → dist/watch.skill
 
 - Keep the version in sync across `skills/watch/SKILL.md` (frontmatter), `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` when cutting a release.
 - Releasing: tag `vX.Y.Z` and push the tag; `.github/workflows/release.yml` builds `dist/watch.skill` and attaches it to the GitHub release.
-- Never commit real API keys or `.env` contents; keys live in `~/.config/watch/.env` (mode `0600`) at runtime.
+- Never commit real secrets or `.env` contents. There's no API key in this fork — `~/.config/watch/.env` (mode `0600`) only stores the `WATCH_DETAIL` preference.

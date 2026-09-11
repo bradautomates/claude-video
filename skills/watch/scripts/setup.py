@@ -2,19 +2,18 @@
 """Setup / preflight for /watch.
 
 Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
+  setup.py --check      Silent preflight. Exit 0 if ready, 2 on failure.
   setup.py --json       Machine-readable status for Claude to parse.
   setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
 
 Design:
 - Silent on success: --check exits 0 with no output when everything's ready so
   that /watch doesn't spam "setup is complete" on every turn.
-- Idempotent: re-running the installer is safe — it never clobbers existing
-  keys and only appends missing ones.
+- Idempotent: re-running the installer is safe — it does not overwrite an
+  existing .env, only creates one if missing.
 - SETUP_COMPLETE=true in ~/.config/watch/.env tells us the user has been
   through a successful installer run at least once.
 - Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
-- Never write an API key to disk automatically — only scaffold placeholders.
 """
 from __future__ import annotations
 
@@ -35,23 +34,8 @@ from config import get_config  # noqa: E402
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
-ENV_TEMPLATE = """# /watch API configuration
+ENV_TEMPLATE = """# /watch configuration
 #
-# Whisper transcription fallback — used only when yt-dlp cannot get captions
-# (or when you point /watch at a local file with no subtitles).
-#
-# Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
-# and is faster in practice. OpenAI is the compatible fallback.
-#
-# Get a Groq key:  https://console.groq.com/keys
-# Get an OpenAI key:  https://platform.openai.com/api-keys
-#
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
-
-GROQ_API_KEY=
-OPENAI_API_KEY=
-
 # Default watch behavior (the /watch first-run wizard sets this for you).
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.
@@ -111,14 +95,6 @@ def _read_env_key(name: str) -> str | None:
     except OSError:
         return None
     return None
-
-
-def _have_api_key() -> tuple[bool, str | None]:
-    if _read_env_key("GROQ_API_KEY"):
-        return True, "groq"
-    if _read_env_key("OPENAI_API_KEY"):
-        return True, "openai"
-    return False, None
 
 
 def is_first_run() -> bool:
@@ -217,29 +193,14 @@ def _install_hint_windows(missing: list[str]) -> str:
 def _status() -> dict:
     """Structured preflight snapshot.
 
-    `status` describes the *ideal* state (a Whisper key is encouraged), so a
-    keyless install still reports `needs_key` on the very first run — that's
-    the agent's cue to encourage adding one.
-
-    `can_proceed` is the operational gate: /watch can run as long as the
-    binaries are present AND the user has either set a key or already finished
-    setup (consciously opting out of Whisper). A keyless user who completed
-    setup is NOT nagged on every call.
+    can_proceed is purely about required binaries — there's no API key
+    decision left to gate on now that Voicebox (local) replaced the paid
+    Whisper fallback.
     """
     missing = _check_binaries()
-    has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
-
-    if not missing and has_key:
-        status = "ready"
-    elif missing and not has_key:
-        status = "needs_install_and_key"
-    elif missing:
-        status = "needs_install"
-    else:
-        status = "needs_key"
-
-    can_proceed = (not missing) and (has_key or setup_complete)
+    status = "needs_install" if missing else "ready"
+    can_proceed = not missing
 
     cfg = get_config()
     return {
@@ -248,8 +209,6 @@ def _status() -> dict:
         "first_run": not setup_complete,
         "setup_complete": setup_complete,
         "missing_binaries": missing,
-        "whisper_backend": backend,
-        "has_api_key": has_key,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -257,38 +216,18 @@ def _status() -> dict:
 
 
 def cmd_check() -> int:
-    """Silent-on-success preflight.
-
-    Exit 0 with no output when /watch can run. A keyless user who already
-    finished setup (SETUP_COMPLETE=true) counts as ready — Whisper is
-    encouraged, not required — so they are never nagged on follow-up calls.
-
-    On a state that blocks /watch, print one actionable line to stderr:
-      2 → binaries missing
-      3 → genuine first run with no API key (encourage one)
-      4 → both missing
-    """
+    """Silent-on-success preflight. Exit 0 with no output when /watch can run."""
     s = _status()
     if s["can_proceed"]:
         return 0
 
-    parts = []
-    if s["missing_binaries"]:
-        parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"] and not s["setup_complete"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
     installer = Path(__file__).resolve()
     sys.stderr.write(
-        f"[watch] setup incomplete ({'; '.join(parts)}). "
+        f"[watch] setup incomplete (missing binaries: {', '.join(s['missing_binaries'])}). "
         f"Run: python3 {installer}\n"
     )
     sys.stderr.flush()
-
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
-        return 2
-    return 3
+    return 2
 
 
 def cmd_json() -> int:
@@ -331,23 +270,11 @@ def cmd_install() -> int:
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
-    has_key, backend = _have_api_key()
-    if has_key:
-        _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
-        if installed_deps:
-            print("[setup] installed dependencies; /watch is fully set up.")
-        return 0
-
-    print("")
-    print("[setup] one step left: add a Whisper API key.")
-    print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
-    print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
-    print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
-    print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
-    return 3
+    _write_setup_complete()
+    print("[setup] ready.")
+    if installed_deps:
+        print("[setup] installed dependencies; /watch is fully set up.")
+    return 0
 
 
 def main() -> int:

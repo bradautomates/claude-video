@@ -16,13 +16,13 @@ npx skills add bradautomates/claude-video -g
 
 More install options (claude.ai web, manual) in the [Install](#install) section below.
 
-Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free. Whisper API key is only needed when a video has no captions.
+Zero config to start — `yt-dlp` and `ffmpeg` install on first run via `brew` on macOS (Linux/Windows print exact commands). Captions cover most public videos for free; local Voicebox transcription covers the rest, no API key needed.
 
 ---
 
 Claude can read a webpage, run a script, browse a repo. What it can't do, out of the box, is *watch a video*. You paste a YouTube link and it has to either guess from the title or pull a transcript that's missing 90% of what's on screen.
 
-With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude fetches captions first, downloads only what it needs, extracts frames (scene-aware, or fast keyframes at `efficient` detail), pulls a timestamped transcript (free captions when available, Whisper API as fallback), and `Read`s every frame as an image. By the time it answers, it has *seen* the video and *heard* the audio.
+With Claude Video `/watch` you can paste a URL or a local path, ask a question, and Claude resolves a transcript first — YouTube's own transcript via the `youtube-data` MCP, native captions, or local Voicebox transcription as a last resort — before deciding whether frames are worth pulling (scene-aware, or fast keyframes at `efficient` detail). By the time it answers, it has *seen* the video and *heard* the audio.
 
 ```
 /watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?
@@ -43,12 +43,12 @@ With Claude Video `/watch` you can paste a URL or a local path, ask a question, 
 ## How it works
 
 1. **You paste a video and a question.** URL (anything yt-dlp supports — YouTube, Loom, TikTok, X, Instagram, plus a few hundred more) or a local path (`.mp4`, `.mov`, `.mkv`, `.webm`).
-2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise, or when Whisper needs audio, it downloads only what the run needs.
+2. **`yt-dlp` checks captions first.** At `transcript` detail, captioned URLs return without downloading video. Otherwise it downloads audio only, for the Voicebox fallback.
 3. **`ffmpeg` extracts frames at the chosen detail.** `efficient` decodes keyframes only (near-instant); `balanced`/`token-burner` prefer scene-change frames and fall back to the duration-aware uniform sampler when they under-produce. JPEGs are 512px wide by default and clamped to 1998px tall for Claude Read compatibility.
-4. **The transcript comes from one of two places.** First try: `yt-dlp` pulls native captions (manual or auto-generated) from the source. Free, instant, accurate-ish. Fallback: extract a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and ship it to Whisper — Groq's `whisper-large-v3` (preferred — cheaper and faster) or OpenAI's `whisper-1`.
+4. **The transcript comes from one of three places.** For YouTube URLs, Claude tries the `youtube-data` MCP's official transcript first — no download needed. Otherwise: `yt-dlp` pulls native captions (manual or auto-generated) from the source, free and instant. If neither is available, Claude extracts a mono 16 kHz 64 kbps mp3 audio clip (~480 kB/min) and transcribes it locally with Voicebox — no API key, nothing leaves the machine.
 5. **Frames + transcript are handed to Claude.** The script prints frame paths with `t=MM:SS` markers and the transcript with timestamps. Claude `Read`s each frame in parallel — JPEGs render directly as images in its context.
 6. **Claude answers grounded in what's actually on screen and in the audio.** Not "based on the description" or "according to the title." It saw the frames. It heard the transcript. It answers the way someone who watched the video would.
-7. **Cleanup.** The script prints a working directory at the end. If you're not asking follow-ups, Claude removes it.
+7. **Cleanup.** The script prints a working directory at the end. Claude removes it unconditionally, every run — no "skip if follow-ups" carve-out.
 
 ## Frame budget — why it matters
 
@@ -152,25 +152,17 @@ For claude.ai, build the `.skill` bundle from source: `bash skills/watch/scripts
 
 ## First run
 
-On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
+On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, it walks you through fixing it:
 
 - **macOS** — auto-runs `brew install ffmpeg yt-dlp`.
 - **Linux** — prints the exact `apt` / `dnf` / `pipx` commands.
 - **Windows** — prints the `winget` / `pip` commands.
-- **API key** — scaffolds `~/.config/watch/.env` (mode `0600`) with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
 
-## Bring your own keys
+## Transcript resolution
 
-Captions cover the majority of public videos for free. The Whisper fallback only kicks in when a video genuinely has no caption track — typically local files, TikToks, some Vimeos, and the occasional caption-less YouTube upload.
-
-| Capability | What you need | Cost |
-|------------|---------------|------|
-| Download + native captions | `yt-dlp` + `ffmpeg` | Free |
-| Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
-| Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
-| Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
+No paid API, no key to configure. For YouTube URLs, Claude tries the `youtube-data` MCP's official transcript first — no download needed. Otherwise, native captions (`yt-dlp`) cover most public videos for free. If neither is available, Claude extracts the audio and transcribes it locally with Voicebox (`voicebox_transcribe`) — nothing leaves the machine. See `skills/watch/SKILL.md`'s "Transcript resolution" section for the exact chain and the frame-extraction gate that avoids pulling frames when no transcript is available.
 
 ## Usage
 
@@ -195,8 +187,6 @@ Other knobs (passed to `scripts/watch.py`):
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
 - `--fps F` — override the auto-fps calculation (still capped at 2 fps).
-- `--whisper groq|openai` — force a specific Whisper backend.
-- `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
@@ -215,8 +205,9 @@ Other knobs (passed to `scripts/watch.py`):
 │       ├── watch.py              # entry point — orchestrates download → frames → transcript
 │       ├── download.py           # yt-dlp wrapper
 │       ├── frames.py             # ffmpeg frame extraction + auto-fps logic
-│       ├── transcribe.py         # VTT parsing + dedupe + Whisper orchestration
-│       ├── whisper.py            # Groq / OpenAI clients (pure stdlib)
+│       ├── transcribe.py         # VTT parsing + dedupe
+│       ├── whisper.py            # audio extraction for the Voicebox fallback (pure stdlib)
+│       ├── extract-audio.sh      # CLI wrapper around whisper.py's extract_audio()
 │       ├── config.py             # shared config (~/.config/watch/.env)
 │       ├── setup.py              # preflight + installer
 │       └── build-skill.sh        # build dist/watch.skill for claude.ai upload (dev-only)
@@ -247,7 +238,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 MIT license.
 
-Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
+Built on `yt-dlp`, `ffmpeg`, Claude's multimodal `Read` tool, the `youtube-data` MCP, and local Voicebox transcription — no paid transcription API.
 
 Built by Brad Bonanno — I make content about building with AI on [YouTube (@bradbonanno)](https://www.youtube.com/@bradbonanno), and build AI operating systems for businesses at [Solaris Automation](https://www.solarisautomation.io/). If `/watch` saves you from scrubbing through a video, come say hi on the channel.
 
