@@ -6,7 +6,7 @@ argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, mcp__youtube-data__transcripts_getTranscript, mcp__voicebox__voicebox_transcribe
 homepage: https://github.com/bradautomates/claude-video
 repository: https://github.com/bradautomates/claude-video
-author: bradautomates (fork: local-first transcript resolution, see DLU-302)
+author: 'bradautomates (fork: local-first transcript resolution, see DLU-302)'
 license: MIT
 user-invocable: true
 ---
