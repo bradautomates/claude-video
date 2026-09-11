@@ -11,6 +11,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows consoles default sys.stdout to the ANSI codepage (cp1252, cp949, ...),
+# which cannot encode the em dashes, ellipses and arrows this script prints.
+# Degrade those to "?" instead of dying with UnicodeEncodeError. The stream
+# encoding is deliberately left alone: callers that capture this output with
+# subprocess(text=True) decode it with their own locale encoding, so switching
+# to UTF-8 here would just move the crash into the parent process.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
