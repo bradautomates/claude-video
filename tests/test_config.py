@@ -29,6 +29,18 @@ def test_get_config_keys(monkeypatch, tmp_path):
     assert set(cfg) == {"detail", "config_file"}
 
 
+def test_read_env_file_strips_inline_comment(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("WATCH_DETAIL=balanced  # note\n", encoding="utf-8")
+    assert config.read_env_file(path) == {"WATCH_DETAIL": "balanced"}
+
+
+def test_read_env_file_strips_comment_after_quoted_value(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text('WATCH_DETAIL="balanced"  # note\n', encoding="utf-8")
+    assert config.read_env_file(path) == {"WATCH_DETAIL": "balanced"}
+
+
 def test_frame_cap_mapping():
     assert config.frame_cap("efficient") == 50
     assert config.frame_cap("balanced") == 100
