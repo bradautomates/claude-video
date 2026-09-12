@@ -14,6 +14,29 @@ DEFAULT_DETAIL = "balanced"
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
 
+def _parse_value(value: str) -> str:
+    """Parse a single .env value: unwrap quotes, strip inline comments.
+
+    A quoted value (`KEY="balanced"  # note`) may still have a trailing
+    comment after the closing quote — that comment must be stripped without
+    losing the quote-unwrapping, so quotes are resolved first and the
+    remainder after the closing quote is checked for a comment separately.
+    An unquoted value strips a '#' preceded by whitespace (keeps '#' that's
+    part of the value, e.g. inside an API key).
+    """
+    if len(value) >= 2 and value[0] in ('"', "'"):
+        quote = value[0]
+        end = value.find(quote, 1)
+        if end != -1:
+            remainder = value[end + 1:].strip()
+            if not remainder or remainder.startswith("#"):
+                return value[1:end]
+    for i, ch in enumerate(value):
+        if ch == "#" and i > 0 and value[i - 1] in " \t":
+            return value[:i].rstrip()
+    return value
+
+
 def read_env_file(path: Path | None = None) -> dict[str, str]:
     if path is None:
         path = CONFIG_FILE
@@ -29,19 +52,7 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
         if not raw or raw.startswith("#") or "=" not in raw:
             continue
         key, _, value = raw.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-            value = value[1:-1]
-        else:
-            # Strip an inline comment (a '#' preceded by whitespace) from an
-            # unquoted value. Without this, `WATCH_DETAIL=balanced  # note`
-            # parses as "balanced  # note", fails validation, and silently
-            # falls back to the default. Keeps '#' inside quotes / API keys.
-            for i, ch in enumerate(value):
-                if ch == "#" and i > 0 and value[i - 1] in " \t":
-                    value = value[:i].rstrip()
-                    break
-        values[key.strip()] = value
+        values[key.strip()] = _parse_value(value.strip())
     return values
 
 
