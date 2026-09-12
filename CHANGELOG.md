@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **Frame extraction on ffmpeg 8 and newer.** `-vsync`, deprecated for years, was removed in ffmpeg 8.0, so both the keyframe and scene passes aborted with `Unrecognized option 'vsync'` on current builds (reproduced on 8.1.1 and 9.0.1) — `/watch` returned no frames at all in `efficient`, `balanced`, and `token-burner`. The frame-rate-mode flag is now probed once from `ffmpeg -h full` and cached: builds that know `-fps_mode` (5.0+) get `-fps_mode vfr`, older builds keep `-vsync vfr`.
+
 ## [0.2.0] — 2026-06-29
 
 ### Added
