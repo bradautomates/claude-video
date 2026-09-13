@@ -309,6 +309,56 @@ def parse_timestamps(value: str | None) -> list[float]:
     return sorted(set(out))
 
 
+def extract_slides(
+    image_paths: list[str],
+    out_dir: Path,
+    resolution: int = 512,
+    max_frames: int | None = 100,
+) -> tuple[list[dict], dict]:
+    """Scale image-post slides (e.g. a TikTok photo slideshow) into frame JPEGs.
+
+    Slides have no timeline and are not deduped: each one is content the post
+    shows on purpose, so they are kept in post order up to the cap.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("frame_*.jpg"):
+        existing.unlink()
+
+    selected = image_paths if max_frames is None else image_paths[:max_frames]
+    out: list[dict] = []
+    for i, src in enumerate(selected):
+        dest = out_dir / f"frame_{i + 1:04d}.jpg"
+        result = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(Path(src).resolve()),
+                "-vf", _scale_filter(resolution),
+                "-q:v", "4",
+                str(dest),
+            ],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise SystemExit(f"ffmpeg slide conversion failed on {src}: {result.stderr.strip()}")
+        out.append({
+            "index": i,
+            "timestamp_seconds": 0.0,
+            "path": str(dest),
+            "reason": "slide",
+            "slide": i + 1,
+        })
+    meta = {
+        "engine": "slides",
+        "candidate_count": len(image_paths),
+        "selected_count": len(out),
+        "fallback": False,
+    }
+    return out, meta
+
+
 def merge_frames(primary: list[dict], pinned: list[dict]) -> list[dict]:
     """Combine two frame lists into one chronological list and reindex 0..n-1.
 

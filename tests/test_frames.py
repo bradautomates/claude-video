@@ -1,6 +1,7 @@
 """Keyframe engine + preserved scene/uniform fallbacks."""
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import frames
@@ -68,3 +69,33 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+
+
+def _slide(path: Path, color: str, size: str = "1080x1440") -> str:
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", f"color=c={color}:s={size}", "-frames:v", "1", str(path)],
+        check=True,
+    )
+    return str(path)
+
+
+def test_extract_slides_keeps_order_scales_and_caps(tmp_path: Path):
+    srcs = [_slide(tmp_path / f"{i:03d}.jpg", c) for i, c in enumerate(["red", "red", "blue"], 1)]
+    out, meta = frames.extract_slides(srcs, tmp_path / "f", resolution=512, max_frames=2)
+    assert meta == {"engine": "slides", "candidate_count": 3, "selected_count": 2, "fallback": False}
+    assert [fr["slide"] for fr in out] == [1, 2]  # identical slides are NOT deduped
+    assert all(fr["reason"] == "slide" for fr in out)
+    width = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width",
+         "-of", "csv=p=0", out[0]["path"]],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert width == "512"
+
+
+def test_extract_slides_uncapped(tmp_path: Path):
+    srcs = [_slide(tmp_path / f"{i:03d}.jpg", "green", "320x240") for i in range(1, 4)]
+    out, meta = frames.extract_slides(srcs, tmp_path / "f", resolution=512, max_frames=None)
+    assert len(out) == 3
+    assert meta["selected_count"] == 3

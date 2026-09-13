@@ -17,7 +17,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
+from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, extract_slides, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 
@@ -136,9 +136,14 @@ def main() -> int:
         "has_audio": False,
     }
     full_duration = meta["duration_seconds"]
+    # Image slideshow: frames come from the slides, video_path is only the soundtrack.
+    slides = dl.get("image_paths") or []
+    has_video = bool(video_path and meta.get("width")) and not slides
+    if video_path and not slides and not has_video and detail != "transcript":
+        print("[watch] download has no video stream, skipping frame extraction", file=sys.stderr)
 
-    start_sec = parse_time(args.start)
-    end_sec = parse_time(args.end)
+    start_sec = None if slides else parse_time(args.start)
+    end_sec = None if slides else parse_time(args.end)
 
     if start_sec is not None and start_sec < 0:
         raise SystemExit("--start must be non-negative")
@@ -175,7 +180,7 @@ def main() -> int:
 
     # Transcript cues are pinned: extracted first and counted against the cap so
     # the detail engine never evicts the moments the user explicitly asked for.
-    if cue_timestamps and video_path:
+    if cue_timestamps and has_video:
         cue_frames, cue_meta = extract_at_timestamps(
             video_path,
             work / "frames",
@@ -193,7 +198,15 @@ def main() -> int:
             )
 
     detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
-    if detail != "transcript" and video_path and detail_budget != 0:
+    if detail != "transcript" and slides:
+        print(f"[watch] image slideshow: converting {len(slides)} slides…", file=sys.stderr)
+        frames, frame_meta = extract_slides(
+            slides,
+            work / "frames",
+            resolution=args.resolution,
+            max_frames=detail_budget,
+        )
+    elif detail != "transcript" and has_video and detail_budget != 0:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -286,7 +299,12 @@ def main() -> int:
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
+    if detail != "transcript" and slides:
+        print(
+            f"- **Frames:** {detail_count} of {len(slides)} slides (image slideshow: no timeline, "
+            "the caption and on-slide text carry the content)"
+        )
+    elif detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
         fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
@@ -345,6 +363,9 @@ def main() -> int:
         )
         print()
         for frame in frames:
+            if "slide" in frame:
+                print(f"- `{frame['path']}` (slide {frame['slide']})")
+                continue
             print(
                 f"- `{frame['path']}` "
                 f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"

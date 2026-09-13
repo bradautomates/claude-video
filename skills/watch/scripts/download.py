@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+AUDIO_EXTS = {".m4a", ".mp3", ".opus", ".aac"}
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 def is_url(source: str) -> bool:
@@ -112,6 +114,62 @@ def _read_info(info_path: Path, url: str) -> dict:
     return info
 
 
+def download_gallery(url: str, out_dir: Path) -> dict | None:
+    """Optional gallery-dl fallback for posts yt-dlp can't turn into a video.
+
+    Returns slide images + soundtrack for image posts, or the video file when
+    gallery-dl fetched one yt-dlp couldn't. None when gallery-dl is not on PATH
+    or produced nothing usable.
+    """
+    if shutil.which("gallery-dl") is None:
+        print(
+            "[watch] yt-dlp returned no video; install gallery-dl to handle image slideshows",
+            file=sys.stderr,
+        )
+        return None
+
+    print("[watch] yt-dlp returned no video, trying gallery-dl…", file=sys.stderr)
+    cmd = [
+        "gallery-dl",
+        "-D", str(out_dir),
+        "-f", "{num:>03}.{extension}",
+        "-o", "tiktok.audio=true",
+        "--write-info-json",
+        "--",
+        url,
+    ]
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+
+    files = sorted(out_dir.glob("[0-9][0-9][0-9].*"))
+    images = [p for p in files if p.suffix.lower() in IMAGE_EXTS]
+    videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
+    audio = [p for p in files if p.suffix.lower() in AUDIO_EXTS]
+    if not images and not videos:
+        return None
+
+    info: dict = {"url": url}
+    info_path = out_dir / "info.json"
+    if info_path.exists():
+        try:
+            raw = json.loads(info_path.read_text(encoding="utf-8"))
+            author = raw.get("author") if isinstance(raw.get("author"), dict) else {}
+            info.update({
+                "title": raw.get("desc") or raw.get("description"),
+                "uploader": author.get("uniqueId") or author.get("nickname"),
+            })
+        except Exception as exc:
+            print(f"[watch] gallery-dl info.json parse failed: {exc}", file=sys.stderr)
+
+    media = videos or audio
+    return {
+        "video_path": str(media[0]) if media else None,
+        "image_paths": [str(p) for p in images] if not videos else None,
+        "subtitle_path": None,
+        "info": info,
+        "downloaded": True,
+    }
+
+
 def download_url(
     url: str,
     out_dir: Path,
@@ -146,6 +204,13 @@ def download_url(
     # the video itself downloaded fine. Treat "video file present" as success.
     result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
     video = _pick_video(out_dir)
+    # No video, or only a soundtrack when frames were wanted: TikTok photo
+    # slideshows hit both (yt-dlp rejects /photo/ URLs, returns just the audio
+    # for /video/ ones).
+    if video is None or (not audio_only and video.suffix.lower() in AUDIO_EXTS):
+        gallery = download_gallery(url, out_dir / "gallery")
+        if gallery:
+            return gallery
     if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
