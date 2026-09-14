@@ -19,7 +19,7 @@ from config import frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import assess_speech, load_api_key, transcribe_video  # noqa: E402
 
 
 def main() -> int:
@@ -307,11 +307,18 @@ def main() -> int:
         )
     if frames:
         print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    speech: dict = {"suspect": False, "reason": None}
     if transcript_segments:
         in_range = " in range" if focused else ""
+        speech = (
+            assess_speech(transcript_segments)
+            if (transcript_source or "").startswith("whisper")
+            else {"suspect": False, "reason": None}
+        )
+        suspect_note = " -- LOW CONFIDENCE" if speech["suspect"] else ""
         print(
             f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
+            f"(via {transcript_source or 'captions'}){suspect_note}"
         )
     else:
         print("- **Transcript:** none available")
@@ -361,6 +368,14 @@ def main() -> int:
             print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
         else:
             print(f"_Source: {label}._")
+        if speech["suspect"]:
+            print()
+            print(
+                f"> **Treat this transcript as unreliable** ({speech['reason']}). "
+                "Whisper fabricates dialogue when given music or silence, so this "
+                "video may have no speech at all. Judge it against the frames "
+                "before quoting any of it."
+            )
         print()
         print("```")
         print(transcript_text)

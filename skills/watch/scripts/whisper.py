@@ -354,11 +354,21 @@ def _segments_from_response(data: dict) -> list[dict]:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
-        out.append({
+        entry = {
             "start": round(float(seg.get("start") or 0.0), 2),
             "end": round(float(seg.get("end") or 0.0), 2),
             "text": text,
-        })
+        }
+        # Keep Whisper's own confidence signals. verbose_json already returns
+        # them, and they are what tells a real transcript apart from a
+        # hallucination over silence -- see assess_speech().
+        for key in ("no_speech_prob", "avg_logprob"):
+            if seg.get(key) is not None:
+                try:
+                    entry[key] = float(seg[key])
+                except (TypeError, ValueError):
+                    pass
+        out.append(entry)
 
     if not out:
         full = (data.get("text") or "").strip()
@@ -366,6 +376,59 @@ def _segments_from_response(data: dict) -> list[dict]:
             out.append({"start": 0.0, "end": 0.0, "text": full})
 
     return out
+
+
+# Whisper invents dialogue when handed music or silence, and reports it with
+# the same confidence as real speech. Measured on two clips through Groq
+# whisper-large-v3:
+#
+#                        no_speech_prob            avg_logprob
+#   no dialogue          median 0.82, max 0.85     min -2.12
+#   narrated             median 0.01, max 0.08     min -0.21
+#
+# The gap is wide, so a coarse threshold separates them without tuning.
+NO_SPEECH_PROB_THRESHOLD = 0.6
+NO_SPEECH_SEGMENT_FRACTION = 0.5
+REPEAT_RUN_THRESHOLD = 3
+
+
+def assess_speech(segments: list[dict]) -> dict:
+    """Judge whether a Whisper transcript is likely hallucinated.
+
+    Returns {"suspect": bool, "reason": str|None}. Deliberately advisory: the
+    caller labels the transcript rather than discarding it, since a false
+    positive on a quiet-but-real recording would be worse than a warning.
+    """
+    if not segments:
+        return {"suspect": False, "reason": None}
+
+    probs = [s["no_speech_prob"] for s in segments if "no_speech_prob" in s]
+    if probs:
+        over = sum(1 for p in probs if p > NO_SPEECH_PROB_THRESHOLD)
+        fraction = over / len(probs)
+        if fraction > NO_SPEECH_SEGMENT_FRACTION:
+            return {
+                "suspect": True,
+                "reason": (
+                    f"{fraction:.0%} of segments scored no_speech_prob > "
+                    f"{NO_SPEECH_PROB_THRESHOLD}"
+                ),
+            }
+
+    # A hallucination loop repeats one phrase at regular intervals. This shows
+    # up even when per-segment probabilities are unavailable.
+    texts = [(s.get("text") or "").strip().lower() for s in segments]
+    texts = [t for t in texts if t]
+    if len(texts) >= REPEAT_RUN_THRESHOLD:
+        most = max(set(texts), key=texts.count)
+        count = texts.count(most)
+        if count >= REPEAT_RUN_THRESHOLD and count / len(texts) > 0.3:
+            return {
+                "suspect": True,
+                "reason": f"one phrase repeats {count}x of {len(texts)} segments",
+            }
+
+    return {"suspect": False, "reason": None}
 
 
 def transcribe_chunks(
