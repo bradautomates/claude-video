@@ -41,15 +41,42 @@ def resolve_local(path: str) -> dict:
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+def _manual_sub_langs(info_path: Path) -> set[str]:
+    """Language codes that have a human-authored caption track.
+
+    yt-dlp's info.json lists these under "subtitles"; machine-generated ones
+    live under "automatic_captions". The filename alone cannot tell them
+    apart, since both are written as video.<lang>.vtt.
+    """
+    if not info_path.exists():
+        return set()
+    try:
+        raw = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    return set(raw.get("subtitles") or {})
+
+
+def _pick_subtitle(out_dir: Path, manual_langs: set[str] | None = None) -> Path | None:
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [
-        c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
-    ]
-    return preferred[0] if preferred else candidates[0]
+
+    manual_langs = manual_langs or set()
+
+    def lang_of(path: Path) -> str:
+        # video.en-US.vtt -> en-US
+        return path.name[len("video."):-len(".vtt")]
+
+    def rank(path: Path) -> tuple[int, int]:
+        lang = lang_of(path)
+        # A human-authored track always wins: it is punctuated, speaker-labelled
+        # and roughly a third the size of the rolling auto-generated variant.
+        manual = 0 if lang in manual_langs else 1
+        order = {"en": 1, "en-US": 2, "en-GB": 3, "en-orig": 4}.get(lang, 5)
+        return (manual, order)
+
+    return min(candidates, key=rank)
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -85,8 +112,9 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         url,
     ]
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    subtitle = _pick_subtitle(out_dir)
-    info = _read_info(out_dir / "video.info.json", url)
+    info_path = out_dir / "video.info.json"
+    subtitle = _pick_subtitle(out_dir, _manual_sub_langs(info_path))
+    info = _read_info(info_path, url)
     return {
         "video_path": None,
         "subtitle_path": str(subtitle) if subtitle else None,
@@ -151,8 +179,9 @@ def download_url(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
         )
 
-    subtitle = _pick_subtitle(out_dir)
-    info = _read_info(out_dir / "video.info.json", url)
+    info_path = out_dir / "video.info.json"
+    subtitle = _pick_subtitle(out_dir, _manual_sub_langs(info_path))
+    info = _read_info(info_path, url)
 
     return {
         "video_path": str(video),
