@@ -561,9 +561,9 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
     )
-    # Report the uniform frames as the candidates, not the scene cuts that were
-    # just rejected: those never reach dedup or selection, so pairing them with
-    # selected_count read as "4 selected from 3 candidates".
+    # The uniform frames are the candidates here; the rejected scene cuts never
+    # reach dedup or selection. Their count is reported separately so the
+    # summary can say how short the detector came up.
     uniform_count = len(frames)
     n_dropped = 0
     if dedup:
@@ -575,6 +575,7 @@ def extract_scene_or_uniform(
         "selected_count": len(frames),
         "fallback": True,
         "fallback_from": "scene",
+        "fallback_candidate_count": scene_count,
     }
 
 
@@ -640,6 +641,7 @@ def extract_keyframes(
 
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
+        keyframe_count = len(candidates)
         for cand in candidates:
             try:
                 Path(cand["path"]).unlink()
@@ -661,7 +663,7 @@ def extract_keyframes(
             start_seconds=start_seconds,
             end_seconds=end_seconds,
         )
-        # Same as the scene fallback: the keyframes were discarded above (their
+        # Same as the scene fallback: the keyframes are discarded above (their
         # files are unlinked), so the uniform frames are the real candidates.
         uniform_count = len(frames_out)
         n_dropped = 0
@@ -674,6 +676,7 @@ def extract_keyframes(
             "selected_count": len(frames_out),
             "fallback": True,
             "fallback_from": "keyframe",
+            "fallback_candidate_count": keyframe_count,
         }
 
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +

@@ -7,11 +7,10 @@ import frames
 
 
 def _assert_candidates_add_up(meta: dict, out: list) -> None:
-    """A uniform fallback must count the uniform frames it actually extracted.
+    """A uniform fallback counts the uniform frames it actually extracted.
 
-    Counting the rejected scene cuts (or the keyframes whose files were just
-    unlinked) instead made the summary report more frames selected than there
-    were candidates, e.g. "4 selected from 3 candidates".
+    The fallback caps in ``extract`` and never even-samples, so every candidate
+    that survives dedup is selected and the three counts reconcile exactly.
     """
     assert meta["selected_count"] == len(out)
     assert meta["candidate_count"] >= meta["selected_count"]

@@ -92,14 +92,14 @@ def _frames_line(out: str) -> str:
 
 
 def test_fallback_line_names_the_detector_that_fell_short(static_clip: Path):
-    """The engine is already "uniform" on a fallback, so the old " with uniform
-    fallback" repeated the word and hid whether scene or keyframe came up short."""
+    """The engine already reads "uniform" on a fallback, so the note names the
+    detector that came up short and how many candidates it found."""
     scene = _frames_line(_run(static_clip, "--detail", "balanced"))
-    assert "after too few scene candidates" in scene
+    assert re.search(r"after only \d+ scene candidates?", scene), scene
     assert "uniform fallback" not in scene
 
     keyframe = _frames_line(_run(static_clip, "--detail", "efficient"))
-    assert "after too few keyframe candidates" in keyframe
+    assert re.search(r"after only \d+ keyframe candidates?", keyframe), keyframe
     assert "uniform fallback" not in keyframe
 
 
@@ -110,5 +110,7 @@ def test_fallback_line_never_selects_more_than_it_had(static_clip: Path):
         assert m, line
         selected, candidates = int(m.group(1)), int(m.group(2))
         assert candidates >= selected, line
-        dropped = int(re.search(r"(\d+) near-duplicate", line).group(1))
+        # No dedup note at all means nothing was dropped.
+        dedup_note = re.search(r"(\d+) near-duplicate", line)
+        dropped = int(dedup_note.group(1)) if dedup_note else 0
         assert candidates - dropped == selected, line
