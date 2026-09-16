@@ -561,15 +561,20 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
     )
+    # Report the uniform frames as the candidates, not the scene cuts that were
+    # just rejected: those never reach dedup or selection, so pairing them with
+    # selected_count read as "4 selected from 3 candidates".
+    uniform_count = len(frames)
     n_dropped = 0
     if dedup:
         frames, n_dropped = dedupe_perceptual(frames)
     return frames, {
         "engine": "uniform",
-        "candidate_count": scene_count,
+        "candidate_count": uniform_count,
         "deduped_count": n_dropped,
         "selected_count": len(frames),
         "fallback": True,
+        "fallback_from": "scene",
     }
 
 
@@ -656,15 +661,19 @@ def extract_keyframes(
             start_seconds=start_seconds,
             end_seconds=end_seconds,
         )
+        # Same as the scene fallback: the keyframes were discarded above (their
+        # files are unlinked), so the uniform frames are the real candidates.
+        uniform_count = len(frames_out)
         n_dropped = 0
         if dedup:
             frames_out, n_dropped = dedupe_perceptual(frames_out)
         return frames_out, {
             "engine": "uniform",
-            "candidate_count": len(candidates),
+            "candidate_count": uniform_count,
             "deduped_count": n_dropped,
             "selected_count": len(frames_out),
             "fallback": True,
+            "fallback_from": "keyframe",
         }
 
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +

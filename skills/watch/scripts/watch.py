@@ -289,7 +289,13 @@ def main() -> int:
     if detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
-        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
+        # On a fallback the engine is already "uniform", so " with uniform
+        # fallback" repeated the word and hid which detector came up short.
+        fallback = (
+            f" after too few {frame_meta.get('fallback_from', 'scene')} candidates"
+            if frame_meta.get("fallback")
+            else ""
+        )
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(

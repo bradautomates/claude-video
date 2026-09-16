@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -83,3 +84,31 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     out = _run(static_clip, "--no-dedup")
     assert "near-duplicate" not in out
     assert _frame_lines(out) > 1
+
+
+def _frames_line(out: str) -> str:
+    line = next(ln for ln in out.splitlines() if ln.startswith("- **Frames:**"))
+    return line
+
+
+def test_fallback_line_names_the_detector_that_fell_short(static_clip: Path):
+    """The engine is already "uniform" on a fallback, so the old " with uniform
+    fallback" repeated the word and hid whether scene or keyframe came up short."""
+    scene = _frames_line(_run(static_clip, "--detail", "balanced"))
+    assert "after too few scene candidates" in scene
+    assert "uniform fallback" not in scene
+
+    keyframe = _frames_line(_run(static_clip, "--detail", "efficient"))
+    assert "after too few keyframe candidates" in keyframe
+    assert "uniform fallback" not in keyframe
+
+
+def test_fallback_line_never_selects_more_than_it_had(static_clip: Path):
+    for detail in ("balanced", "efficient"):
+        line = _frames_line(_run(static_clip, "--detail", detail))
+        m = re.search(r"\*\*Frames:\*\* (\d+) selected from (\d+) candidates", line)
+        assert m, line
+        selected, candidates = int(m.group(1)), int(m.group(2))
+        assert candidates >= selected, line
+        dropped = int(re.search(r"(\d+) near-duplicate", line).group(1))
+        assert candidates - dropped == selected, line
