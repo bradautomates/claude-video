@@ -38,7 +38,10 @@ def parse_vtt(path: str) -> list[dict]:
         i += 1
 
         cue_lines: list[str] = []
-        while i < len(lines) and lines[i].strip():
+        # A VTT cue ends at a truly empty line. `.strip()` also treats a line
+        # holding only whitespace as the terminator, which silently drops any
+        # cue whose first line is a lone space -- a placeholder YouTube emits.
+        while i < len(lines) and lines[i] != "":
             cleaned = TAG_RE.sub("", lines[i]).strip()
             if cleaned:
                 cue_lines.append(cleaned)
@@ -52,13 +55,55 @@ def parse_vtt(path: str) -> list[dict]:
     return _dedupe(segments)
 
 
+_MIN_OVERLAP_WORDS = 3  # below this, a shared word is coincidence, not a caption scroll
+_MAX_OVERLAP_GAP_SECONDS = 1.0  # rolling cues are back-to-back; a real gap means unrelated content
+
+
+def _tail_head_overlap(prev_words: list[str], new_words: list[str]) -> int:
+    """Longest run where the tail of prev_words equals the head of new_words."""
+    for k in range(min(len(prev_words), len(new_words)), 0, -1):
+        if prev_words[-k:] == new_words[:k]:
+            return k
+    return 0
+
+
 def _dedupe(segments: list[dict]) -> list[dict]:
-    """Collapse rolling duplicates common in YouTube auto-subs."""
+    """Collapse rolling duplicates common in YouTube auto-subs.
+
+    YouTube auto-subs scroll two lines per cue: line 2 of cue N becomes line 1
+    of cue N+1. That is neither byte-identical nor a strict prefix extension of
+    the previous cue, so neither existing branch fires and every line ships
+    twice. Find the longest run where the tail of the previous text equals the
+    head of the incoming cue, and strip those words off the FRONT of the
+    incoming cue.
+
+    This check must run BEFORE the strict-prefix branch below. Stripping the
+    overlap leaves a short segment that the NEXT cue legitimately starts with,
+    so a prefix check running first re-merges the pair and undoes the
+    granularity this preserves. The gap guard keeps the two branches apart:
+    only back-to-back (rolling) cues reach the overlap path, so genuinely
+    growing cues still fall through to the prefix branch.
+
+    The cue stays its own segment with its own start/end. It is deliberately
+    not spliced into the predecessor: rolling cues chain almost continuously,
+    so splicing collapses most of a video into one or two giant segments --
+    which destroys `[MM:SS]` granularity and makes filter_range() return the
+    whole transcript for every window.
+    """
     out: list[dict] = []
     for seg in segments:
         if out and seg["text"] == out[-1]["text"]:
             out[-1]["end"] = seg["end"]
             continue
+        if out and seg["start"] - out[-1]["end"] <= _MAX_OVERLAP_GAP_SECONDS:
+            prev_words = out[-1]["text"].split()
+            new_words = seg["text"].split()
+            overlap = _tail_head_overlap(prev_words, new_words)
+            if overlap >= _MIN_OVERLAP_WORDS:
+                remaining = new_words[overlap:]
+                if not remaining:
+                    continue  # cue fully consumed by the overlap
+                seg = {"start": seg["start"], "end": seg["end"], "text": " ".join(remaining)}
         if out and seg["text"].startswith(out[-1]["text"] + " "):
             out[-1]["text"] = seg["text"]
             out[-1]["end"] = seg["end"]

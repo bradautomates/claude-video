@@ -81,3 +81,24 @@ def static_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("clips") / "static.mp4"
     build_static_clip(path)
     return path
+
+
+def build_rolling_vtt(path: Path, sentences: list[str], seg: float = 2.0) -> None:
+    """Write a VTT with YouTube's two-line scrolling auto-caption structure.
+
+    YouTube auto-subs do not emit one cue per utterance. They scroll: each cue
+    shows two lines, and line 2 of cue N reappears as line 1 of cue N+1. So
+    every sentence is emitted twice, in two different cues, offset by one.
+    Synthesized rather than vendored so the suite stays network-free and does
+    not redistribute a third party's caption track.
+    """
+    def stamp(t: float) -> str:
+        h, rem = divmod(t, 3600.0)
+        m, s = divmod(rem, 60.0)
+        return f"{int(h):02d}:{int(m):02d}:{s:06.3f}"
+
+    out = ["WEBVTT", ""]
+    for idx in range(len(sentences) - 1):
+        start, end = idx * seg, (idx + 1) * seg
+        out += [f"{stamp(start)} --> {stamp(end)}", sentences[idx], sentences[idx + 1], ""]
+    path.write_text("\n".join(out), encoding="utf-8")
