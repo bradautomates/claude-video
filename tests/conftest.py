@@ -81,3 +81,14 @@ def static_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("clips") / "static.mp4"
     build_static_clip(path)
     return path
+
+
+@pytest.fixture(scope="session")
+def long_cut_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A longer (~42s) clip with visibly changing content, for uniform
+    extract() spread tests. A short clip like ``cut_clip`` can't distinguish
+    "sampled from the head" from "spread across the range" — the two only
+    diverge once there's real duration between them."""
+    path = tmp_path_factory.mktemp("clips") / "long_cuts.mp4"
+    build_cut_clip(path, n=14, seg=3.0, size="320x240", fps=5)
+    return path

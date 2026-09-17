@@ -175,6 +175,31 @@ def extract(
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
 
+    # `fps` picks density, `max_frames` picks a hard cap. The `fps` filter
+    # samples evenly across the whole input, but `-frames:v` just makes
+    # ffmpeg STOP after N output frames — so if the two disagree (fps *
+    # duration > max_frames), sampling at the requested fps and letting
+    # -frames:v cut the run short would only ever capture the HEAD of the
+    # range, not a spread across it. (The auto path never hits this: it
+    # derives fps FROM max_frames, so fps*duration never exceeds the cap.)
+    # Lower the effective fps instead so the capped frame count spreads
+    # across the whole requested range — the same principle already applied
+    # to the scene engine in extract_scene_or_uniform (see its docstring:
+    # capping detection with -frames:v "would keep only the first max_frames
+    # cuts and drop the tail of long videos").
+    range_start = start_seconds or 0.0
+    if end_seconds is not None:
+        range_end = end_seconds
+    else:
+        range_end = get_metadata(video_path)["duration_seconds"]
+    range_duration = max(0.0, range_end - range_start)
+
+    effective_fps = fps
+    if range_duration > 0 and max_frames > 0:
+        wanted = fps * range_duration
+        if wanted - max_frames > 1e-6:
+            effective_fps = max_frames / range_duration
+
     output_pattern = str(out_dir / "frame_%04d.jpg")
     cmd: list[str] = [
         "ffmpeg",
@@ -191,7 +216,9 @@ def extract(
 
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps={fps},{_scale_filter(resolution)}",
+        "-vf", f"fps={effective_fps},{_scale_filter(resolution)}",
+        # Rounding backstop only (an odd extra boundary frame) — effective_fps
+        # above is what actually decides coverage now, not this cap.
         "-frames:v", str(max_frames),
         "-q:v", "4",
         output_pattern,
@@ -201,12 +228,12 @@ def extract(
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
-    offset = start_seconds or 0.0
+    offset = range_start
     frames = sorted(out_dir.glob("frame_*.jpg"))
     return [
         {
             "index": i,
-            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
+            "timestamp_seconds": round(offset + (i / effective_fps if effective_fps > 0 else 0.0), 2),
             "path": str(p),
             "reason": "uniform",
         }
