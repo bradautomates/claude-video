@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -37,6 +38,25 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@lru_cache(maxsize=1)
+def _vfr_args() -> tuple[str, str]:
+    """Variable-frame-rate flag for whichever ffmpeg is on PATH.
+
+    ``-vsync`` was removed in ffmpeg 8, where passing it aborts the run with
+    "Error splitting the argument list: Option not found". ``-fps_mode`` is the
+    replacement and has existed since ffmpeg 5.0, but distro builds still ship
+    4.x, so probe once and cache rather than hard-coding either spelling.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-h", "full"],
+        capture_output=True,
+        text=True,
+    )
+    if "-fps_mode" in (result.stdout or ""):
+        return ("-fps_mode", "vfr")
+    return ("-vsync", "vfr")
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +273,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +632,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_args(),
         "-q:v", "4",
         output_pattern,
     ]
