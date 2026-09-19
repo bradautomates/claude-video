@@ -16,7 +16,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import frame_cap, get_config  # noqa: E402
-from download import download, fetch_captions, is_url  # noqa: E402
+from download import cache_dir_for, download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
@@ -49,6 +49,13 @@ def main() -> int:
     ap.add_argument("--start", type=str, default=None, help="Range start (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--end", type=str, default=None, help="Range end (SS, MM:SS, or HH:MM:SS)")
     ap.add_argument("--out-dir", type=str, default=None, help="Working directory (default: tmp)")
+    ap.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Always re-download. By default a URL's download is kept under "
+             "~/.cache/watch/downloads and reused, so asking a second question "
+             "about the same video skips the slowest step.",
+    )
     ap.add_argument(
         "--no-whisper",
         action="store_true",
@@ -88,15 +95,27 @@ def main() -> int:
     print(f"[watch] working dir: {work}", file=sys.stderr)
 
     url_source = is_url(args.source)
+    # An explicit --out-dir means the user wants everything in one named place,
+    # so honour that over the shared cache.
+    use_cache = url_source and not args.no_cache and not args.out_dir
     dl: dict = {"subtitle_path": None, "info": {}, "downloaded": False}
     transcript_segments: list[dict] = []
     transcript_text: str | None = None
     transcript_source: str | None = None
     video_path: str | None = None
 
+    # --timestamps needs the video for frame grabs, so it overrides the
+    # transcript-mode download skip (and forces a full, not audio-only, fetch).
+    audio_only = detail == "transcript" and not cue_timestamps
+    # Decided before the first yt-dlp call so captions and info.json land in
+    # the cache entry alongside the media, rather than in a throwaway dir.
+    # Keyed per audio/video so a transcript-only run never hands a later frame
+    # run a file with no video stream.
+    download_dir = cache_dir_for(args.source, audio_only) if use_cache else work / "download"
+
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
+        dl = fetch_captions(args.source, download_dir)
         if dl.get("subtitle_path"):
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
@@ -106,9 +125,6 @@ def main() -> int:
                 print(f"[watch] subtitle parse failed: {exc}", file=sys.stderr)
                 transcript_segments = []
 
-    # --timestamps needs the video for frame grabs, so it overrides the
-    # transcript-mode download skip (and forces a full, not audio-only, fetch).
-    audio_only = detail == "transcript" and not cue_timestamps
     if detail == "transcript" and transcript_segments and not cue_timestamps:
         video_path = None
     else:
@@ -120,12 +136,13 @@ def main() -> int:
             )
             dl = download(
                 args.source,
-                work / "download",
+                download_dir,
                 audio_only=audio_only,
+                use_cache=use_cache,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
-            dl = download(args.source, work / "download")
+            dl = download(args.source, download_dir)
         video_path = dl["video_path"]
 
     meta = get_metadata(video_path) if video_path else {

@@ -146,7 +146,8 @@ Optional flags:
 - `--max-frames N` — override the preset cap for tighter token budget (e.g. `--max-frames 40`)
 - `--resolution W` — change frame width in px (default 512; bump to 1024 only if the user needs to read on-screen text)
 - `--fps F` — override auto-fps (clamped to 2 fps max)
-- `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
+- `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir). Also opts out of the download cache.
+- `--no-cache` — always re-download. By default a URL's download is kept under `~/.cache/watch/downloads` and reused on the next run, so a follow-up question about the same video skips the slowest step. The cache is capped (2 GB, least-recently-used evicted first) and keyed separately for audio-only and full-video fetches.
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
@@ -190,7 +191,7 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script prints a working directory at the end. It holds the extracted frames; the download itself lives in the cache, not here, so removing it does not force a re-download. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
 
 ## Detail and frames
 
@@ -210,7 +211,7 @@ Visual frame selection (scene/keyframe) can miss the moments a presenter explici
 
 1. Run once at `--detail transcript` (or any detail) to get the timestamped transcript.
 2. Scan it for deictic cues — phrases where the speaker directs attention to something on screen. This is a judgment call (ignore rhetorical "look, the point is…"); that's why it's done by you, not a regex.
-3. Re-run with `--timestamps 4:32,7:10,9:55` (absolute source times). For a URL, point the second run at the **downloaded local file** in the work dir so it doesn't re-download.
+3. Re-run with `--timestamps 4:32,7:10,9:55` (absolute source times). Pass the same URL again — the download is served from the cache, so the second run costs no extra fetch.
 
 Behavior:
 - **Additive by default.** Cue frames (`reason=transcript-cue`) are merged into whatever `--detail` already selected, in chronological order.
@@ -253,7 +254,8 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
-- Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
+- Writes frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
+- Caches the downloaded video under `~/.cache/watch/downloads` (or `$XDG_CACHE_HOME`) so a repeat run skips the download; capped at 2 GB with least-recently-used eviction, and disabled by `--no-cache` or `--out-dir`
 - Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
