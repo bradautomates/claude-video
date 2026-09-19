@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.error
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.request import Request, urlopen
 
@@ -35,6 +36,13 @@ OPENAI_MODEL = "whisper-1"
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
+
+# Chunks are independent uploads, so they overlap instead of queueing. Each
+# one is a 24 MB POST that blocks for tens of seconds, and a long podcast
+# splits into several — serial upload made total wait scale linearly with
+# length. Kept deliberately low: the APIs rate-limit, and _post_whisper
+# only tolerates MAX_429_RETRIES before giving up on a chunk.
+MAX_PARALLEL_CHUNKS = 3
 
 
 def plan_chunks(
@@ -371,24 +379,45 @@ def _segments_from_response(data: dict) -> list[dict]:
 def transcribe_chunks(
     chunks: list[tuple[Path, float]],
     transcribe_one,
+    max_workers: int = MAX_PARALLEL_CHUNKS,
 ) -> list[dict]:
     """Transcribe each chunk, shift its segments by the chunk offset, concatenate.
+
+    Uploads run concurrently — they are independent requests against a remote
+    API, so the wall clock is bounded by the slowest chunk rather than by their
+    sum. Results are stitched back in chunk order, not completion order, so the
+    transcript and the progress lines are byte-identical to a serial run.
 
     A chunk that fails after its own retries is logged and skipped so one bad
     slice doesn't discard the whole transcript. Raises only if every chunk fails.
     """
+    results: list[list[dict] | None] = [None] * len(chunks)
+    errors: list[BaseException | None] = [None] * len(chunks)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(chunks)))) as pool:
+        futures = {
+            pool.submit(transcribe_one, path): index
+            for index, (path, _) in enumerate(chunks)
+        }
+        for future in futures:
+            index = futures[future]
+            try:
+                results[index] = future.result()
+            except SystemExit as exc:
+                errors[index] = exc
+
     segments: list[dict] = []
     failures = 0
-    for index, (path, offset) in enumerate(chunks):
-        try:
-            chunk_segments = transcribe_one(path)
-        except SystemExit as exc:
+    for index, (_, offset) in enumerate(chunks):
+        error = errors[index]
+        if error is not None:
             failures += 1
             print(
-                f"[watch] chunk {index + 1}/{len(chunks)} failed — skipping ({exc})",
+                f"[watch] chunk {index + 1}/{len(chunks)} failed — skipping ({error})",
                 file=sys.stderr,
             )
             continue
+        chunk_segments = results[index] or []
         segments.extend(shift_segments(chunk_segments, offset))
         print(
             f"[watch] chunk {index + 1}/{len(chunks)} → {len(chunk_segments)} segments",
