@@ -35,6 +35,11 @@ def _capture_argv(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
         return _Result()
 
     monkeypatch.setattr(download.subprocess, "run", fake_run)
+    # download.py bails via `shutil.which(...)` before it ever builds the argv,
+    # so stubbing subprocess alone leaves the test dependent on yt-dlp actually
+    # being installed on the host. These cases inspect argv only — no binary is
+    # ever executed.
+    monkeypatch.setattr(download.shutil, "which", lambda name: f"/usr/bin/{name}")
     return calls
 
 
