@@ -6,7 +6,9 @@ transcribe.py can parse them without needing Whisper.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +17,92 @@ from urllib.parse import urlparse
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
+
+
+
+# Downloading is by far the slowest step — tens of seconds and tens of MB for a
+# clip whose frames then take ~1s to extract. SKILL.md worked around that by
+# asking the model to re-point a second run at the file left in the work dir,
+# but the same file says to delete that dir when done, and nothing survives
+# across sessions. Keying the download by URL makes the reuse automatic.
+CACHE_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+
+
+def cache_root() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME")
+    return (Path(base) if base else Path.home() / ".cache") / "watch" / "downloads"
+
+
+def cache_dir_for(url: str, audio_only: bool, root: Path | None = None) -> Path:
+    """Directory holding this URL's download.
+
+    audio_only is part of the key: a `transcript` run fetches audio alone, and
+    reusing that for a later frame-extracting run would hand ffmpeg a file with
+    no video stream.
+    """
+    payload = f"{url}\x00{'audio' if audio_only else 'video'}".encode()
+    digest = hashlib.sha256(payload).hexdigest()[:16]
+    return (root or cache_root()) / digest
+
+
+def _dir_size(path: Path) -> int:
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def prune_cache(limit: int = CACHE_LIMIT_BYTES, keep: Path | None = None,
+                root: Path | None = None) -> int:
+    """Evict least-recently-used entries until the cache fits in ``limit``.
+
+    ``keep`` is never evicted — it is the entry the current run is about to
+    use, which would otherwise be the newest and safest thing to delete only in
+    the degenerate case where it alone exceeds the limit.
+    """
+    base = root or cache_root()
+    if not base.exists():
+        return 0
+
+    entries = []
+    for child in base.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            entries.append((child.stat().st_mtime, _dir_size(child), child))
+        except OSError:
+            continue
+
+    total = sum(size for _, size, _ in entries)
+    evicted = 0
+    for _, size, child in sorted(entries):
+        if total <= limit:
+            break
+        if keep is not None and child.resolve() == keep.resolve():
+            continue
+        shutil.rmtree(child, ignore_errors=True)
+        total -= size
+        evicted += 1
+    return evicted
+
+
+def _cached_download(out_dir: Path) -> dict | None:
+    """Return a download result if this directory already holds a usable file."""
+    video = _pick_video(out_dir)
+    # A run that died mid-download can leave the directory behind. yt-dlp keeps
+    # incomplete files under a .part suffix, which _pick_video already ignores,
+    # but an empty file would still match — treat it as a miss and re-fetch.
+    if video is None or video.stat().st_size == 0:
+        return None
+    info_path = out_dir / "video.info.json"
+    try:  # refresh LRU position
+        os.utime(out_dir, None)
+    except OSError:
+        pass
+    return {
+        "video_path": str(video),
+        "subtitle_path": str(sub) if (sub := _pick_subtitle(out_dir)) else None,
+        "info": _read_info(info_path, "") or {},
+        "downloaded": False,
+        "cached": True,
+    }
 
 
 def is_url(source: str) -> bool:
@@ -116,9 +204,17 @@ def download_url(
     url: str,
     out_dir: Path,
     audio_only: bool = False,
+    use_cache: bool = False,
 ) -> dict:
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
+
+    if use_cache:
+        hit = _cached_download(out_dir)
+        if hit is not None:
+            print(f"[watch] reusing cached download: {out_dir}", file=sys.stderr)
+            hit["info"] = hit["info"] or {"url": url}
+            return hit
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
@@ -154,6 +250,11 @@ def download_url(
     subtitle = _pick_subtitle(out_dir)
     info = _read_info(out_dir / "video.info.json", url)
 
+    if use_cache:
+        evicted = prune_cache(keep=out_dir)
+        if evicted:
+            print(f"[watch] cache over limit — evicted {evicted} old download(s)", file=sys.stderr)
+
     return {
         "video_path": str(video),
         "subtitle_path": str(subtitle) if subtitle else None,
@@ -166,9 +267,10 @@ def download(
     source: str,
     out_dir: Path,
     audio_only: bool = False,
+    use_cache: bool = False,
 ) -> dict:
     if is_url(source):
-        return download_url(source, out_dir, audio_only=audio_only)
+        return download_url(source, out_dir, audio_only=audio_only, use_cache=use_cache)
     return resolve_local(source)
 
 
