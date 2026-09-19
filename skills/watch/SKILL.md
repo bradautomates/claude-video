@@ -186,6 +186,8 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
 
+**Proper nouns in a transcript are unverified.** Captions and Whisper both transcribe phonetically, so names come back wrong or invented — "Diogo Almeida" as "Dooo Almeida", "Vercel" as "Verscell", ChatGPT as "chatbt". Frames are the corrective: title cards, slides and on-screen UI usually spell a name correctly, so check it against a frame before stating it. Where no frame confirms it — including every `transcript`-detail run, which has no frames at all — give the name as-heard and say it is from the transcript and unverified. This applies to people, companies, products, model names, URLs, prices and figures: anything the user might repeat, quote or act on.
+
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
