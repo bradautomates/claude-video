@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -43,6 +44,43 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
                     break
         values[key.strip()] = value
     return values
+
+
+def env_search_paths() -> list[Path]:
+    """Files a setting may live in, highest precedence first.
+
+    Resolved per call rather than at import time so a changed HOME is honoured.
+    """
+    return [Path.home() / ".config" / "watch" / ".env", Path.cwd() / ".env"]
+
+
+def read_env_value(
+    name: str,
+    paths: list[Path] | None = None,
+    on_file: Callable[[Path], None] | None = None,
+) -> str | None:
+    """Resolve one setting: real environment first, then each .env in order.
+
+    The single parser for every consumer. whisper.py and setup.py each used to
+    carry their own copy, and both predated the inline-comment handling in
+    read_env_file() -- so `GROQ_API_KEY=sk-x  # note` kept the comment as part
+    of the key while config.py read the same line correctly.
+
+    ``on_file`` is invoked with each existing path before it is read, so a
+    caller can hook in side effects such as a permission warning.
+    """
+    value = os.environ.get(name)
+    if value and value.strip():
+        return value.strip()
+    for path in (env_search_paths() if paths is None else paths):
+        if not path.exists():
+            continue
+        if on_file is not None:
+            on_file(path)
+        value = read_env_file(path).get(name)
+        if value:
+            return value
+    return None
 
 
 def get_config() -> dict[str, object]:
