@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -155,3 +157,73 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class TestChunkConcurrency:
+    """Chunks are independent uploads; wall clock should track the slowest one."""
+
+    def test_uploads_overlap_instead_of_queueing(self):
+        chunks = [(Path(f"{i}.mp3"), float(i * 100)) for i in range(4)]
+        delay = 0.15
+
+        def slow(path: Path) -> list[dict]:
+            time.sleep(delay)
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        start = time.perf_counter()
+        out = whisper.transcribe_chunks(chunks, slow, max_workers=4)
+        elapsed = time.perf_counter() - start
+
+        assert len(out) == 4
+        # Serial would need 4 * delay; concurrent needs ~1 * delay.
+        assert elapsed < delay * 2.5, f"took {elapsed:.2f}s, expected ~{delay:.2f}s"
+
+    def test_never_exceeds_max_workers(self):
+        chunks = [(Path(f"{i}.mp3"), float(i)) for i in range(8)]
+        lock = threading.Lock()
+        live = 0
+        peak = 0
+
+        def tracked(path: Path) -> list[dict]:
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        whisper.transcribe_chunks(chunks, tracked, max_workers=3)
+        assert peak <= 3, f"ran {peak} uploads at once, cap was 3"
+
+    def test_out_of_order_completion_still_stitches_in_chunk_order(self):
+        """The last chunk finishes first; offsets must still line up."""
+        chunks = [(Path(f"{i}.mp3"), float(i * 100)) for i in range(3)]
+
+        def reversed_speed(path: Path) -> list[dict]:
+            time.sleep(0.05 * (2 - int(path.stem)))
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        out = whisper.transcribe_chunks(chunks, reversed_speed, max_workers=3)
+
+        assert [seg["text"] for seg in out] == ["0", "1", "2"]
+        assert [seg["start"] for seg in out] == [0.0, 100.0, 200.0]
+
+    def test_progress_lines_match_a_serial_run(self, capsys):
+        """Concurrency must not reorder or reword the user-visible output."""
+        chunks = [(Path(f"{i}.mp3"), float(i * 10)) for i in range(3)]
+
+        def flaky(path: Path) -> list[dict]:
+            time.sleep(0.05 * (2 - int(path.stem)))
+            if path.stem == "1":
+                raise SystemExit("chunk 1 failed")
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        whisper.transcribe_chunks(chunks, flaky, max_workers=3)
+
+        assert capsys.readouterr().err == (
+            "[watch] chunk 1/3 \u2192 1 segments\n"
+            "[watch] chunk 2/3 failed — skipping (chunk 1 failed)\n"
+            "[watch] chunk 3/3 \u2192 1 segments\n"
+        )
