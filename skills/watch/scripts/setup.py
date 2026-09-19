@@ -29,7 +29,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import get_config  # noqa: E402
+from config import get_config, read_env_value  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
@@ -90,27 +90,12 @@ def _check_file_permissions(path: Path) -> None:
 
 
 def _read_env_key(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value and value.strip():
-        return value.strip()
-    if not CONFIG_FILE.exists():
-        return None
-    _check_file_permissions(CONFIG_FILE)
-    try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, raw = line.partition("=")
-            if key.strip() != name:
-                continue
-            raw = raw.strip()
-            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                raw = raw[1:-1]
-            return raw or None
-    except OSError:
-        return None
-    return None
+    """Read one setting, warning first if the secrets file is too permissive.
+
+    Parsing lives in config.read_env_value so this agrees with every other
+    consumer; only the permission warning is local to setup.
+    """
+    return read_env_value(name, paths=[CONFIG_FILE], on_file=_check_file_permissions)
 
 
 def _have_api_key() -> tuple[bool, str | None]:
