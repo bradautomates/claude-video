@@ -81,3 +81,28 @@ def static_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("clips") / "static.mp4"
     build_static_clip(path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# Host-binary isolation
+#
+# Tests that exercise argv construction or the setup state machine care about
+# *logic*, not about whether the developer's machine happens to have ffmpeg and
+# yt-dlp installed. Both code paths guard with `shutil.which(...)` and bail
+# early, so without isolation those tests fail on a clean checkout for reasons
+# unrelated to what they assert. `fake_bin_dir` supplies no-op executables to
+# put on PATH so the guard passes deterministically everywhere.
+# ---------------------------------------------------------------------------
+
+STUB_BINARIES = ("ffmpeg", "ffprobe", "yt-dlp")
+
+
+@pytest.fixture(scope="session")
+def fake_bin_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A PATH entry holding no-op stand-ins for every required binary."""
+    bin_dir = tmp_path_factory.mktemp("fakebin")
+    for name in STUB_BINARIES:
+        stub = bin_dir / name
+        stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        stub.chmod(0o755)
+    return bin_dir
