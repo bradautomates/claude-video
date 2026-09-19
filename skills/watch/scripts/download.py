@@ -17,6 +17,58 @@ from urllib.parse import urlparse
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
 
+DEFAULT_SUB_LANGS = "en.*"
+
+
+def _caption_tracks(info_path: Path) -> tuple[list[str], list[str]]:
+    """Return (manual_tags, automatic_tags) the extractor reported.
+
+    Both come from yt-dlp's documented info-dict contract: `subtitles` holds
+    tracks the uploader supplied, `automatic_captions` holds generated ones.
+    """
+    if not info_path.exists():
+        return [], []
+    try:
+        raw = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], []
+    manual = list((raw.get("subtitles") or {}).keys())
+    automatic = list((raw.get("automatic_captions") or {}).keys())
+    return manual, automatic
+
+
+def _native_sub_langs(info_path: Path) -> str | None:
+    """Pick one language tag to retry with when English returned nothing.
+
+    Never widens to `all`: on YouTube `automatic_captions` lists every machine
+    translation target (hundreds of tracks), and requesting them stalls for
+    minutes. An uploader-supplied track is preferred; failing that, only the
+    `-orig` automatic track is taken, since that is the language actually
+    spoken rather than a translation of it.
+    """
+    manual, automatic = _caption_tracks(info_path)
+
+    for tag in manual:
+        if tag and tag != "live_chat":
+            return tag
+
+    for tag in automatic:
+        if tag.endswith("-orig"):
+            return tag
+
+    return None
+
+
+def _sub_lang_args(langs: str) -> list[str]:
+    return [
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs", langs,
+        "--sub-format", "vtt",
+        "--convert-subs", "vtt",
+    ]
+
+
 def is_url(source: str) -> bool:
     if source.startswith("-"):
         return False
@@ -63,30 +115,49 @@ def _pick_video(out_dir: Path) -> Path | None:
 
 
 def fetch_captions(url: str, out_dir: Path) -> dict:
-    """Fetch metadata and best available VTT captions without downloading video."""
+    """Fetch metadata and best available VTT captions without downloading video.
+
+    Tries English first, which is a single round trip for the common case. When
+    that yields nothing, the info.json just written names the caption tracks
+    that do exist, so retry once against the video's own language rather than
+    falling through to a Whisper upload that costs money and minutes.
+    """
     if shutil.which("yt-dlp") is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
-    cmd = [
-        "yt-dlp",
-        "--skip-download",
-        "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en.*",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
-        "--no-playlist",
-        "--ignore-errors",
-        "-o", output_template,
-        "--",
-        url,
-    ]
-    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+
+    def _run(langs: str) -> None:
+        cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-info-json",
+            *_sub_lang_args(langs),
+            "--no-playlist",
+            "--ignore-errors",
+            "-o", output_template,
+            "--",
+            url,
+        ]
+        subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+
+    _run(DEFAULT_SUB_LANGS)
     subtitle = _pick_subtitle(out_dir)
-    info = _read_info(out_dir / "video.info.json", url)
+
+    info_path = out_dir / "video.info.json"
+    if subtitle is None:
+        native = _native_sub_langs(info_path)
+        if native:
+            print(
+                f"[watch] no English captions — retrying in the video's own "
+                f"language ({native})",
+                file=sys.stderr,
+            )
+            _run(native)
+            subtitle = _pick_subtitle(out_dir)
+
+    info = _read_info(info_path, url)
     return {
         "video_path": None,
         "subtitle_path": str(subtitle) if subtitle else None,
@@ -124,17 +195,16 @@ def download_url(
     output_template = str(out_dir / "video.%(ext)s")
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
+    # fetch_captions runs first and writes info.json into this same directory,
+    # so the video's own caption language is already known — no extra probe.
+    langs = _native_sub_langs(out_dir / "video.info.json") or DEFAULT_SUB_LANGS
     cmd = [
         "yt-dlp",
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
         "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en.*",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
+        *_sub_lang_args(langs),
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
