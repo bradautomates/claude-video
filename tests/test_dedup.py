@@ -100,7 +100,7 @@ def test_thumb_frames_match_candidate_count(cut_clip: Path, tmp_path: Path):
     out = frames.extract_scene_candidates(str(cut_clip), tmp_path / "f", max_frames=None)
     thumbs = frames._thumb_frames([Path(fr["path"]) for fr in out])
     assert len(thumbs) == len(out)
-    assert all(len(t) == frames.DEDUP_THUMB * frames.DEDUP_THUMB for t in thumbs)
+    assert all(len(t) == frames.DEDUP_THUMB * frames.DEDUP_THUMB * 3 for t in thumbs  # rgb24)
 
 
 def test_dedupe_perceptual_collapses_static_clip(static_clip: Path, tmp_path: Path):
