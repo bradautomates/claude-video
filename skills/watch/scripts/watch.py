@@ -310,16 +310,19 @@ def main() -> int:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
         # The engine is already "uniform" on a fallback, so name the detector
-        # that came up short and by how much instead of repeating the word.
+        # that came up short and why, instead of repeating the word.
         fallback = ""
         if frame_meta.get("fallback"):
             detector = frame_meta.get("fallback_from", "scene")
             short = frame_meta.get("fallback_candidate_count")
-            fallback = (
-                f" after too few {detector} candidates"
-                if short is None
-                else f" after only {short} {detector} candidate{'' if short == 1 else 's'}"
+            count = (
+                f"too few {detector} candidates" if short is None
+                else f"only {short} {detector} candidate{'' if short == 1 else 's'}"
             )
+            if frame_meta.get("fallback_reason") == "coverage":
+                fallback = f" after {short} {detector} candidates bunched into part of the range"
+            else:
+                fallback = f" after {count}"
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(

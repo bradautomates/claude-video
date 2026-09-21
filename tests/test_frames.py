@@ -162,3 +162,27 @@ def test_even_time_indices_spreads_over_clustered_candidates():
     assert frames._even_time_indices(times, 99) == list(range(len(times)))
     assert frames._even_time_indices(times, 1) == [0]
     assert frames._even_time_indices([5.0] * 10, 3) == [0, 4, 9]  # flat → index
+
+
+def test_covers_range_rejects_clustered_candidates():
+    """The real shape that motivated this: a 600s range where scene detection found
+    23 candidates, 15 of them inside seven seconds, leaving a 3.4-minute hole."""
+    clustered = [39.0, 39.5, 41.0, 41.5, 42.0, 43.0, 43.5, 44.0, 44.5, 45.0,
+                 45.5, 46.0, 46.5, 63.0, 91.0, 100.0, 103.0, 112.0, 131.0, 336.0]
+    assert frames._covers_range(clustered, 0.0, 600.0) is False
+
+    spread = [i * 25.0 for i in range(1, 24)]
+    assert frames._covers_range(spread, 0.0, 600.0) is True
+
+    # Clears the count floor but still skips most of the range.
+    assert frames._covers_range([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], 0.0, 600.0) is False
+
+    # Degenerate inputs never force a fallback.
+    assert frames._covers_range([], 0.0, 600.0) is True
+    assert frames._covers_range([1.0], 5.0, 5.0) is True
+
+
+def test_worst_gap_counts_the_edges():
+    assert frames._worst_gap([50.0], 0.0, 100.0) == 50.0
+    assert frames._worst_gap([10.0, 20.0], 0.0, 100.0) == 80.0
+    assert frames._worst_gap([], 0.0, 42.0) == 42.0
