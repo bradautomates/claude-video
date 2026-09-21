@@ -2,16 +2,21 @@
 
 **Give Claude the ability to watch any video.**
 
-> **Community fork.** This is [frinsen/claude-video](https://github.com/frinsen/claude-video), a maintained fork of
-> [bradautomates/claude-video](https://github.com/bradautomates/claude-video) by Bradley Bonanno (MIT). Upstream has had
-> no maintainer activity since July 2026 while 50 pull requests and 41 issues accumulated — including a one-line ffmpeg 8/9
-> incompatibility that makes the published 0.2.0 extract zero frames on any current install. This fork lands those fixes
-> (see [CHANGELOG 0.3.0](CHANGELOG.md)) with tests, and will track upstream if it resumes. Install from here:
->
-> ```
-> /plugin marketplace add frinsen/claude-video
-> /plugin install watch@claude-video
-> ```
+A maintained community fork of [bradautomates/claude-video](https://github.com/bradautomates/claude-video), the `/watch` skill created by **Bradley Bonanno**. Same tool, same MIT license, same credit — plus the fixes the upstream queue was waiting for, and a place to keep developing it.
+
+## Why this fork exists
+
+We use `/watch` daily and want to keep building on it. In September 2026 that was not possible upstream:
+
+- **The original project stopped being maintained.** The last maintainer commit was 2026-06-30 and the last maintainer comment 2026-07-11. Since then **50 pull requests and 41 issues** have accumulated with no response; not a single PR has ever been merged, and contributors have started withdrawing theirs.
+- **The published release is broken on every current install.** ffmpeg 8 removed the `-vsync` flag; upstream 0.2.0 still passes it, so `brew install ffmpeg` / `winget install Gyan.FFmpeg` users get **zero frames** from a tool whose whole point is frames. The one-line fix sat in 13 duplicate PRs and 15 duplicate issues.
+- **We wanted every open issue fixed, not just that one.** Windows crashes (cp1252, ACL false positives, blocked `ffprobe.exe`), non-English videos getting YouTube's machine-translated captions, transcripts twice their real length, Whisper hallucinating dialogue over music, one provider's API key being sent to another, frame budgets spent on the first 30 seconds, data loss on re-runs — all of it is addressed in [0.3.0](CHANGELOG.md), each with a test.
+- **Good community work deserved to land.** The upstream PR authors did real diagnosis and wrote real tests. We merged the best PR per problem, folded the others' edge cases in, re-implemented where five PRs fixed the same file five different ways, and credit every author in [AUTHORS.md](AUTHORS.md) and the git history.
+- **Nothing was verified before.** Upstream has no CI; the test suite could not pass on a developer machine (#96). We fixed the harness (71 → 186 tests, all passing on ffmpeg 9), verified the release end-to-end against real YouTube videos, and ship a `.skill` bundle that carries its license.
+- **It has to stay installable everywhere.** Claude Code marketplace, Codex/Cursor/Copilot via `npx skills add`, and the claude.ai web bundle all point at this repo, so what the manifest names is what you get.
+- **We want to keep going.** See the [roadmap](#roadmap). If upstream resumes, we will track it and offer our changes back as a single PR; this fork is not a hostile split.
+
+## Quick install
 
 Claude Code (recommended — auto-updates via marketplace):
 ```
@@ -260,24 +265,26 @@ Releasing: tag `vX.Y.Z`, push the tag. The workflow builds `dist/watch.skill` an
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
-## Open source
+## Roadmap
 
-MIT license.
+What "develop it further" means, roughly in order. Open an issue if you want to weigh in or take one.
 
-Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com) or [OpenAI](https://openai.com).
+- **CI.** Run the suite on every PR across ffmpeg 5 / 7 / 9 and macOS / Linux / Windows, so "works on my machine" stops being the review standard.
+- **Land the deferred upstream PRs** that need design or dependencies: download cache (#235), quality dial and screen-recording detection (#215), TikTok photo slideshows via gallery-dl (#220), storyboard fallback (#200).
+- **Editorial analysis as an opt-in mode.** [claude-watch](https://github.com/taoufik123-collab/claude-watch) — another derivative of the original — adds a 0–10 s hook microscope, pacing metrics and a fixed-schema `report.md`. Those ~400 lines are worth porting as `--report`, without making every run pay for them.
+- **More transcription backends through the generic endpoint** rather than per-vendor SDKs (the local OpenAI-compatible backend already covers whisper.cpp, faster-whisper-server, speaches, LM Studio).
+- **Upstream sync.** Watch `bradautomates/claude-video`; if it resumes, rebase and offer this work back.
 
-Built by Brad Bonanno — I make content about building with AI on [YouTube (@bradbonanno)](https://www.youtube.com/@bradbonanno), and build AI operating systems for businesses at [Solaris Automation](https://www.solarisautomation.io/). If `/watch` saves you from scrubbing through a video, come say hi on the channel.
+## Credits & license
 
-## Star History
+**Original author:** [Bradley Bonanno](https://github.com/bradautomates) — [bradautomates/claude-video](https://github.com/bradautomates/claude-video), [@bradbonanno on YouTube](https://www.youtube.com/@bradbonanno), [Solaris Automation](https://www.solarisautomation.io/). The pipeline (yt-dlp → ffmpeg → captions/Whisper → Claude `Read`), the detail modes, frame dedup, Whisper chunking and the multi-host packaging are his work.
 
-<a href="https://www.star-history.com/?repos=bradautomates%2Fclaude-video&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=bradautomates/claude-video&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=bradautomates/claude-video&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=bradautomates/claude-video&type=date&legend=top-left" />
- </picture>
-</a>
+**This fork:** maintained by [frinsen](https://github.com/frinsen). The 0.3.0 fixes come from the upstream community — every merged or adapted pull request and its author is listed in [AUTHORS.md](AUTHORS.md).
+
+**License:** [MIT](LICENSE), © 2026 Bradley Bonanno, unchanged. The same notice ships inside the skill bundle and every install path. This fork is not affiliated with or endorsed by the original author.
+
+Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com), [OpenAI](https://openai.com), or any self-hosted OpenAI-compatible server.
 
 ---
 
-[github.com/bradautomates/claude-video](https://github.com/bradautomates/claude-video) · [@bradbonanno](https://www.youtube.com/@bradbonanno) · [Solaris Automation](https://www.solarisautomation.io/) · [LICENSE](LICENSE)
+[github.com/frinsen/claude-video](https://github.com/frinsen/claude-video) · forked from [bradautomates/claude-video](https://github.com/bradautomates/claude-video) · [CHANGELOG](CHANGELOG.md) · [AUTHORS](AUTHORS.md) · [LICENSE](LICENSE)
