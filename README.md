@@ -2,15 +2,26 @@
 
 **Give Claude the ability to watch any video.**
 
+> **Community fork.** This is [frinsen/claude-video](https://github.com/frinsen/claude-video), a maintained fork of
+> [bradautomates/claude-video](https://github.com/bradautomates/claude-video) by Bradley Bonanno (MIT). Upstream has had
+> no maintainer activity since July 2026 while 50 pull requests and 41 issues accumulated — including a one-line ffmpeg 8/9
+> incompatibility that makes the published 0.2.0 extract zero frames on any current install. This fork lands those fixes
+> (see [CHANGELOG 0.3.0](CHANGELOG.md)) with tests, and will track upstream if it resumes. Install from here:
+>
+> ```
+> /plugin marketplace add frinsen/claude-video
+> /plugin install watch@claude-video
+> ```
+
 Claude Code (recommended — auto-updates via marketplace):
 ```
-/plugin marketplace add bradautomates/claude-video
+/plugin marketplace add frinsen/claude-video
 /plugin install watch@claude-video
 ```
 
 Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:
 ```bash
-npx skills add bradautomates/claude-video -g
+npx skills add frinsen/claude-video -g
 ```
 (`-g` installs globally for your user, available across all projects. Drop it to scope per-project.)
 
@@ -99,15 +110,15 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 
 | Surface | Install |
 |---------|---------|
-| **Claude Code** | `/plugin marketplace add bradautomates/claude-video` then `/plugin install watch@claude-video` |
-| **Codex, Cursor, Copilot, Gemini CLI, +50 more** | `npx skills add bradautomates/claude-video -g` |
-| **claude.ai** (web) | [Download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) → Settings → Capabilities → Skills → `+` |
+| **Claude Code** | `/plugin marketplace add frinsen/claude-video` then `/plugin install watch@claude-video` |
+| **Codex, Cursor, Copilot, Gemini CLI, +50 more** | `npx skills add frinsen/claude-video -g` |
+| **claude.ai** (web) | [Download `watch.skill`](https://github.com/frinsen/claude-video/releases/latest) → Settings → Capabilities → Skills → `+` |
 | **Manual / dev** | `git clone` then symlink `skills/watch` into your host's skills dir (see below) |
 
 ### Claude Code
 
 ```
-/plugin marketplace add bradautomates/claude-video
+/plugin marketplace add frinsen/claude-video
 /plugin install watch@claude-video
 ```
 
@@ -118,7 +129,7 @@ Update later with `/plugin update watch@claude-video`.
 The [Agent Skills](https://agentskills.io) CLI installs the skill into whatever agents it detects:
 
 ```bash
-npx skills add bradautomates/claude-video -g
+npx skills add frinsen/claude-video -g
 ```
 
 `-g` installs globally for your user (`~/.codex/skills`, `~/.cursor/skills`, etc.); drop it to install into the current project instead. Useful flags:
@@ -133,7 +144,7 @@ Update later with `npx skills update watch -g`.
 
 ### claude.ai (web)
 
-1. [Download `watch.skill`](https://github.com/bradautomates/claude-video/releases/latest) from the latest release.
+1. [Download `watch.skill`](https://github.com/frinsen/claude-video/releases/latest) from the latest release.
 2. Go to Settings → Capabilities → Skills.
 3. Click `+` and drop the file in.
 
@@ -144,7 +155,7 @@ Enable "Code execution and file creation" under Capabilities first — the skill
 Clone the repo and symlink the self-contained skill folder into your host's skills directory — the symlink keeps the install in sync with your working tree as you edit:
 
 ```bash
-git clone https://github.com/bradautomates/claude-video.git
+git clone https://github.com/frinsen/claude-video.git
 ln -s "$(pwd)/claude-video/skills/watch" ~/.claude/skills/watch   # or ~/.codex/skills/watch
 ```
 
@@ -170,6 +181,7 @@ Captions cover the majority of public videos for free. The Whisper fallback only
 | Download + native captions | `yt-dlp` + `ffmpeg` | Free |
 | Whisper fallback (preferred) | [Groq API key](https://console.groq.com/keys) — `whisper-large-v3` | Cheap, fast |
 | Whisper fallback (alt) | [OpenAI API key](https://platform.openai.com/api-keys) — `whisper-1` | Standard pricing |
+| Whisper fallback (self-hosted) | `WATCH_WHISPER_BASE_URL` → any OpenAI-compatible transcription server | Free, fully offline |
 | Disable Whisper entirely | `--no-whisper` | Free, frames-only when no captions |
 
 ## Usage
@@ -194,11 +206,15 @@ Other knobs (passed to `scripts/watch.py`):
 - `--timestamps T1,T2,…` — grab a frame at each absolute timestamp (`SS`/`MM:SS`/`HH:MM:SS`). Claude reads the transcript first, then targets the moments the presenter flags ("look here", "as you can see"). Added on top of the detail frames (reserved against the cap); out-of-window cues are dropped in focus mode; with `--detail transcript` these become the only frames.
 - `--max-frames N` — lower the frame cap for a tighter token budget.
 - `--resolution W` — bump frame width to 1024 px when Claude needs to read on-screen text (slides, terminals, code).
-- `--fps F` — override the auto-fps calculation (still capped at 2 fps).
-- `--whisper groq|openai` — force a specific Whisper backend.
+- `--fps F` — override the auto-fps calculation (capped at 2 fps by default; raise the ceiling with `WATCH_MAX_FPS=24` for sub-second or fast-action clips, paired with `--start`/`--end` and `--max-frames`).
+- `--lang de` — prefer captions in a given language. By default the video's own language is used (read from yt-dlp's metadata) so non-English videos get their real captions instead of YouTube's machine-translated English track; English is the fallback.
+- `--force-whisper` — ignore native captions and transcribe with Whisper. For sources whose auto-captions are too poor to use.
+- `--whisper groq|openai|local` — force a specific Whisper backend. `local` is any server exposing OpenAI's `/v1/audio/transcriptions` route (whisper.cpp `server`, faster-whisper-server, speaches, LM Studio): set `WATCH_WHISPER_BASE_URL=http://localhost:8080` (optional `WATCH_WHISPER_MODEL`, `WATCH_WHISPER_API_KEY`) and audio never leaves the machine.
 - `--no-whisper` — disable transcription entirely; frames only.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
+
+Environment / `~/.config/watch/.env` settings: `WATCH_DETAIL` (default detail mode), `WATCH_MAX_FPS` (fps ceiling), `WATCH_WHISPER_BASE_URL` (local Whisper server), and opt-in `WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox` / `WATCH_COOKIES_FILE=/path/to/cookies.txt` for sites that refuse signed-out requests (Instagram, YouTube's bot gate). Cookies are never read unless you set one of these.
 
 ## Limits
 

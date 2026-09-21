@@ -14,7 +14,11 @@
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Productivity"
+      "category": "Productivity",
+      "homepage": "https://github.com/frinsen/claude-video"
     }
-  ]
+  ],
+  "owner": {
+    "name": "frinsen"
+  }
 }
