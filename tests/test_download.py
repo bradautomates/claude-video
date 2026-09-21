@@ -224,3 +224,34 @@ def test_non_refusal_failure_does_not_retry(monkeypatch, tmp_path):
     with pytest.raises(SystemExit):
         download.download_url(URL, out)
     assert len(calls) == 1
+
+
+def _make_video(tmp_path: Path) -> Path:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"")
+    return video
+
+
+def test_resolve_local_without_sidecar_has_no_subtitle(tmp_path):
+    video = _make_video(tmp_path)
+    assert download.resolve_local(str(video))["subtitle_path"] is None
+
+
+def test_resolve_local_picks_up_exact_sidecar(tmp_path):
+    video = _make_video(tmp_path)
+    sidecar = tmp_path / "clip.vtt"
+    sidecar.write_text("WEBVTT\n", encoding="utf-8")
+    assert download.resolve_local(str(video))["subtitle_path"] == str(sidecar.resolve())
+
+
+def test_resolve_local_picks_up_language_tagged_sidecar(tmp_path):
+    video = _make_video(tmp_path)
+    sidecar = tmp_path / "clip.en.vtt"
+    sidecar.write_text("WEBVTT\n", encoding="utf-8")
+    assert download.resolve_local(str(video))["subtitle_path"] == str(sidecar.resolve())
+
+
+def test_resolve_local_ignores_unrelated_vtt(tmp_path):
+    video = _make_video(tmp_path)
+    (tmp_path / "other.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    assert download.resolve_local(str(video))["subtitle_path"] is None
