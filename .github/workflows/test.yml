@@ -1,0 +1,76 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly: yt-dlp/ffmpeg rot on their own schedule, not ours.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ffmpeg ${{ matrix.ffmpeg }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 24.04 apt ships ffmpeg 6.1: exercises the pre-8 path where
+          # -vsync still exists (the probe must pick -fps_mode there too).
+          - os: ubuntu-latest
+            ffmpeg: apt (6.x)
+            install: apt
+          # Homebrew ships current ffmpeg (9.x at the time of writing): the
+          # build that removed -vsync and broke upstream 0.2.0.
+          - os: macos-latest
+            ffmpeg: brew (latest)
+            install: brew
+          # Windows via Gyan builds, version-pinned: the oldest we claim to
+          # support, a middle release, and the newest.
+          - os: windows-latest
+            ffmpeg: "5.1"
+            install: action
+          - os: windows-latest
+            ffmpeg: "7.1"
+            install: action
+          - os: windows-latest
+            ffmpeg: release
+            install: action
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg (apt)
+        if: matrix.install == 'apt'
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
+      - name: Install ffmpeg (brew)
+        if: matrix.install == 'brew'
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (pinned)
+        if: matrix.install == 'action'
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: ${{ matrix.ffmpeg }}
+          github-token: ${{ github.token }}
+
+      - name: Install test deps
+        run: python -m pip install -q pytest yt-dlp
+
+      - name: Versions
+        shell: bash
+        run: |
+          python --version
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+          yt-dlp --version
+
+      - name: Run tests
+        shell: bash
+        run: python -m pytest -q -p no:cacheprovider
