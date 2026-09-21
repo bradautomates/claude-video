@@ -90,6 +90,26 @@ def test_keyframe_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     _assert_candidates_add_up(meta, out)
 
 
+def test_keyframe_fallback_when_range_has_no_keyframes(static_clip: Path, tmp_path: Path):
+    """A --start/--end window with no keyframes must fall back to uniform, not abort.
+
+    ffmpeg fails at encoder init ("No filtered frames for output stream") rather
+    than exiting 0 with no output, so a bare returncode check killed the whole
+    run instead of reaching the too-few-keyframes fallback below it.
+    """
+    out, meta = frames.extract_keyframes(
+        str(static_clip),
+        tmp_path / "f",
+        max_frames=50,
+        start_seconds=1.0,
+        end_seconds=3.0,
+    )
+    assert meta["engine"] == "uniform"
+    assert meta["fallback"] is True
+    assert len(out) > 0
+    assert all(fr["timestamp_seconds"] >= 1.0 for fr in out)
+
+
 def test_scene_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):
     out, meta = frames.extract_scene_or_uniform(
         str(cut_clip), tmp_path / "f", fps=2.0, target_frames=50, max_frames=100,

@@ -819,12 +819,24 @@ def extract_keyframes(
         output_pattern,
     ]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if result.returncode != 0:
+    files = sorted(out_dir.glob("frame_*.jpg"))
+    # A range holding no keyframes makes ffmpeg fail at encoder init ("No
+    # filtered frames for output stream") instead of exiting 0 with no output.
+    # That is common on a short --start/--end window, since encoders space
+    # keyframes seconds apart — and it is precisely the too-sparse case the
+    # uniform fallback below exists for, so treat an empty result as zero
+    # candidates rather than a hard error. A genuine decode failure also lands
+    # here and still surfaces, via the fallback's own ffmpeg call.
+    if result.returncode != 0 and files:
         raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
+    if result.returncode != 0:
+        print(
+            "[watch] no keyframes decoded in range — falling back to uniform sampling",
+            file=sys.stderr,
+        )
 
     offset = start_seconds or 0.0
     timestamps = [round(offset + float(m.group(1)), 2) for m in SHOWINFO_TS_RE.finditer(result.stderr)]
-    files = sorted(out_dir.glob("frame_*.jpg"))
     candidates: list[dict] = []
     for i, path in enumerate(files):
         ts = timestamps[i] if i < len(timestamps) else offset
