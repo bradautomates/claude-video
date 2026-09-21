@@ -44,13 +44,20 @@ other changes, with the author credited in the commit message.
 | [@drsandeeprana00-bit](https://github.com/drsandeeprana00-bit) | #200 YouTube player-client retry | adapted |
 | [@Rasmus257](https://github.com/Rasmus257) | #220 audio-only crash fix | adapted |
 | [@mrrobotbuilder](https://github.com/mrrobotbuilder) | #204 probe `OSError` guard | adapted |
+| [@sainbayare-net](https://github.com/sainbayare-net) | #97 keyframe-less range falls back to uniform | merged (frames part) |
+| [@JMAL1988](https://github.com/JMAL1988) | #147 sidecar `.vtt` for local files | merged |
+| [@Daily-AC](https://github.com/Daily-AC) | #175 RGB dedup thumbnails, #176 image-token numbers | merged |
+| [@thomaswillner](https://github.com/thomaswillner) | #154 skill description says when to invoke | merged |
+| [@stickersfxlab](https://github.com/stickersfxlab) | #119 `.env` in the encodings Windows writes | adapted |
+| [@gqbeerman](https://github.com/gqbeerman) | #136 preflight reads `./.env` like whisper.py | adapted |
+| [@caleb436](https://github.com/caleb436), [@pornthepp](https://github.com/pornthepp) | #127 #179 `android` client fallback | adapted |
 
-The ffmpeg `-vsync` fix was also independently submitted by @rainervianaprocurador (#230),
+The ffmpeg `-vsync` fix was also independently submitted by @PollxTroy-create (#102), @varunsahni18 (#103), @vgrosetti-maker (#125), @apalm8 (#133), @syrusdigital (#138), @utkarshbindal-wq (#148), @dustymurph (#162), @vakogogu-coder (#166), @ELpistolero21 (#171), @ZiCoreDom (#172), @SVSOnderwijs (#177), @MaCeeeee (#181), @victoropp (#130), @tiff4183 (#132), @sauveteur71 (#168), @thetimlee1 (#139), @rainervianaprocurador (#230),
 @blkzera (#213), @SatishGs01 (#211), @tradersc2020-oss (#202), @dd58mk72wv-stack (#198),
 @crybbyforreal (#197), @amipcoaching2027 (#188), @endiaye677 (#183), @aromat24 (#194) and
 @oheewono (#216); the Windows permission fix by @frankkeil (#201), @ppradeep123-ops (#190),
 @vanlieropf-dot (#185) and @Rchardd (#191); the Windows console fix by @tradersc2020-oss (#203)
-and @oheewono (#217). Thank you all — the duplicates are how we knew which bugs mattered most.
+and @oheewono (#217). Further independent fixes for problems landed above: @fabio-pisoni-hw (#100), @ZiCoreDom (#173), @stickersfxlab (#118), @dungartoriaaa (#146), @khcho98-maker (#159) for Windows; @weekly100million (#104) for subprocess decoding; @redonto-007 (#110) for console encoding; @Maktorin (#105), @drlee91 (#129), @waxandwires (#151), @Ydiouri (#124) for caption parsing; @greekr4 (#106) for test isolation; @tomimoyano15-byte (#113), @nacho-marin (#114), @ai-websites-poland (#116), @Nicopatron (#123), @djhammer20k (#164) for caption language; @Diterex (#112), @androsland (#169) for local transcription; @xiaoqian289-foece (#140) for cookies. Thank you all — the duplicates are how we knew which bugs mattered most. The full disposition is in [UPSTREAM.md](UPSTREAM.md).
 
 ## Related project
 
