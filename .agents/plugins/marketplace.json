@@ -8,13 +8,17 @@
       "name": "watch",
       "source": {
         "source": "url",
-        "url": "https://github.com/bradautomates/claude-video.git"
+        "url": "https://github.com/frinsen/claude-video.git"
       },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Productivity"
+      "category": "Productivity",
+      "homepage": "https://github.com/frinsen/claude-video"
     }
-  ]
+  ],
+  "owner": {
+    "name": "frinsen"
+  }
 }

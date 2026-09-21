@@ -22,8 +22,15 @@ import sys
 import time
 import urllib.error
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.request import Request, urlopen
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import config  # noqa: E402
+from config import read_env_value  # noqa: E402
 
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -32,9 +39,28 @@ GROQ_MODEL = "whisper-large-v3"
 OPENAI_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL = "whisper-1"
 
+# Optional self-hosted backend. Any server exposing OpenAI's transcriptions
+# route works — whisper.cpp `server`, faster-whisper-server, speaches, LM Studio.
+# Set WATCH_WHISPER_BASE_URL in the environment or ~/.config/watch/.env; when it
+# is set, local wins over Groq/OpenAI, so configuring it is the way to guarantee
+# audio never leaves the machine. WATCH_WHISPER_API_KEY is optional because most
+# local servers take no auth.
+LOCAL_BASE_URL_VAR = "WATCH_WHISPER_BASE_URL"
+LOCAL_MODEL_VAR = "WATCH_WHISPER_MODEL"
+LOCAL_KEY_VAR = "WATCH_WHISPER_API_KEY"
+LOCAL_MODEL_DEFAULT = "whisper-1"
+TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions"
+
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
 MAX_UPLOAD_BYTES = 24 * 1024 * 1024
+
+# Chunks are independent uploads, so they overlap instead of queueing. Each
+# one is a 24 MB POST that blocks for tens of seconds, and a long podcast
+# splits into several — serial upload made total wait scale linearly with
+# length. Kept deliberately low: the APIs rate-limit, and _post_whisper
+# only tolerates MAX_429_RETRIES before giving up on a chunk.
+MAX_PARALLEL_CHUNKS = 3
 
 
 def plan_chunks(
@@ -62,50 +88,46 @@ def plan_chunks(
     return plan
 
 
-def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
-    """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
+def _lookup(name: str) -> str | None:
+    """Read a setting: environment first, then ~/.config/watch/.env, then ./.env."""
+    return read_env_value(name)
 
-    If `preferred` is "groq" or "openai", only that backend's key is considered.
+
+def local_endpoint() -> tuple[str, str, str] | None:
+    """Return (endpoint, model, api_key) for a configured local backend, else None.
+
+    The base URL may be given as a bare origin ("http://localhost:8080") or as a
+    full transcriptions URL; the route is appended only when it is absent, so
+    both spellings work. api_key is "" when the server needs no auth.
     """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
-
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
+    base = _lookup(LOCAL_BASE_URL_VAR)
+    if not base:
         return None
+    base = base.rstrip("/")
+    endpoint = base if base.endswith("/audio/transcriptions") else base + TRANSCRIPTIONS_PATH
+    return endpoint, _lookup(LOCAL_MODEL_VAR) or LOCAL_MODEL_DEFAULT, _lookup(LOCAL_KEY_VAR) or ""
 
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
+
+def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, None]:
+    """Return (backend, api_key). Prefers a configured local server, then Groq, then OpenAI.
+
+    If `preferred` is "local", "groq" or "openai", only that backend is considered.
+    The local backend returns an empty api_key when the server needs no auth, so
+    callers must test `backend is not None` rather than the key's truthiness.
+    Resolution order per key is handled by config.read_env_value: the real
+    environment first, then ~/.config/watch/.env, then a project-local .env.
+    """
+    if preferred in (None, "local"):
+        local = local_endpoint()
+        if local is not None:
+            return "local", local[2]
 
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = read_env_value(key_name)
         if value:
             return backend, value
 
@@ -131,7 +153,7 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-b:a", "64k",
         str(out_path.resolve()),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
@@ -140,25 +162,38 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
 
 
 def audio_duration(audio_path: Path) -> float:
-    """Return the duration of an audio file in seconds via ffprobe."""
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+    """Return the duration of an audio file in seconds.
 
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            str(audio_path.resolve()),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
-    fmt = json.loads(result.stdout or "{}").get("format", {})
-    return float(fmt.get("duration") or 0.0)
+    Uses ffprobe when available; otherwise (or when ffprobe is present but the
+    OS refuses to run it, see frames.get_metadata) reads the duration from
+    ffmpeg's own banner so a blocked ffprobe.exe does not abort the run.
+    """
+    if shutil.which("ffprobe") is not None:
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format",
+                    str(audio_path.resolve()),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            result = None
+        if result is not None and result.returncode == 0:
+            fmt = json.loads(result.stdout or "{}").get("format", {})
+            return float(fmt.get("duration") or 0.0)
+        if result is not None and (result.stdout or "").strip():
+            raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg/ffprobe are not installed. Install with: brew install ffmpeg")
+    from frames import _metadata_via_ffmpeg  # local import: frames imports nothing from here
+    return float(_metadata_via_ffmpeg(str(audio_path))["duration_seconds"])
 
 
 def split_audio(
@@ -189,7 +224,7 @@ def split_audio(
             "-c", "copy",
             str(out_path.resolve()),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
             raise SystemExit(
                 f"ffmpeg failed to split audio chunk {index + 1}: {result.stderr.strip()}"
@@ -242,13 +277,15 @@ def _post_whisper(endpoint: str, api_key: str, model: str, audio_path: Path) -> 
     }
     body, boundary = _build_multipart(fields, audio_path)
     headers = {
-        "Authorization": f"Bearer {api_key}",
         "Content-Type": f"multipart/form-data; boundary={boundary}",
         # Groq sits behind Cloudflare — the default `Python-urllib/3.x` UA
         # trips WAF rule 1010 (403) before auth even runs. Any non-default
         # UA clears it; we identify honestly.
         "User-Agent": "watch-skill/1.0 (+claude-code; python-urllib)",
     }
+    # Local servers typically take no auth; sending an empty bearer breaks some.
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
 
     context = ssl.create_default_context()
     rate_limit_hits = 0
@@ -354,11 +391,21 @@ def _segments_from_response(data: dict) -> list[dict]:
         text = (seg.get("text") or "").strip()
         if not text:
             continue
-        out.append({
+        entry = {
             "start": round(float(seg.get("start") or 0.0), 2),
             "end": round(float(seg.get("end") or 0.0), 2),
             "text": text,
-        })
+        }
+        # Keep Whisper's own confidence signals. verbose_json already returns
+        # them, and they are what tells a real transcript apart from a
+        # hallucination over silence -- see assess_speech().
+        for key in ("no_speech_prob", "avg_logprob"):
+            if seg.get(key) is not None:
+                try:
+                    entry[key] = float(seg[key])
+                except (TypeError, ValueError):
+                    pass
+        out.append(entry)
 
     if not out:
         full = (data.get("text") or "").strip()
@@ -368,27 +415,101 @@ def _segments_from_response(data: dict) -> list[dict]:
     return out
 
 
+# Whisper invents dialogue when handed music or silence, and reports it with
+# the same confidence as real speech. Measured on two clips through Groq
+# whisper-large-v3:
+#
+#                        no_speech_prob            avg_logprob
+#   no dialogue          median 0.82, max 0.85     min -2.12
+#   narrated             median 0.01, max 0.08     min -0.21
+#
+# The gap is wide, so a coarse threshold separates them without tuning.
+NO_SPEECH_PROB_THRESHOLD = 0.6
+NO_SPEECH_SEGMENT_FRACTION = 0.5
+REPEAT_RUN_THRESHOLD = 3
+
+
+def assess_speech(segments: list[dict]) -> dict:
+    """Judge whether a Whisper transcript is likely hallucinated.
+
+    Returns {"suspect": bool, "reason": str|None}. Deliberately advisory: the
+    caller labels the transcript rather than discarding it, since a false
+    positive on a quiet-but-real recording would be worse than a warning.
+    """
+    if not segments:
+        return {"suspect": False, "reason": None}
+
+    probs = [s["no_speech_prob"] for s in segments if "no_speech_prob" in s]
+    if probs:
+        over = sum(1 for p in probs if p > NO_SPEECH_PROB_THRESHOLD)
+        fraction = over / len(probs)
+        if fraction > NO_SPEECH_SEGMENT_FRACTION:
+            return {
+                "suspect": True,
+                "reason": (
+                    f"{fraction:.0%} of segments scored no_speech_prob > "
+                    f"{NO_SPEECH_PROB_THRESHOLD}"
+                ),
+            }
+
+    # A hallucination loop repeats one phrase at regular intervals. This shows
+    # up even when per-segment probabilities are unavailable.
+    texts = [(s.get("text") or "").strip().lower() for s in segments]
+    texts = [t for t in texts if t]
+    if len(texts) >= REPEAT_RUN_THRESHOLD:
+        most = max(set(texts), key=texts.count)
+        count = texts.count(most)
+        if count >= REPEAT_RUN_THRESHOLD and count / len(texts) > 0.3:
+            return {
+                "suspect": True,
+                "reason": f"one phrase repeats {count}x of {len(texts)} segments",
+            }
+
+    return {"suspect": False, "reason": None}
+
+
 def transcribe_chunks(
     chunks: list[tuple[Path, float]],
     transcribe_one,
+    max_workers: int = MAX_PARALLEL_CHUNKS,
 ) -> list[dict]:
     """Transcribe each chunk, shift its segments by the chunk offset, concatenate.
+
+    Uploads run concurrently — they are independent requests against a remote
+    API, so the wall clock is bounded by the slowest chunk rather than by their
+    sum. Results are stitched back in chunk order, not completion order, so the
+    transcript and the progress lines are byte-identical to a serial run.
 
     A chunk that fails after its own retries is logged and skipped so one bad
     slice doesn't discard the whole transcript. Raises only if every chunk fails.
     """
+    results: list[list[dict] | None] = [None] * len(chunks)
+    errors: list[BaseException | None] = [None] * len(chunks)
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(chunks)))) as pool:
+        futures = {
+            pool.submit(transcribe_one, path): index
+            for index, (path, _) in enumerate(chunks)
+        }
+        for future in futures:
+            index = futures[future]
+            try:
+                results[index] = future.result()
+            except SystemExit as exc:
+                errors[index] = exc
+
     segments: list[dict] = []
     failures = 0
-    for index, (path, offset) in enumerate(chunks):
-        try:
-            chunk_segments = transcribe_one(path)
-        except SystemExit as exc:
+    for index, (_, offset) in enumerate(chunks):
+        error = errors[index]
+        if error is not None:
             failures += 1
             print(
-                f"[watch] chunk {index + 1}/{len(chunks)} failed — skipping ({exc})",
+                f"[watch] chunk {index + 1}/{len(chunks)} failed — skipping ({error})",
                 file=sys.stderr,
             )
             continue
+        chunk_segments = results[index] or []
         segments.extend(shift_segments(chunk_segments, offset))
         print(
             f"[watch] chunk {index + 1}/{len(chunks)} → {len(chunk_segments)} segments",
@@ -406,6 +527,16 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend == "local":
+        local = local_endpoint()
+        if local is None:
+            raise SystemExit(
+                f"--whisper local was selected but {LOCAL_BASE_URL_VAR} is not set. "
+                f"Set it in the environment or {config.CONFIG_FILE}, e.g. "
+                f"{LOCAL_BASE_URL_VAR}=http://localhost:8080"
+            )
+        endpoint, model, key = local
+        response = _post_whisper(endpoint, key, model, audio_path)
     else:
         raise SystemExit(f"Unknown whisper backend: {backend}")
     return _segments_from_response(response)
@@ -422,14 +553,20 @@ def transcribe_video(
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
     if backend is None or api_key is None:
-        detected_backend, detected_key = load_api_key()
+        # Scope the lookup to the requested backend. Without `preferred`, forcing
+        # `--whisper openai` with only GROQ_API_KEY set would load the Groq key and
+        # then post it to api.openai.com.
+        detected_backend, detected_key = load_api_key(preferred=backend)
         backend = backend or detected_backend
         api_key = api_key or detected_key
 
-    if not backend or not api_key:
+    # A local backend may legitimately have an empty key, so only Groq/OpenAI
+    # require one.
+    if not backend or (not api_key and backend != "local"):
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
-            "No Whisper API key available. Set GROQ_API_KEY (preferred) or OPENAI_API_KEY "
+            "No Whisper backend available. Set GROQ_API_KEY or OPENAI_API_KEY, or point "
+            f"{LOCAL_BASE_URL_VAR} at a local OpenAI-compatible transcription server, "
             "in the environment or in ~/.config/watch/.env. "
             f"Run `python3 {setup_py}` to configure."
         )

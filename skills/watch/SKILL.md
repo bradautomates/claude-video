@@ -1,12 +1,12 @@
 ---
 name: watch
-version: "0.2.0"
+version: "0.3.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/bradautomates/claude-video
-repository: https://github.com/bradautomates/claude-video
-author: bradautomates
+homepage: https://github.com/frinsen/claude-video
+repository: https://github.com/frinsen/claude-video
+author: frinsen (fork of bradautomates/claude-video by Bradley Bonanno, MIT)
 license: MIT
 user-invocable: true
 ---
@@ -81,7 +81,7 @@ The installer is idempotent — safe to re-run:
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
+On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings, restricted to `0600` on macOS/Linux (on Windows the file keeps the inherited user-profile ACL — POSIX modes do not apply).
 
 **If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
 
@@ -186,11 +186,13 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
 
+**Proper nouns in a transcript are unverified.** Captions and Whisper both transcribe phonetically, so names come back wrong or invented — "Diogo Almeida" as "Dooo Almeida", "Vercel" as "Verscell", ChatGPT as "chatbt". Frames are the corrective: title cards, slides and on-screen UI usually spell a name correctly, so check it against a frame before stating it. Where no frame confirms it — including every `transcript`-detail run, which has no frames at all — give the name as-heard and say it is from the transcript and unverified. This applies to people, companies, products, model names, URLs, prices and figures: anything the user might repeat, quote or act on.
+
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script's last line names the working directory and says whether it is *temporary* or *user-supplied*. Only a **temporary** dir (auto-created under the system temp dir, prefix `watch-`) may be deleted, and only if the user isn't going to ask follow-ups — then `rm -rf <dir>`. **Never delete a user-supplied `--out-dir`**, and never delete a directory that contains the source file you were given (the script warns when it does): that is the user's data, and a local recording may have no upstream copy.
 
 ## Detail and frames
 
@@ -234,7 +236,8 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying. If the site needs a signed-in session (or is challenging the request as a bot), tell the user they can re-run with `WATCH_COOKIES_FROM_BROWSER=chrome` or `WATCH_COOKIES_FILE=/path/to/cookies.txt` — ask before reading their cookies, never do it unprompted.
+- **`SSL: CERTIFICATE_VERIFY_FAILED` on the very first request, or every host unreachable** → you are in a network-restricted sandbox whose proxy blocks the video host (typical of Claude's cloud/web sandbox: PyPI and GitHub allowed, youtube.com not). It is not a certificate problem and not fixable from here — tell the user plainly, suggest adding the host to the egress allowlist or running on their own machine, and stop retrying.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
@@ -254,11 +257,11 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
-- Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
+- Reads / creates `~/.config/watch/.env` (mode `0600` on macOS/Linux; inherited user-profile ACL on Windows) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
+- Does not access any platform account by default — yt-dlp runs signed-out and requests only public data. It uses a signed-in session **only** when the user explicitly sets `WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox` (yt-dlp `--cookies-from-browser`) or `WATCH_COOKIES_FILE=/path/to/cookies.txt` (`--cookies`), and even then it only reads — it never posts, comments, or changes account state. Cookies go only to the host the URL points at and are never copied into the working directory or printed
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)

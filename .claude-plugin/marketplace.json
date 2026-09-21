@@ -4,7 +4,7 @@
     "description": "Give Claude a video input. /watch downloads, extracts frames, transcribes, and hands it all to Claude."
   },
   "owner": {
-    "name": "Bradley Bonanno"
+    "name": "frinsen"
   },
   "plugins": [
     {
@@ -15,7 +15,7 @@
       },
       "source": "./",
       "category": "productivity",
-      "homepage": "https://github.com/bradautomates/claude-video"
+      "homepage": "https://github.com/frinsen/claude-video"
     }
   ]
 }

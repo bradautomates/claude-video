@@ -47,4 +47,4 @@ bash skills/watch/scripts/build-skill.sh   # → dist/watch.skill
 
 - Keep the version in sync across `skills/watch/SKILL.md` (frontmatter), `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` when cutting a release.
 - Releasing: tag `vX.Y.Z` and push the tag; `.github/workflows/release.yml` builds `dist/watch.skill` and attaches it to the GitHub release.
-- Never commit real API keys or `.env` contents; keys live in `~/.config/watch/.env` (mode `0600`) at runtime.
+- Never commit real API keys or `.env` contents; keys live in `~/.config/watch/.env` at runtime (mode `0600` on macOS/Linux; inherited user-profile ACL on Windows).

@@ -15,14 +15,15 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import frame_cap, get_config  # noqa: E402
+from config import force_utf8_output, frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import assess_speech, load_api_key, transcribe_video  # noqa: E402
 
 
 def main() -> int:
+    force_utf8_output()
     ap = argparse.ArgumentParser(
         prog="watch",
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
@@ -56,9 +57,23 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "local"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default: prefer a local server if "
+             "WATCH_WHISPER_BASE_URL is set, else Groq, else OpenAI.",
+    )
+    ap.add_argument(
+        "--lang",
+        type=str,
+        default=None,
+        help="Caption language to prefer (e.g. de). Default: the video's own language, "
+             "falling back to English.",
+    )
+    ap.add_argument(
+        "--force-whisper",
+        action="store_true",
+        help="Ignore native captions and transcribe with Whisper anyway. Use when the "
+             "source's auto-captions are machine-translated or otherwise poor.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -67,6 +82,9 @@ def main() -> int:
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
     args = ap.parse_args()
+
+    if args.force_whisper and args.no_whisper:
+        ap.error("--force-whisper and --no-whisper are mutually exclusive")
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -80,12 +98,29 @@ def main() -> int:
     budget_cap = max_frames if max_frames is not None else 100
     cue_timestamps = parse_timestamps(args.timestamps)
 
-    if args.out_dir:
+    user_out_dir = bool(args.out_dir)
+    if user_out_dir:
         work = Path(args.out_dir).expanduser().resolve()
     else:
         work = Path(tempfile.mkdtemp(prefix="watch-"))
     work.mkdir(parents=True, exist_ok=True)
     print(f"[watch] working dir: {work}", file=sys.stderr)
+
+    # A local source that lives inside --out-dir is the documented re-run flow
+    # ("point the second run at the downloaded file"). Nothing here deletes
+    # it, but the cleanup step must not either — say so up front (#80).
+    source_in_work = False
+    if not is_url(args.source):
+        try:
+            source_in_work = Path(args.source).expanduser().resolve().is_relative_to(work)
+        except (OSError, ValueError):
+            source_in_work = False
+        if source_in_work:
+            print(
+                "[watch] source file is inside the working dir — it will be kept; "
+                "do not delete this directory after the run.",
+                file=sys.stderr,
+            )
 
     url_source = is_url(args.source)
     dl: dict = {"subtitle_path": None, "info": {}, "downloaded": False}
@@ -93,11 +128,17 @@ def main() -> int:
     transcript_text: str | None = None
     transcript_source: str | None = None
     video_path: str | None = None
+    # True only when a video download was ATTEMPTED and FAILED but a subtitle
+    # came down anyway (download.py sets this) -- distinct from video_path
+    # being None because --detail transcript deliberately skipped the
+    # download by user choice. Conflating the two would let a real failure
+    # hide behind wording written for a benign, expected state.
+    degraded = False
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
-        if dl.get("subtitle_path"):
+        dl = fetch_captions(args.source, work / "download", lang=args.lang)
+        if dl.get("subtitle_path") and not args.force_whisper:
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
                 transcript_text = format_transcript(transcript_segments)
@@ -122,11 +163,21 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                lang=args.lang,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
             dl = download(args.source, work / "download")
         video_path = dl["video_path"]
+        degraded = bool(dl.get("degraded"))
+        if degraded:
+            failure_msg = dl.get("failure_message") or "yt-dlp did not produce a video file"
+            print(f"[watch] DEGRADED: {failure_msg}", file=sys.stderr)
+            print(
+                "[watch] no video obtained — continuing in TRANSCRIPT-ONLY mode "
+                "(0 frames, nothing was watched visually).",
+                file=sys.stderr,
+            )
 
     meta = get_metadata(video_path) if video_path else {
         "duration_seconds": float((dl.get("info") or {}).get("duration") or 0),
@@ -193,7 +244,14 @@ def main() -> int:
             )
 
     detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
-    if detail != "transcript" and video_path and detail_budget != 0:
+    # An audio-only file (a TikTok slideshow's soundtrack, a podcast feed, an
+    # audio-only fetch that wasn't meant to be) has no video stream. Handing it
+    # to ffmpeg's frame filters just crashes ("Input #0, mp3"), so skip frames
+    # and say so instead (#220).
+    audio_only_source = bool(video_path) and not audio_only and not meta.get("width")
+    if audio_only_source and detail != "transcript":
+        print("[watch] source has no video stream — skipping frame extraction (transcript only)", file=sys.stderr)
+    if detail != "transcript" and video_path and detail_budget != 0 and not audio_only_source:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -227,7 +285,7 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
-    if not transcript_segments and dl.get("subtitle_path"):
+    if not transcript_segments and dl.get("subtitle_path") and not args.force_whisper:
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
@@ -238,7 +296,8 @@ def main() -> int:
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        # A local server may need no key, so an empty api_key is valid there.
+        if backend and (api_key or backend == "local"):
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
@@ -271,25 +330,47 @@ def main() -> int:
     print("# watch: video report")
     print()
     print(f"- **Source:** {args.source}")
+    if degraded:
+        print("- **Video:** ⚠️ NOT OBTAINED — transcript-only mode, 0 frames (see warning below)")
     if info.get("title"):
         print(f"- **Title:** {info['title']}")
     if info.get("uploader"):
         print(f"- **Uploader:** {info['uploader']}")
     print(f"- **Duration:** {format_time(full_duration)} ({full_duration:.1f}s)")
     if focused:
-        print(
-            f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
-            f"({effective_duration:.1f}s)"
-        )
+        if degraded and end_sec is None:
+            print(f"- **Focus range:** {format_time(effective_start)} → end of transcript")
+        else:
+            print(
+                f"- **Focus range:** {format_time(effective_start)} → {format_time(effective_end)} "
+                f"({effective_duration:.1f}s)"
+            )
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
+    if degraded:
+        print("- **Frames:** 0 — NO VIDEO OBTAINED")
+    elif audio_only_source and detail != "transcript":
+        print("- **Frames:** 0 — source has no video stream (audio only)")
+    elif detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
-        fallback = " with uniform fallback" if frame_meta.get("fallback") else ""
+        # The engine is already "uniform" on a fallback, so name the detector
+        # that came up short and why, instead of repeating the word.
+        fallback = ""
+        if frame_meta.get("fallback"):
+            detector = frame_meta.get("fallback_from", "scene")
+            short = frame_meta.get("fallback_candidate_count")
+            count = (
+                f"too few {detector} candidates" if short is None
+                else f"only {short} {detector} candidate{'' if short == 1 else 's'}"
+            )
+            if frame_meta.get("fallback_reason") == "coverage":
+                fallback = f" after {short} {detector} candidates bunched into part of the range"
+            else:
+                fallback = f" after {count}"
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(
@@ -307,14 +388,33 @@ def main() -> int:
         )
     if frames:
         print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
+    speech: dict = {"suspect": False, "reason": None}
     if transcript_segments:
         in_range = " in range" if focused else ""
+        speech = (
+            assess_speech(transcript_segments)
+            if (transcript_source or "").startswith("whisper")
+            else {"suspect": False, "reason": None}
+        )
+        suspect_note = " -- LOW CONFIDENCE" if speech["suspect"] else ""
         print(
             f"- **Transcript:** {len(transcript_segments)} segments{in_range} "
-            f"(via {transcript_source or 'captions'})"
+            f"(via {transcript_source or 'captions'}){suspect_note}"
         )
     else:
         print("- **Transcript:** none available")
+
+    if degraded:
+        print()
+        print(
+            "> ⚠️ **NO VIDEO OBTAINED — TRANSCRIPT-ONLY MODE.** The video stream could not be "
+            "downloaded, so there are **zero frames** and nothing in this run was watched "
+            "visually. Answer using the transcript below only — do not describe or infer any "
+            "visual content."
+        )
+        print(">")
+        for line in (dl.get("failure_message") or "yt-dlp did not produce a video file").splitlines():
+            print(f"> {line}")
 
     if detail == "token-burner" and len(frames) > 250:
         print()
@@ -323,7 +423,7 @@ def main() -> int:
             "This may use a large number of image tokens."
         )
 
-    if not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
+    if not degraded and not focused and full_duration > 600 and detail not in ("transcript", "token-burner"):
         mins = int(full_duration // 60)
         print()
         print(
@@ -336,7 +436,13 @@ def main() -> int:
     print()
     print("## Frames")
     print()
-    if frames:
+    if degraded:
+        print(
+            "**No frames — no video was downloaded.** There is nothing to read in this "
+            "section. Do not treat its absence as evidence of the video's visual content, "
+            "and do not answer as though frames were reviewed."
+        )
+    elif frames:
         print(f"Frames live at: `{work / 'frames'}`")
         print()
         print(
@@ -361,6 +467,14 @@ def main() -> int:
             print(f"_Source: {label}. Filtered to {format_time(effective_start)} → {format_time(effective_end)}:_")
         else:
             print(f"_Source: {label}._")
+        if speech["suspect"]:
+            print()
+            print(
+                f"> **Treat this transcript as unreliable** ({speech['reason']}). "
+                "Whisper fabricates dialogue when given music or silence, so this "
+                "video may have no speech at all. Judge it against the frames "
+                "before quoting any of it."
+            )
         print()
         print("```")
         print(transcript_text)
@@ -384,7 +498,10 @@ def main() -> int:
 
     print()
     print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    if user_out_dir or source_in_work:
+        print(f"_Work dir: `{work}` — user-supplied, keep it (do not delete)._")
+    else:
+        print(f"_Work dir: `{work}` — temporary, delete when done._")
 
     return 0
 
