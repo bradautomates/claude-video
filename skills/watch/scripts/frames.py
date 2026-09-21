@@ -47,11 +47,18 @@ def _vfr_flag() -> tuple[str, ...]:
     ffmpeg 8.0 removed the long-deprecated ``-vsync``; ``-fps_mode`` has existed
     since 5.0. Probe once and cache, so old and new builds both work.
     """
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-h", "full"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        # ffmpeg missing or unrunnable: the callers already raise a clear
+        # "ffmpeg is not installed" error, so don't mask it with a probe crash.
+        return ("-vsync", "vfr")
     if "-fps_mode" in (result.stdout or "") + (result.stderr or ""):
         return ("-fps_mode", "vfr")
     return ("-vsync", "vfr")
