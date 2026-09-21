@@ -62,12 +62,28 @@ def main() -> int:
         help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
     )
     ap.add_argument(
+        "--lang",
+        type=str,
+        default=None,
+        help="Caption language to prefer (e.g. de). Default: the video's own language, "
+             "falling back to English.",
+    )
+    ap.add_argument(
+        "--force-whisper",
+        action="store_true",
+        help="Ignore native captions and transcribe with Whisper anyway. Use when the "
+             "source's auto-captions are machine-translated or otherwise poor.",
+    )
+    ap.add_argument(
         "--no-dedup",
         action="store_true",
         help="Disable near-duplicate frame removal. Keeps visually identical "
              "frames (static screen recordings, held slides) instead of collapsing them.",
     )
     args = ap.parse_args()
+
+    if args.force_whisper and args.no_whisper:
+        ap.error("--force-whisper and --no-whisper are mutually exclusive")
 
     config = get_config()
     detail = args.detail or str(config["detail"])
@@ -97,8 +113,8 @@ def main() -> int:
 
     if url_source:
         print("[watch] checking metadata/captions via yt-dlp…", file=sys.stderr)
-        dl = fetch_captions(args.source, work / "download")
-        if dl.get("subtitle_path"):
+        dl = fetch_captions(args.source, work / "download", lang=args.lang)
+        if dl.get("subtitle_path") and not args.force_whisper:
             try:
                 transcript_segments = parse_vtt(dl["subtitle_path"])
                 transcript_text = format_transcript(transcript_segments)
@@ -123,6 +139,7 @@ def main() -> int:
                 args.source,
                 work / "download",
                 audio_only=audio_only,
+                lang=args.lang,
             )
         else:
             print("[watch] using local file…", file=sys.stderr)
@@ -228,7 +245,7 @@ def main() -> int:
     if cue_frames:
         frames = merge_frames(frames, cue_frames)
 
-    if not transcript_segments and dl.get("subtitle_path"):
+    if not transcript_segments and dl.get("subtitle_path") and not args.force_whisper:
         try:
             all_segments = parse_vtt(dl["subtitle_path"])
             transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
