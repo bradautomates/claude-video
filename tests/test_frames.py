@@ -2,8 +2,50 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 import frames
+
+
+@pytest.fixture
+def uncached_vfr_flag():
+    """The flag probe is cached process-wide; isolate tests that fake it."""
+    frames._vfr_flag.cache_clear()
+    yield
+    frames._vfr_flag.cache_clear()
+
+
+def test_vfr_flag_prefers_fps_mode(monkeypatch, uncached_vfr_flag):
+    monkeypatch.setattr(
+        frames.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout="  -fps_mode[:stream_specifier]  E..V.....\n", stderr=""),
+    )
+    assert frames._vfr_flag() == ("-fps_mode", "vfr")
+
+
+def test_vfr_flag_falls_back_to_vsync(monkeypatch, uncached_vfr_flag):
+    monkeypatch.setattr(
+        frames.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(stdout="  -vsync <int>  E..V.....\n", stderr=""),
+    )
+    assert frames._vfr_flag() == ("-vsync", "vfr")
+
+
+def test_vfr_flag_matches_installed_ffmpeg():
+    """Whatever this ffmpeg is, the flag it gets must be one it accepts."""
+    flag = frames._vfr_flag()
+    assert flag in {("-fps_mode", "vfr"), ("-vsync", "vfr")}
+    probe = frames.subprocess.run(
+        ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "testsrc=duration=0.2:rate=10",
+         *flag, "-f", "null", "-"],
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr.strip()
 
 
 def test_keyframe_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):

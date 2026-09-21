@@ -8,6 +8,7 @@ zooming in for detail).
 """
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
@@ -37,6 +38,23 @@ MAX_READ_DIMENSION = 1998
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@functools.lru_cache(maxsize=1)
+def _vfr_flag() -> tuple[str, ...]:
+    """Return the frame-rate-mode flag this ffmpeg understands.
+
+    ffmpeg 8.0 removed the long-deprecated ``-vsync``; ``-fps_mode`` has existed
+    since 5.0. Probe once and cache, so old and new builds both work.
+    """
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-h", "full"],
+        capture_output=True,
+        text=True,
+    )
+    if "-fps_mode" in (result.stdout or "") + (result.stderr or ""):
+        return ("-fps_mode", "vfr")
+    return ("-vsync", "vfr")
 
 
 def _scale_filter(resolution: int) -> str:
@@ -253,7 +271,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +630,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_flag(),
         "-q:v", "4",
         output_pattern,
     ]
