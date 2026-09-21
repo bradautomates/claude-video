@@ -25,7 +25,10 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 - **Re-running on the downloaded file inside the same `--out-dir` could destroy it** (#80). The report footer now says whether the work dir is temporary or user-supplied, the script warns when the source lives inside it, and SKILL.md forbids deleting anything but an auto-created temp dir.
 - **`ffprobe.exe` blocked by Windows App Control aborted the run** (#128). Metadata falls back to parsing `ffmpeg -i`'s banner; `setup.py` treats ffprobe as optional.
 - **Audio-only downloads crashed frame extraction with `Input #0, mp3`** (from PR #220). Sources without a video stream finish in transcript-only mode.
-- **Test suite depended on the developer's machine** (#96; PRs #231 #208). Host binaries are stubbed for argv/state-machine tests; the frame-line matcher accepts Windows path separators.
+- **Test suite depended on the developer's machine** (#96; PRs #231 #208).
+- **`efficient` detail crashed on a range with no keyframes** (PR #97). ffmpeg fails at encoder init when a short `--start/--end` window holds no keyframe; that now falls back to uniform sampling like the too-sparse case it is.
+- **`.env` written by PowerShell or Notepad could not be read** (PR #119). UTF-16 (± BOM), UTF-8 BOM and ANSI-codepage files raised `UnicodeDecodeError` (a `ValueError`, so `except OSError` missed it) or silently lost every key; one decoder now sits behind the single parser.
+- **Preflight ignored `./.env` while transcription read it** (PR #136), so `setup.py --check` could demand a key that `whisper.py` would have found. Host binaries are stubbed for argv/state-machine tests; the frame-line matcher accepts Windows path separators.
 
 ### Added
 - **`--lang CODE`** and **`--force-whisper`** (PRs #187 #207).
@@ -36,7 +39,12 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 - **Preflight warnings for a yt-dlp likely to 403** (#67 #93 #156; PR #227): more than 60 days old, built without browser impersonation (Homebrew's formula omits `curl_cffi`), or no JavaScript runtime (deno/node) for YouTube's challenge solver. Still exit 0 — a warning, not a blocker.
 - **YouTube player-client retry** (#156; from PR #200). A media fetch refused with 403/429/bot-check on the default client is retried through `mweb`, `tv`, `web_embedded` — media only, since alternate clients drop caption tracks.
 - **Transcript proper nouns flagged as unverified** in SKILL.md (PR #236).
-- **`WATCH_YTDLP`** — choose which yt-dlp runs (a path, or a command such as `python -m yt_dlp`) for machines with several copies; the resolved binary is always the one executed.
+- **Sidecar captions for local files** (PR #147): `clip.vtt` or `clip.<lang>.vtt` next to a local video is used as the transcript.
+- **Frame dedup compares RGB, not grayscale** (PR #175), so an equal-luma hue change still counts as a distinct frame.
+- **Correct image-token arithmetic** in SKILL.md (PR #176): 28-px patches, so a 512×288 frame is 209 tokens and contact sheets save nothing.
+- **Skill description says when to invoke** (PR #154).
+- `android` joins the YouTube media-fetch client fallbacks (PRs #127 #179).
+- `UPSTREAM.md`: disposition of all 99 upstream PRs and 41 issues open at fork time; a weekly upstream-watch workflow opens a tracking issue for new activity.- **`WATCH_YTDLP`** — choose which yt-dlp runs (a path, or a command such as `python -m yt_dlp`) for machines with several copies; the resolved binary is always the one executed.
 - **CI** on every push/PR and weekly: pytest on Ubuntu 22.04 (ffmpeg 4.4), Ubuntu 24.04 (6.1), macOS (9.x), Windows (8.1.2, latest).
 - `AUTHORS.md`, and the MIT notice inside the skill package so bundles and `npx skills add` installs carry it.
 - Docs: sandbox egress blocks (`CERTIFICATE_VERIFY_FAILED` from an allowlist proxy) explained as environmental (#83 #135).

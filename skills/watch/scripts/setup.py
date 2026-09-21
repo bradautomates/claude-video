@@ -275,7 +275,9 @@ def _read_env_key(name: str) -> str | None:
     Parsing lives in config.read_env_value so this agrees with every other
     consumer; only the permission warning is local to setup.
     """
-    return read_env_value(name, paths=[CONFIG_FILE], on_file=_check_file_permissions)
+    # Same search order as whisper.py (config first, then ./.env) so the
+    # preflight and the transcription step agree on whether a key exists (#136).
+    return read_env_value(name, on_file=_check_file_permissions)
 
 
 def _have_api_key() -> tuple[bool, str | None]:

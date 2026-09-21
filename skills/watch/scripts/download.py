@@ -37,6 +37,20 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _sidecar_subtitle(video: Path) -> Path | None:
+    """Find a VTT sitting next to a local video file.
+
+    Matches ``clip.vtt`` first, then any language-tagged sibling
+    (``clip.en.vtt``, ``clip.nl.vtt``) as yt-dlp writes them.
+    """
+    exact = video.with_suffix(".vtt")
+    if exact.exists():
+        return exact
+    prefix = f"{video.stem}."
+    tagged = sorted(c for c in video.parent.glob("*.vtt") if c.name.startswith(prefix))
+    return tagged[0] if tagged else None
+
+
 def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -46,9 +60,10 @@ def resolve_local(path: str) -> dict:
             f"[watch] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
         )
+    sidecar = _sidecar_subtitle(p)
     return {
         "video_path": str(p),
-        "subtitle_path": None,
+        "subtitle_path": str(sidecar) if sidecar else None,
         "info": {"title": p.name, "url": str(p)},
         "downloaded": False,
     }
@@ -209,7 +224,7 @@ def _resolve_subtitle(url: str, out_dir: Path, lang: str | None) -> Path | None:
 # Alternate YouTube player clients, tried in order when `web` is refused.
 # Cheapest and most permissive first; capped so a truly blocked host costs
 # three extra attempts, not a dozen.
-YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded")
+YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded", "android")
 _REFUSAL_MARKERS = (
     "http error 403", "403: forbidden", "http error 429", "too many requests",
     "confirm you're not a bot", "confirm you\u2019re not a bot", "sign in to confirm",

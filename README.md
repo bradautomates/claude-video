@@ -18,9 +18,11 @@ We use `/watch` daily and want to keep building on it. In September 2026 that wa
 
 ## Quick install
 
-Claude Code (recommended — auto-updates via marketplace):
+Claude Code (recommended — auto-updates via marketplace). Two separate commands; if the **Add Marketplace** dialog opens, its source field takes only `frinsen/claude-video`:
 ```
 /plugin marketplace add frinsen/claude-video
+```
+```
 /plugin install watch@claude-video
 ```
 
@@ -124,6 +126,8 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 
 ```
 /plugin marketplace add frinsen/claude-video
+```
+```
 /plugin install watch@claude-video
 ```
 

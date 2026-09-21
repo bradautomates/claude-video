@@ -167,3 +167,26 @@ def test_ytdlp_cmd_defaults_to_path_lookup(monkeypatch):
 def test_ytdlp_cmd_override_may_be_a_command(monkeypatch):
     monkeypatch.setattr(config, "read_env_value", lambda name: "python -m yt_dlp" if name == "WATCH_YTDLP" else None)
     assert config.ytdlp_cmd() == ["python", "-m", "yt_dlp"]
+
+
+class TestEnvEncodings:
+    """Windows writes .env files in several encodings (#119): PowerShell 5's
+    `> .env` is UTF-16LE with BOM, Notepad offers UTF-8 with BOM, Set-Content
+    uses the ANSI code page. All must parse; none may raise."""
+
+    def test_utf16le_with_bom(self, tmp_path):
+        p = tmp_path / ".env"; p.write_bytes("GROQ_API_KEY=abc\n".encode("utf-16"))
+        assert config.read_env_file(p) == {"GROQ_API_KEY": "abc"}
+
+    def test_utf16le_without_bom(self, tmp_path):
+        p = tmp_path / ".env"; p.write_bytes("WATCH_DETAIL=efficient\n".encode("utf-16-le"))
+        assert config.read_env_file(p) == {"WATCH_DETAIL": "efficient"}
+
+    def test_utf8_bom_does_not_poison_first_key(self, tmp_path):
+        p = tmp_path / ".env"; p.write_bytes(b"\xef\xbb\xbfWATCH_DETAIL=balanced\n")
+        assert config.read_env_file(p) == {"WATCH_DETAIL": "balanced"}
+
+    def test_ansi_codepage_does_not_raise(self, tmp_path, capsys):
+        p = tmp_path / ".env"; p.write_bytes("GROQ_API_KEY=abc # ó\n".encode("cp1252"))
+        assert config.read_env_file(p)["GROQ_API_KEY"] == "abc"
+        assert "not valid UTF-8" in capsys.readouterr().err

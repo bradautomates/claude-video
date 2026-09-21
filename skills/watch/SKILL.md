@@ -1,7 +1,7 @@
 ---
 name: watch
 version: "0.3.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
+description: Watch a video from a URL or local path and answer questions about its content. Use when the user shares a video and asks what is in it, wants it summarised, or asks about something shown or said on screen.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
 homepage: https://github.com/frinsen/claude-video
@@ -222,10 +222,11 @@ Behavior:
 
 ## Transcription
 
-The script gets a timestamped transcript in one of two ways:
+The script gets a timestamped transcript in one of three ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+2. **Sidecar VTT (free, local files).** For a local path, a `.vtt` next to the video (`clip.vtt`, or a language-tagged `clip.en.vtt`) is used as the transcript. This is the only free transcript route for a file that never came from a caption-bearing platform — put your own transcription output there and no API key is needed.
+3. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
@@ -242,10 +243,18 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 
 ## Token efficiency
 
-This skill burns tokens primarily on frames. Order of magnitude:
-- 80 frames at 512px wide is roughly 50-80k image tokens depending on aspect ratio.
+This skill burns tokens primarily on frames. Claude prices an image in 28x28-pixel
+patches, so one frame costs `ceil(width / 28) * ceil(height / 28)` visual tokens
+([vision docs](https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost)).
+Cost tracks pixel area, not image count:
+- At the default 512px width a 16:9 frame is 512x288, so `19 * 11 = 209` tokens.
+  80 of them is about **17k**.
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
-- Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
+- Bumping `--resolution` to 1024 makes a frame `37 * 21 = 777` tokens - 3.7x more.
+  Only do it when necessary.
+- Because cost follows pixel area, tiling frames into contact sheets saves nothing:
+  the same nine frames cost the same whether sent as nine images or one 3x3 sheet.
+  Lower `--resolution` or `--max-frames` to actually spend less.
 
 If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
 
