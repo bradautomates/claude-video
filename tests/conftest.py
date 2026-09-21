@@ -153,12 +153,10 @@ def make_stub_yt_dlp(
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "yt-dlp"
     if os.name == "nt":
-        # Windows: a .bat shim that shutil.which can find, forwarding to the
-        # Python script (kept as yt-dlp.py so the shim can name it).
+        # Windows: no shebang launch and no .bat shim (cmd.exe would read the
+        # `<` in the -f selector as a redirection). Tests point WATCH_YTDLP at
+        # `python yt-dlp.py` instead — see ytdlp_env().
         stub = bin_dir / "yt-dlp.py"
-        (bin_dir / "yt-dlp.bat").write_text(
-            f'@"{sys.executable}" "%~dp0yt-dlp.py" %*\r\n', encoding="utf-8"
-        )
     script = f'''#!/usr/bin/env python3
 import json
 import sys
@@ -219,3 +217,11 @@ def stub_yt_dlp(tmp_path: Path):
         return bin_dir
 
     return _make
+
+
+def ytdlp_env(bin_dir: Path) -> dict[str, str]:
+    """Environment additions that make watch.py run the stub in *bin_dir*."""
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    if os.name == "nt":
+        env["WATCH_YTDLP"] = f'"{sys.executable}" "{bin_dir / "yt-dlp.py"}"'
+    return env

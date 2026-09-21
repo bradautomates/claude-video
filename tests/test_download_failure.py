@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ytdlp_env
+
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -186,7 +188,7 @@ SAMPLE_VTT = (
 
 def _run_watch(bin_dir: Path, work: Path, *extra_args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env.update(ytdlp_env(bin_dir))
     cmd = [
         sys.executable, str(WATCH),
         "https://example.invalid/watch?v=stub-fixture",

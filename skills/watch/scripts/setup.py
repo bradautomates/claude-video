@@ -38,7 +38,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import force_utf8_output, get_config, read_env_value  # noqa: E402
+from config import force_utf8_output, get_config, read_env_value, ytdlp_cmd  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "yt-dlp"]
@@ -99,7 +99,10 @@ def _which(name: str) -> str | None:
 
 
 def _check_binaries() -> list[str]:
-    return [b for b in REQUIRED_BINARIES if not _which(b)]
+    def present(name: str) -> bool:
+        # WATCH_YTDLP may name a specific binary or a `python -m yt_dlp` command.
+        return _which(ytdlp_cmd()[0] if name == "yt-dlp" else name) is not None
+    return [b for b in REQUIRED_BINARIES if not present(b)]
 
 
 def _yt_dlp_version() -> str | None:
@@ -118,7 +121,7 @@ def _yt_dlp_version() -> str | None:
     """
     try:
         proc = subprocess.run(
-            [_which("yt-dlp") or "yt-dlp", "--version"], capture_output=True, text=True, timeout=5
+            [*ytdlp_cmd(), "--version"], capture_output=True, text=True, timeout=5
         )
         return proc.stdout.strip() or None
     except Exception:
@@ -184,7 +187,7 @@ def _yt_dlp_impersonation(missing_binaries: list[str]) -> bool | None:
         return None
     try:
         proc = subprocess.run(
-            [_which("yt-dlp") or "yt-dlp", "--list-impersonate-targets"],
+            [*ytdlp_cmd(), "--list-impersonate-targets"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception:
