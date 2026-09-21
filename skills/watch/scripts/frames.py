@@ -51,12 +51,15 @@ MAX_GAP_RATIO = 4.0
 # (very short or oddly encoded), so the cheap tier falls back to uniform.
 KEYFRAME_MIN = 4
 MAX_READ_DIMENSION = 1998
-# Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB
-# grayscale thumbnail and treat two frames as near-identical when their mean
-# per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
+# Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB RGB
+# thumbnail and treat two frames as near-identical when their mean per-channel
+# difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
 # purpose: only collapses frames that are visually the same shot, so a code diff
 # / scrolling terminal / slide-gaining-a-bullet survives. Unlike a within-frame
-# perceptual hash, this distinguishes flat frames (solid slides, fades) by luma.
+# perceptual hash, this distinguishes flat frames (solid slides, fades) by colour.
+# RGB and not luma: a hard cut between two hues of equal brightness — a red card
+# to a green card in a motion-graphics piece — reads as a 1.0 delta in grayscale,
+# under the threshold, and the incoming shot gets deleted as a duplicate.
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
@@ -581,20 +584,21 @@ def _even_sample(candidates: list[dict], n: int) -> list[dict]:
 
 
 def _frame_delta(a: bytes, b: bytes) -> float:
-    """Mean absolute per-pixel difference (0-255) between two grayscale
-    thumbnails. Mismatched lengths are treated as maximally different so a
-    decode hiccup never collapses distinct frames."""
+    """Mean absolute per-channel difference (0-255) between two RGB thumbnails.
+    Averaging across all three channels means an equal-luma hue change still
+    registers, unlike a grayscale comparison. Mismatched lengths are treated as
+    maximally different so a decode hiccup never collapses distinct frames."""
     if not a or len(a) != len(b):
         return float("inf")
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
 def _thumb_frames(paths: list[Path]) -> list[bytes]:
-    """Decode every frame in ``paths`` to a small grayscale thumbnail via one
+    """Decode every frame in ``paths`` to a small RGB thumbnail via one
     ffmpeg pass over the JPEG sequence.
 
     ffmpeg does the pixel decode (keeps us pure-stdlib); we slice the raw
-    grayscale stream into one ``DEDUP_THUMB``-square thumbnail per frame.
+    RGB stream into one ``DEDUP_THUMB``-square thumbnail per frame.
     Fail-open: any ffmpeg error, an unrecognized name, or a byte-count mismatch
     returns ``[]`` so the caller skips dedup rather than breaking extraction.
     """
@@ -613,7 +617,7 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
         "-loglevel", "error",
         "-start_number", str(int(digits)),
         "-i", pattern,
-        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=gray",
+        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=rgb24",
         "-f", "rawvideo",
         "-",
     ]
@@ -621,7 +625,7 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
     if result.returncode != 0:
         return []
 
-    chunk = DEDUP_THUMB * DEDUP_THUMB
+    chunk = DEDUP_THUMB * DEDUP_THUMB * 3  # 3 bytes per pixel (rgb24)
     data = result.stdout
     if len(data) != chunk * len(paths):
         return []
@@ -634,8 +638,8 @@ def dedupe_perceptual(
     """Drop near-identical frames from a chronological candidate list.
 
     Thumbnails the extracted JPEGs and greedily removes frames whose mean
-    per-pixel difference from the last kept one is within ``threshold``. Returns
-    ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
+    per-channel RGB difference from the last kept one is within ``threshold``.
+    Returns ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
     unavailable or there are fewer than two candidates.
     """
     if len(candidates) <= 1:
@@ -647,7 +651,7 @@ def dedupe_perceptual(
 def _dedupe_by_deltas(
     candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
 ) -> tuple[list[dict], int]:
-    """Greedily drop frames within ``threshold`` mean per-pixel difference of the
+    """Greedily drop frames within ``threshold`` mean per-channel difference of the
     last *kept* frame. Deletes dropped JPEGs and reindexes survivors 0..n-1 (same
     cleanup contract as :func:`_even_sample`). Fail-open: if ``thumbs`` does not
     line up 1:1 with ``candidates``, return them unchanged.
