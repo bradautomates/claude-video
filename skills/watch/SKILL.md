@@ -4,9 +4,9 @@ version: "0.3.0"
 description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/bradautomates/claude-video
-repository: https://github.com/bradautomates/claude-video
-author: bradautomates
+homepage: https://github.com/frinsen/claude-video
+repository: https://github.com/frinsen/claude-video
+author: frinsen (fork of bradautomates/claude-video by Bradley Bonanno, MIT)
 license: MIT
 user-invocable: true
 ---

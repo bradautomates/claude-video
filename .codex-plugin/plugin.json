@@ -5,8 +5,8 @@
   "author": {
     "name": "Bradley Bonanno"
   },
-  "homepage": "https://github.com/bradautomates/claude-video",
-  "repository": "https://github.com/bradautomates/claude-video",
+  "homepage": "https://github.com/frinsen/claude-video",
+  "repository": "https://github.com/frinsen/claude-video",
   "license": "MIT",
   "keywords": [
     "video",
@@ -32,7 +32,7 @@
       "Interactive",
       "Read"
     ],
-    "websiteURL": "https://github.com/bradautomates/claude-video",
+    "websiteURL": "https://github.com/frinsen/claude-video",
     "defaultPrompt": [
       "/watch https://youtu.be/dQw4w9WgXcQ what happens at the 30 second mark?",
       "/watch ~/Movies/screen-recording.mp4 when does the UI break?",
