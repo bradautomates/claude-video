@@ -186,3 +186,21 @@ def test_worst_gap_counts_the_edges():
     assert frames._worst_gap([50.0], 0.0, 100.0) == 50.0
     assert frames._worst_gap([10.0, 20.0], 0.0, 100.0) == 80.0
     assert frames._worst_gap([], 0.0, 42.0) == 42.0
+
+
+def test_metadata_via_ffmpeg_matches_ffprobe(cut_clip: Path):
+    """When ffprobe is blocked (Windows App Control, #128) the ffmpeg banner
+    must yield the same duration/size/codec/audio answers."""
+    via_probe = frames.get_metadata(str(cut_clip))
+    via_ffmpeg = frames._metadata_via_ffmpeg(str(cut_clip))
+    assert abs(via_probe["duration_seconds"] - via_ffmpeg["duration_seconds"]) < 0.1
+    assert (via_probe["width"], via_probe["height"]) == (via_ffmpeg["width"], via_ffmpeg["height"])
+    assert via_probe["has_audio"] == via_ffmpeg["has_audio"]
+    assert via_probe["codec"] == via_ffmpeg["codec"]
+
+
+def test_get_metadata_falls_back_when_ffprobe_missing(cut_clip: Path, monkeypatch):
+    real_which = frames.shutil.which
+    monkeypatch.setattr(frames.shutil, "which", lambda n: None if n == "ffprobe" else real_which(n))
+    meta = frames.get_metadata(str(cut_clip))
+    assert meta["duration_seconds"] > 0 and meta["width"]

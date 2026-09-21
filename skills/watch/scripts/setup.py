@@ -41,7 +41,11 @@ if str(SCRIPT_DIR) not in sys.path:
 from config import force_utf8_output, get_config, read_env_value  # noqa: E402
 
 
-REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
+REQUIRED_BINARIES = ["ffmpeg", "yt-dlp"]
+# ffprobe normally ships with ffmpeg, but Windows Application Control can block
+# it while allowing ffmpeg.exe (#128). The scripts fall back to `ffmpeg -i` for
+# metadata, so a missing ffprobe is worth a note, not a hard failure.
+OPTIONAL_BINARIES = ["ffprobe"]
 CONFIG_DIR = Path.home() / ".config" / "watch"
 CONFIG_FILE = CONFIG_DIR / ".env"
 ENV_TEMPLATE = """# /watch API configuration
@@ -388,7 +392,13 @@ def cmd_check() -> int:
     if s["can_proceed"]:
         if stale_days is not None:
             sys.stderr.write(f"[watch] {_stale_note(stale_days)}\n")
-            sys.stderr.flush()
+        missing_optional = [b for b in OPTIONAL_BINARIES if not _which(b)]
+        if missing_optional:
+            sys.stderr.write(
+                f"[watch] note: {', '.join(missing_optional)} not found — metadata will be "
+                "read via ffmpeg instead (slower, but works).\n"
+            )
+        sys.stderr.flush()
         return 0
 
     parts = []

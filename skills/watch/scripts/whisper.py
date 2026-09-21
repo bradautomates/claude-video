@@ -162,27 +162,38 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
 
 
 def audio_duration(audio_path: Path) -> float:
-    """Return the duration of an audio file in seconds via ffprobe."""
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+    """Return the duration of an audio file in seconds.
 
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            str(audio_path.resolve()),
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if result.returncode != 0:
-        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
-    fmt = json.loads(result.stdout or "{}").get("format", {})
-    return float(fmt.get("duration") or 0.0)
+    Uses ffprobe when available; otherwise (or when ffprobe is present but the
+    OS refuses to run it, see frames.get_metadata) reads the duration from
+    ffmpeg's own banner so a blocked ffprobe.exe does not abort the run.
+    """
+    if shutil.which("ffprobe") is not None:
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "quiet",
+                    "-print_format", "json",
+                    "-show_format",
+                    str(audio_path.resolve()),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError:
+            result = None
+        if result is not None and result.returncode == 0:
+            fmt = json.loads(result.stdout or "{}").get("format", {})
+            return float(fmt.get("duration") or 0.0)
+        if result is not None and (result.stdout or "").strip():
+            raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg/ffprobe are not installed. Install with: brew install ffmpeg")
+    from frames import _metadata_via_ffmpeg  # local import: frames imports nothing from here
+    return float(_metadata_via_ffmpeg(str(audio_path))["duration_seconds"])
 
 
 def split_audio(

@@ -130,25 +130,78 @@ def format_time(seconds: float) -> str:
     return f"{minutes:02d}:{sec:02d}"
 
 
-def get_metadata(video_path: str) -> dict:
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+_FFMPEG_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
+_FFMPEG_VIDEO_RE = re.compile(r"Stream #\d+:\d+.*?: Video: (\w+).*?, (\d{2,5})x(\d{2,5})")
+_FFMPEG_AUDIO_RE = re.compile(r"Stream #\d+:\d+.*?: Audio:")
 
+
+def _metadata_via_ffmpeg(video_path: str) -> dict:
+    """Fallback probe using ffmpeg's own banner when ffprobe is unusable.
+
+    Windows Application Control can block ffprobe.exe while allowing
+    ffmpeg.exe from the same install (#128). `ffmpeg -i` prints the container
+    duration and stream lines to stderr before complaining about the missing
+    output, which is enough for everything get_metadata() is asked for.
+    """
+    path = Path(video_path).resolve()
     result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            str(Path(video_path).resolve()),
-        ],
+        ["ffmpeg", "-hide_banner", "-i", str(path)],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
     )
+    banner = result.stderr or ""
+    m = _FFMPEG_DURATION_RE.search(banner)
+    duration = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else 0.0
+    v = _FFMPEG_VIDEO_RE.search(banner)
+    if not m and not v:
+        raise SystemExit(f"ffmpeg could not read {path}: {banner.strip()[-400:]}")
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "duration_seconds": duration,
+        "width": int(v.group(2)) if v else None,
+        "height": int(v.group(3)) if v else None,
+        "codec": v.group(1) if v else None,
+        "size_bytes": size,
+        "has_audio": bool(_FFMPEG_AUDIO_RE.search(banner)),
+    }
+
+
+def get_metadata(video_path: str) -> dict:
+    if shutil.which("ffprobe") is None:
+        if shutil.which("ffmpeg") is None:
+            raise SystemExit("ffmpeg/ffprobe are not installed. Install with: brew install ffmpeg")
+        print("[watch] ffprobe not found; reading metadata via ffmpeg instead", file=sys.stderr)
+        return _metadata_via_ffmpeg(video_path)
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                str(Path(video_path).resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        # Present on PATH but refused by the OS (e.g. an App Control policy
+        # that blocks ffprobe.exe yet allows ffmpeg.exe) — fall back.
+        print(f"[watch] ffprobe could not be run ({exc}); reading metadata via ffmpeg instead", file=sys.stderr)
+        return _metadata_via_ffmpeg(video_path)
     if result.returncode != 0:
+        if not (result.stdout or "").strip() and shutil.which("ffmpeg"):
+            print("[watch] ffprobe failed; reading metadata via ffmpeg instead", file=sys.stderr)
+            return _metadata_via_ffmpeg(video_path)
         raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
 
     data = json.loads(result.stdout or "{}")
