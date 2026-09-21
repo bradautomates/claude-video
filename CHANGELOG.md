@@ -36,6 +36,9 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 - **Preflight warnings for a yt-dlp likely to 403** (#67 #93 #156; PR #227): more than 60 days old, built without browser impersonation (Homebrew's formula omits `curl_cffi`), or no JavaScript runtime (deno/node) for YouTube's challenge solver. Still exit 0 — a warning, not a blocker.
 - **YouTube player-client retry** (#156; from PR #200). A media fetch refused with 403/429/bot-check on the default client is retried through `mweb`, `tv`, `web_embedded` — media only, since alternate clients drop caption tracks.
 - **Transcript proper nouns flagged as unverified** in SKILL.md (PR #236).
+- **`WATCH_YTDLP`** — choose which yt-dlp runs (a path, or a command such as `python -m yt_dlp`) for machines with several copies; the resolved binary is always the one executed.
+- **CI** on every push/PR and weekly: pytest on Ubuntu 22.04 (ffmpeg 4.4), Ubuntu 24.04 (6.1), macOS (9.x), Windows (8.1.2, latest).
+- `AUTHORS.md`, and the MIT notice inside the skill package so bundles and `npx skills add` installs carry it.
 - Docs: sandbox egress blocks (`CERTIFICATE_VERIFY_FAILED` from an allowlist proxy) explained as environmental (#83 #135).
 
 ### Not taken (deferred, with reasons)
