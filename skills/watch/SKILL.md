@@ -192,7 +192,7 @@ If the user asked a specific question, answer it directly citing timestamps. If 
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script's last line names the working directory and says whether it is *temporary* or *user-supplied*. Only a **temporary** dir (auto-created under the system temp dir, prefix `watch-`) may be deleted, and only if the user isn't going to ask follow-ups — then `rm -rf <dir>`. **Never delete a user-supplied `--out-dir`**, and never delete a directory that contains the source file you were given (the script warns when it does): that is the user's data, and a local recording may have no upstream copy.
 
 ## Detail and frames
 

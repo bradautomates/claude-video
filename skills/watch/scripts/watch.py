@@ -98,12 +98,29 @@ def main() -> int:
     budget_cap = max_frames if max_frames is not None else 100
     cue_timestamps = parse_timestamps(args.timestamps)
 
-    if args.out_dir:
+    user_out_dir = bool(args.out_dir)
+    if user_out_dir:
         work = Path(args.out_dir).expanduser().resolve()
     else:
         work = Path(tempfile.mkdtemp(prefix="watch-"))
     work.mkdir(parents=True, exist_ok=True)
     print(f"[watch] working dir: {work}", file=sys.stderr)
+
+    # A local source that lives inside --out-dir is the documented re-run flow
+    # ("point the second run at the downloaded file"). Nothing here deletes
+    # it, but the cleanup step must not either — say so up front (#80).
+    source_in_work = False
+    if not is_url(args.source):
+        try:
+            source_in_work = Path(args.source).expanduser().resolve().is_relative_to(work)
+        except (OSError, ValueError):
+            source_in_work = False
+        if source_in_work:
+            print(
+                "[watch] source file is inside the working dir — it will be kept; "
+                "do not delete this directory after the run.",
+                file=sys.stderr,
+            )
 
     url_source = is_url(args.source)
     dl: dict = {"subtitle_path": None, "info": {}, "downloaded": False}
@@ -472,7 +489,10 @@ def main() -> int:
 
     print()
     print("---")
-    print(f"_Work dir: `{work}` — delete when done._")
+    if user_out_dir or source_in_work:
+        print(f"_Work dir: `{work}` — user-supplied, keep it (do not delete)._")
+    else:
+        print(f"_Work dir: `{work}` — temporary, delete when done._")
 
     return 0
 
