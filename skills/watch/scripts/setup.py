@@ -118,7 +118,7 @@ def _yt_dlp_version() -> str | None:
     """
     try:
         proc = subprocess.run(
-            ["yt-dlp", "--version"], capture_output=True, text=True, timeout=5
+            [_which("yt-dlp") or "yt-dlp", "--version"], capture_output=True, text=True, timeout=5
         )
         return proc.stdout.strip() or None
     except Exception:
@@ -184,7 +184,7 @@ def _yt_dlp_impersonation(missing_binaries: list[str]) -> bool | None:
         return None
     try:
         proc = subprocess.run(
-            ["yt-dlp", "--list-impersonate-targets"],
+            [_which("yt-dlp") or "yt-dlp", "--list-impersonate-targets"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
     except Exception:

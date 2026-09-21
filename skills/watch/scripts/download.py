@@ -57,6 +57,18 @@ def resolve_local(path: str) -> dict:
 DEFAULT_SUB_LANGS = "en.*"
 
 
+def ytdlp_bin() -> str:
+    """The yt-dlp to run, as a resolved path.
+
+    Passing the bare name to subprocess lets Windows' CreateProcess pick a
+    different binary than shutil.which() just probed (it only appends .exe
+    while which() honours PATHEXT). Resolving once keeps probe and run on the
+    same file; falls back to the bare name so the caller's "not installed"
+    error is what the user sees.
+    """
+    return shutil.which("yt-dlp") or "yt-dlp"
+
+
 def _cookie_args() -> list[str]:
     """Opt-in yt-dlp cookie flags, for sites that refuse signed-out requests.
 
@@ -244,7 +256,7 @@ def _run_captured(cmd: list[str]) -> subprocess.CompletedProcess:
 
 def _fetch_subs_only(url: str, out_dir: Path, langs: str) -> None:
     cmd = [
-        "yt-dlp",
+        ytdlp_bin(),
         *_cookie_args(),
         "--skip-download",
         *_sub_lang_args(langs),
@@ -276,7 +288,7 @@ def _yt_dlp_version() -> str | None:
     """
     try:
         proc = subprocess.run(
-            ["yt-dlp", "--version"], capture_output=True, text=True,
+            [ytdlp_bin(), "--version"], capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=5
         )
         return proc.stdout.strip() or None
@@ -343,7 +355,7 @@ def fetch_captions(url: str, out_dir: Path, lang: str | None = None) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
-        "yt-dlp",
+        ytdlp_bin(),
         *_cookie_args(),
         "--skip-download",
         "--write-info-json",
@@ -401,7 +413,7 @@ def download_url(
 
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
-        "yt-dlp",
+        ytdlp_bin(),
         *_cookie_args(),
         "-N", "8",
         "-f", fmt,

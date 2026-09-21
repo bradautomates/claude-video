@@ -17,8 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Ubuntu 24.04 apt ships ffmpeg 6.1: exercises the pre-8 path where
-          # -vsync still exists (the probe must pick -fps_mode there too).
+          # Ubuntu 22.04 apt ships ffmpeg 4.4 — no -fps_mode at all, so this
+          # is the only job that exercises the legacy -vsync branch of the probe.
+          - os: ubuntu-22.04
+            ffmpeg: apt (4.4)
+            install: apt
+          # Ubuntu 24.04 apt ships ffmpeg 6.1: knows both flags.
           - os: ubuntu-latest
             ffmpeg: apt (6.x)
             install: apt
@@ -27,13 +31,11 @@ jobs:
           - os: macos-latest
             ffmpeg: brew (latest)
             install: brew
-          # Windows via Gyan builds, version-pinned: the oldest we claim to
-          # support, a middle release, and the newest.
+          # Windows via Gyan builds. setup-ffmpeg only sees Gyan's most recent
+          # release page, so only 8.x/9.x are pinnable here; the 8.0 removal of
+          # -vsync is what broke upstream 0.2.0 on winget installs.
           - os: windows-latest
-            ffmpeg: "5.1.2"
-            install: action
-          - os: windows-latest
-            ffmpeg: "7.1.1"
+            ffmpeg: "8.1.2"
             install: action
           - os: windows-latest
             ffmpeg: release
