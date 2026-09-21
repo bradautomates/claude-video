@@ -45,8 +45,8 @@ jobs:
           # /pulls (sorted by update time, stop at the window) and issues from
           # /issues, and normalise both into one file.
           gh api --paginate "repos/$UPSTREAM/pulls?state=all&sort=updated&direction=desc&per_page=100" \
-            --jq --arg s "$since" '.[] | select(.updated_at >= $s) | {n: .number, t: .title, u: .user.login, s: .state, pr: true, c: .created_at, up: .updated_at}' \
-            > items.jsonl
+            --jq '.[] | {n: .number, t: .title, u: .user.login, s: .state, pr: true, c: .created_at, up: .updated_at}' \
+            | jq -c --arg s "$since" 'select(.up >= $s)' > items.jsonl
           gh api --paginate "repos/$UPSTREAM/issues?state=all&since=$since&per_page=100" \
             --jq '.[] | select(has("pull_request") | not) | {n: .number, t: .title, u: .user.login, s: .state, pr: false, c: .created_at, up: .updated_at}' \
             >> items.jsonl
