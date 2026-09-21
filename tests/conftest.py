@@ -117,3 +117,91 @@ def fake_bin_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
     return bin_dir
+
+
+def make_stub_yt_dlp(
+    bin_dir: Path,
+    *,
+    vtt_text: str | None,
+    duration: float = 8.0,
+    title: str = "Stub Video",
+    version: str = "2026.07.04",
+) -> Path:
+    """Write a fake ``yt-dlp`` executable that never touches the network.
+
+    Mimics the two yt-dlp invocations watch.py makes for a URL source:
+
+    - ``--skip-download`` (download.fetch_captions): "succeeds" -- writes
+      video.info.json and, when ``vtt_text`` is given, video.en.vtt -- then
+      exits 0. Pass ``vtt_text=None`` to simulate a video with no captions
+      available at all.
+    - the real download attempt (download.download_url): always fails with a
+      403 on the media stream and never writes a video file. This reproduces
+      the real 2026-09-17 incident shape: captions download fine, only the
+      media stream 403s.
+
+    Synthesized, not vendored: no real caption track or media file is ever
+    written into the repo, only generated fresh per test into a tmp dir.
+    """
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    stub = bin_dir / "yt-dlp"
+    script = f'''#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+argv = sys.argv[1:]
+
+if "--version" in argv:
+    print({version!r})
+    sys.exit(0)
+
+
+def _opt(name):
+    if name in argv:
+        idx = argv.index(name)
+        if idx + 1 < len(argv):
+            return argv[idx + 1]
+    return None
+
+
+out_tmpl = _opt("-o")
+out_dir = Path(out_tmpl).parent if out_tmpl else Path(".")
+out_dir.mkdir(parents=True, exist_ok=True)
+
+if "--skip-download" in argv:
+    info = {{
+        "title": {title!r},
+        "uploader": "Stub Channel",
+        "duration": {duration!r},
+        "webpage_url": argv[-1] if argv else "",
+    }}
+    (out_dir / "video.info.json").write_text(json.dumps(info), encoding="utf-8")
+    vtt_text = {vtt_text!r}
+    if vtt_text is not None:
+        (out_dir / "video.en.vtt").write_text(vtt_text, encoding="utf-8")
+    sys.exit(0)
+else:
+    sys.stderr.write(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden\\n"
+    )
+    sys.exit(1)
+'''
+    stub.write_text(script, encoding="utf-8")
+    stub.chmod(0o755)
+    return stub
+
+
+@pytest.fixture
+def stub_yt_dlp(tmp_path: Path):
+    """Factory fixture: build a PATH-prepend-able dir holding a fake yt-dlp.
+
+    Usage: ``bin_dir = stub_yt_dlp(vtt_text="WEBVTT\\n...")`` then run the
+    subprocess under test with ``PATH=f"{bin_dir}{os.pathsep}{PATH}"``.
+    """
+    def _make(vtt_text: str | None, **kwargs) -> Path:
+        bin_dir = tmp_path / "stub-bin"
+        make_stub_yt_dlp(bin_dir, vtt_text=vtt_text, **kwargs)
+        return bin_dir
+
+    return _make

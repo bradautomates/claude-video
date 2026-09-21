@@ -207,6 +207,66 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
+def _yt_dlp_version() -> str | None:
+    """Best-effort `yt-dlp --version` output, or None if it can't be read.
+
+    No network call -- this just execs the already-installed binary. Used only
+    to enrich a 403 failure message, so any failure here (missing binary,
+    timeout, odd build) degrades to omitting the version rather than raising.
+    """
+    try:
+        proc = subprocess.run(
+            ["yt-dlp", "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5
+        )
+        return proc.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _update_hint() -> str:
+    """Upgrade command matching how yt-dlp appears to be installed."""
+    path = shutil.which("yt-dlp") or ""
+    if "pipx" in path:
+        return "pipx upgrade yt-dlp"
+    if "Cellar" in path or "homebrew" in path.lower():
+        return "brew upgrade yt-dlp"
+    return "yt-dlp -U  (or: pip install -U yt-dlp)"
+
+
+def _download_failure_message(
+    output: str, returncode: int, out_dir: Path, subtitle: Path | None
+) -> str:
+    """Build the error surfaced when yt-dlp produced no video file.
+
+    A bare exit code tells the user nothing actionable. Real incident
+    (2026-09-17): a 403 on the media stream was actually a yt-dlp build 2.5
+    months stale that had lost YouTube's current client/signature rotation --
+    upgrading fixed it with no code change. So a 403/Forbidden in the captured
+    output gets the actionable explanation; every other failure keeps the
+    original bare message unchanged, since we have no comparable evidence
+    about what those mean.
+    """
+    base = f"yt-dlp did not produce a video file in {out_dir} (exit {returncode})"
+    if "403" not in output and "Forbidden" not in output:
+        return base
+    version = _yt_dlp_version()
+    version_note = f" (yt-dlp {version})" if version else ""
+    lines = [
+        base,
+        f"HTTP 403 on the media stream{version_note} -- almost always a yt-dlp that has "
+        "fallen behind YouTube's latest signature/client rotation, not a video that's "
+        "actually blocked or region-locked.",
+        f"Update and retry: {_update_hint()}",
+    ]
+    if subtitle:
+        lines.append(
+            f"Captions downloaded fine ({subtitle.name}) -- the transcript is usable even "
+            "before you retry the video."
+        )
+    return "\n".join(lines)
+
+
 def fetch_captions(url: str, out_dir: Path, lang: str | None = None) -> dict:
     """Fetch metadata and best available VTT captions without downloading video.
 
@@ -291,15 +351,44 @@ def download_url(
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    video = _pick_video(out_dir)
-    if video is None:
-        raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
-        )
+    #
+    # Output is captured (rather than piped straight through to the inherited
+    # stderr fd) so a failure can be diagnosed -- e.g. a stale yt-dlp getting
+    # 403'd by YouTube's latest signature/client rotation -- instead of only
+    # surfacing a bare exit code. It's echoed to stderr after the fact so
+    # nothing that was visible before is lost, just no longer live-streamed.
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if result.stdout:
+        sys.stderr.write(result.stdout)
 
+    video = _pick_video(out_dir)
     subtitle = _resolve_subtitle(url, out_dir, lang)
     info = _read_info(out_dir / "video.info.json", url)
+
+    if video is None:
+        failure_message = _download_failure_message(
+            result.stdout or "", result.returncode, out_dir, subtitle
+        )
+        if subtitle is None:
+            raise SystemExit(failure_message)
+        # The media stream is unavailable (e.g. 403'd) but captions DID come
+        # down -- hand back a degraded-but-usable result instead of discarding
+        # a complete transcript. watch.py finishes the run in transcript-only
+        # mode rather than dying, per the 2026-09-17 incident: subtitles were
+        # 272 KB and carried essentially the whole talk while only the media
+        # stream failed.
+        print(failure_message, file=sys.stderr)
+        return {
+            "video_path": None,
+            "subtitle_path": str(subtitle),
+            "info": info or {"url": url},
+            "downloaded": False,
+            "degraded": True,
+            "failure_message": failure_message,
+        }
 
     return {
         "video_path": str(video),
