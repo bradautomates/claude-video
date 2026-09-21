@@ -69,7 +69,7 @@ def _check_binaries() -> list[str]:
 
 _PERM_WARNED: set[str] = set()
 
-# ponytail: POSIX mode bits do not govern access on Windows and cannot be set
+# POSIX mode bits do not govern access on Windows and cannot be set
 # from Python — os.chmod there only toggles the read-only attribute, verified by
 # creating a file with and without chmod(0o600) and diffing icacls: identical,
 # both inheriting SYSTEM / Administrators / user. So the mode is neither

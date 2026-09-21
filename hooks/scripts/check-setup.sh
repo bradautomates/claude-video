@@ -7,7 +7,7 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
-# ponytail: skipped on Git Bash / MSYS / Cygwin. stat there synthesizes a mode
+# skipped on Git Bash / MSYS / Cygwin. stat there synthesizes a mode
 # (644) with no relation to the real NTFS ACL, and `chmod 600` is a silent no-op,
 # so the check could only ever nag every session with a fix that cannot work.
 # Windows access is governed by the ACL, owner-only by default under the profile.
@@ -28,7 +28,9 @@ read_key() {
     echo "${!name}"
     return
   fi
-  if [[ -f "$CONFIG_FILE" ]]; then
+  # -r, not just -f: under `set -e` an unreadable file would make awk fail and
+  # abort the whole SessionStart hook instead of degrading to the key hint.
+  if [[ -r "$CONFIG_FILE" ]]; then
     awk -F= -v k="$name" '
       /^[[:space:]]*#/ { next }
       $1 == k {
@@ -36,7 +38,7 @@ read_key() {
         gsub(/^["'\'']|["'\'']$/, "", $2);
         print $2; exit
       }
-    ' "$CONFIG_FILE"
+    ' "$CONFIG_FILE" 2>/dev/null || true
   fi
 }
 
