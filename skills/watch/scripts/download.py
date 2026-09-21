@@ -224,7 +224,7 @@ def _resolve_subtitle(url: str, out_dir: Path, lang: str | None) -> Path | None:
 # Alternate YouTube player clients, tried in order when `web` is refused.
 # Cheapest and most permissive first; capped so a truly blocked host costs
 # three extra attempts, not a dozen.
-YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded")
+YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded", "android")
 _REFUSAL_MARKERS = (
     "http error 403", "403: forbidden", "http error 429", "too many requests",
     "confirm you're not a bot", "confirm you\u2019re not a bot", "sign in to confirm",
