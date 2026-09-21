@@ -169,6 +169,65 @@ def _stale_note(days: int) -> str:
     )
 
 
+YTDLP_FULL_INSTALL = "pipx install --force 'yt-dlp[default,curl-cffi]'  (or: pip install -U 'yt-dlp[default,curl-cffi]')"
+
+
+def _yt_dlp_impersonation(missing_binaries: list[str]) -> bool | None:
+    """True if yt-dlp has at least one usable browser-impersonation target.
+
+    YouTube refuses the *media* stream (403) to clients it cannot fingerprint
+    while still serving titles and captions, which is why a missing curl_cffi
+    looks like a video-specific bug. Homebrew's yt-dlp formula omits curl_cffi
+    (#93). None when unknown (yt-dlp missing, old build without the flag).
+    """
+    if "yt-dlp" in missing_binaries:
+        return None
+    try:
+        proc = subprocess.run(
+            ["yt-dlp", "--list-impersonate-targets"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except Exception:
+        return None
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0 and "impersonate" not in out.lower():
+        return None  # flag unknown to this build
+    rows = [
+        line for line in out.splitlines()
+        if line.strip() and not line.startswith(("[", "Client", "---"))
+    ]
+    usable = [r for r in rows if "unavailable" not in r.lower()]
+    return bool(usable)
+
+
+def _js_runtime() -> str | None:
+    """Name of a JavaScript runtime yt-dlp can use for YouTube's challenge solver."""
+    for name in ("deno", "node", "bun", "qjs"):
+        if _which(name):
+            return name
+    return None
+
+
+def _ytdlp_capability_notes(missing_binaries: list[str]) -> list[str]:
+    """Warnings for a yt-dlp that exists but is likely to 403 on YouTube."""
+    notes: list[str] = []
+    if "yt-dlp" in missing_binaries:
+        return notes
+    if _yt_dlp_impersonation(missing_binaries) is False:
+        notes.append(
+            "yt-dlp has no browser-impersonation targets (built without curl_cffi — "
+            "Homebrew's formula omits it). YouTube will likely return 403 for the video "
+            f"stream while captions still work. Fix: {YTDLP_FULL_INSTALL}"
+        )
+    if _js_runtime() is None:
+        notes.append(
+            "no JavaScript runtime found (deno/node). Recent yt-dlp needs one to solve "
+            "YouTube's player challenge; without it downloads can fail with 403. "
+            "Install deno: brew install deno / winget install DenoLand.Deno"
+        )
+    return notes
+
+
 _PERM_WARNED: set[str] = set()
 
 # POSIX mode bits do not govern access on Windows and cannot be set
@@ -343,6 +402,7 @@ def _status() -> dict:
     has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
     yt_dlp_stale_days = _yt_dlp_staleness(missing)
+    yt_dlp_notes = _ytdlp_capability_notes(missing)
 
     if not missing and has_key:
         status = "ready"
@@ -365,6 +425,7 @@ def _status() -> dict:
         "whisper_backend": backend,
         "has_api_key": has_key,
         "yt_dlp_stale_days": yt_dlp_stale_days,
+        "yt_dlp_notes": yt_dlp_notes,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -392,6 +453,8 @@ def cmd_check() -> int:
     if s["can_proceed"]:
         if stale_days is not None:
             sys.stderr.write(f"[watch] {_stale_note(stale_days)}\n")
+        for note in s.get("yt_dlp_notes", []):
+            sys.stderr.write(f"[watch] WARNING: {note}\n")
         missing_optional = [b for b in OPTIONAL_BINARIES if not _which(b)]
         if missing_optional:
             sys.stderr.write(

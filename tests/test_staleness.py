@@ -243,3 +243,38 @@ def test_cli_json_includes_stale_field_key(tmp_path):
     assert proc.returncode == 0, proc.stderr
     data = json.loads(proc.stdout)
     assert "yt_dlp_stale_days" in data
+
+
+# --- impersonation / JS-runtime capability notes (#93, #67) -----------------
+
+import setup as _setup  # noqa: E402
+
+
+def test_impersonation_false_when_all_targets_unavailable(monkeypatch):
+    class R:
+        returncode = 0
+        stdout = ("[info] Available impersonate targets\nClient OS Source\n----\n"
+                  "Chrome-133 Macos-15 curl_cffi (unavailable)\n")
+        stderr = ""
+    monkeypatch.setattr(_setup.subprocess, "run", lambda *a, **k: R())
+    assert _setup._yt_dlp_impersonation([]) is False
+
+
+def test_impersonation_true_with_a_usable_target(monkeypatch):
+    class R:
+        returncode = 0
+        stdout = "[info] Available impersonate targets\nClient OS Source\n----\nChrome-133 Macos-15 curl_cffi\n"
+        stderr = ""
+    monkeypatch.setattr(_setup.subprocess, "run", lambda *a, **k: R())
+    assert _setup._yt_dlp_impersonation([]) is True
+
+
+def test_capability_notes_skip_when_ytdlp_missing():
+    assert _setup._ytdlp_capability_notes(["yt-dlp"]) == []
+
+
+def test_capability_notes_mention_js_runtime(monkeypatch):
+    monkeypatch.setattr(_setup, "_yt_dlp_impersonation", lambda missing: True)
+    monkeypatch.setattr(_setup, "_which", lambda n: None)
+    notes = _setup._ytdlp_capability_notes([])
+    assert len(notes) == 1 and "JavaScript runtime" in notes[0]

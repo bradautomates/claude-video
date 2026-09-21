@@ -278,9 +278,13 @@ def _download_failure_message(
     lines = [
         base,
         f"HTTP 403 on the media stream{version_note} -- almost always a yt-dlp that has "
-        "fallen behind YouTube's latest signature/client rotation, not a video that's "
-        "actually blocked or region-locked.",
+        "fallen behind YouTube's latest signature/client rotation, or one built without "
+        "browser impersonation (curl_cffi) / no JavaScript runtime for the player "
+        "challenge -- not a video that's actually blocked or region-locked.",
         f"Update and retry: {_update_hint()}",
+        "If it persists: pipx install --force 'yt-dlp[default,curl-cffi]' and install deno "
+        "(brew install deno / winget install DenoLand.Deno). Run setup.py --check to see "
+        "which of these applies.",
     ]
     if subtitle:
         lines.append(
