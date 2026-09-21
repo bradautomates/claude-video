@@ -267,24 +267,18 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Roadmap
 
-What "develop it further" means, roughly in order. Open an issue if you want to weigh in or take one.
-
-- **CI.** Run the suite on every PR across ffmpeg 5 / 7 / 9 and macOS / Linux / Windows, so "works on my machine" stops being the review standard.
-- **Land the deferred upstream PRs** that need design or dependencies: download cache (#235), quality dial and screen-recording detection (#215), TikTok photo slideshows via gallery-dl (#220), storyboard fallback (#200).
-- **Editorial analysis as an opt-in mode.** [claude-watch](https://github.com/taoufik123-collab/claude-watch) — another derivative of the original — adds a 0–10 s hook microscope, pacing metrics and a fixed-schema `report.md`. Those ~400 lines are worth porting as `--report`, without making every run pay for them.
-- **More transcription backends through the generic endpoint** rather than per-vendor SDKs (the local OpenAI-compatible backend already covers whisper.cpp, faster-whisper-server, speaches, LM Studio).
-- **Upstream sync.** Watch `bradautomates/claude-video`; if it resumes, rebase and offer this work back.
+CI across ffmpeg 5/7/9 · the deferred upstream PRs (download cache #235, quality dial #215, TikTok slideshows #220) · an opt-in `--report` editorial mode (hook analysis, pacing, structured report) · upstream sync if `bradautomates/claude-video` resumes. Issues and PRs welcome.
 
 ## Credits & license
 
-**Original author:** [Bradley Bonanno](https://github.com/bradautomates) — [bradautomates/claude-video](https://github.com/bradautomates/claude-video), [@bradbonanno on YouTube](https://www.youtube.com/@bradbonanno), [Solaris Automation](https://www.solarisautomation.io/). The pipeline (yt-dlp → ffmpeg → captions/Whisper → Claude `Read`), the detail modes, frame dedup, Whisper chunking and the multi-host packaging are his work.
+Created by [Bradley Bonanno](https://github.com/bradautomates) ([bradautomates/claude-video](https://github.com/bradautomates/claude-video), [@bradbonanno](https://www.youtube.com/@bradbonanno)). Fork maintained by [frinsen](https://github.com/frinsen); community fixes credited in [AUTHORS.md](AUTHORS.md). [MIT](LICENSE), © 2026 Bradley Bonanno — not affiliated with or endorsed by the original author. Built on `yt-dlp`, `ffmpeg`, Claude's `Read` tool, and Whisper via Groq / OpenAI / any OpenAI-compatible server.
 
-**This fork:** maintained by [frinsen](https://github.com/frinsen). The 0.3.0 fixes come from the upstream community — every merged or adapted pull request and its author is listed in [AUTHORS.md](AUTHORS.md).
+## Star History
 
-**License:** [MIT](LICENSE), © 2026 Bradley Bonanno, unchanged. The same notice ships inside the skill bundle and every install path. This fork is not affiliated with or endorsed by the original author.
-
-Built on `yt-dlp`, `ffmpeg`, and Claude's multimodal `Read` tool. Whisper transcription via [Groq](https://groq.com), [OpenAI](https://openai.com), or any self-hosted OpenAI-compatible server.
-
----
-
-[github.com/frinsen/claude-video](https://github.com/frinsen/claude-video) · forked from [bradautomates/claude-video](https://github.com/bradautomates/claude-video) · [CHANGELOG](CHANGELOG.md) · [AUTHORS](AUTHORS.md) · [LICENSE](LICENSE)
+<a href="https://www.star-history.com/?repos=frinsen%2Fclaude-video&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=frinsen/claude-video&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=frinsen/claude-video&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=frinsen/claude-video&type=date&legend=top-left" />
+ </picture>
+</a>
