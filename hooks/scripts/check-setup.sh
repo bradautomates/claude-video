@@ -7,7 +7,13 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# ponytail: skipped on Git Bash / MSYS / Cygwin. stat there synthesizes a mode
+# (644) with no relation to the real NTFS ACL, and `chmod 600` is a silent no-op,
+# so the check could only ever nag every session with a fix that cannot work.
+# Windows access is governed by the ACL, owner-only by default under the profile.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) IS_WINDOWS=1 ;; *) IS_WINDOWS="" ;; esac
+
+if [[ -f "$CONFIG_FILE" && -z "$IS_WINDOWS" ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."
