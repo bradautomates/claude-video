@@ -15,15 +15,24 @@ Design:
   through a successful installer run at least once.
 - Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
 - Never write an API key to disk automatically — only scaffold placeholders.
+- yt-dlp staleness check is local-only: yt-dlp's version numbers ARE release
+  dates (`2026.08.19`), so "is it stale" is a pure date comparison against
+  the installed binary's own --version output. No network call, ever --
+  querying GitHub/PyPI for the latest release would add a failure mode and
+  a privacy surface to a check that runs on every invocation. A stale
+  binary still exits 0 (it's a warning, not a blocker) and stays silent
+  when the version string doesn't parse as a date.
 """
 from __future__ import annotations
 
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
+from datetime import date
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -67,6 +76,19 @@ OPENAI_API_KEY=
 # WATCH_DETAIL=balanced
 """
 
+# yt-dlp releases roughly every few weeks as YouTube rotates its
+# client/signature scheme; a binary that has gone quiet for a lot longer than
+# that is the most common cause of a silent "HTTP 403: Forbidden". Chosen
+# from real data, not a guess: a healthy gap between two consecutive releases
+# was 46 days, and the binary that actually started 403ing in the
+# field was ~76 days old. 60 sits comfortably above the observed healthy
+# gap -- so it won't nag right after an ordinary release cycle and train the
+# user to ignore it -- while still giving roughly two weeks' warning before
+# the age that has already been proven to break downloads.
+YT_DLP_STALE_DAYS = 60
+
+_YT_DLP_VERSION_RE = re.compile(r"^(\d{4})\.(\d{1,2})\.(\d{1,2})")
+
 
 def _which(name: str) -> str | None:
     return shutil.which(name)
@@ -74,6 +96,73 @@ def _which(name: str) -> str | None:
 
 def _check_binaries() -> list[str]:
     return [b for b in REQUIRED_BINARIES if not _which(b)]
+
+
+def _yt_dlp_version() -> str | None:
+    """Raw `yt-dlp --version` output, or None if it can't be read.
+
+    Shells out rather than `import yt_dlp` + reading `__version__`: yt-dlp's
+    own recommended Linux install path is pipx (see `_install_hint_linux`
+    below), which puts it in an isolated venv this interpreter cannot import
+    from at all -- verified on the reference machine, where `yt-dlp
+    --version` succeeds while `import yt_dlp` raises ModuleNotFoundError from
+    both the system Python and this project's own venv. Only the binary's
+    PATH entry is guaranteed to resolve regardless of install method (pipx,
+    brew, apt, pip --user, the standalone release binary), so that's the only
+    source that works uniformly. No network call -- this just execs the
+    already-installed binary.
+    """
+    try:
+        proc = subprocess.run(
+            ["yt-dlp", "--version"], capture_output=True, text=True, timeout=5
+        )
+        return proc.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _yt_dlp_stale_days_from_version(version: str) -> int | None:
+    """Age in days of a yt-dlp version string, if it's old enough to flag.
+
+    Returns None (stay quiet) when the version doesn't parse as a leading
+    YYYY.MM.DD release date -- forks and distro builds use non-date version
+    schemes, and a false "your yt-dlp is stale" on a perfectly good binary is
+    worse than saying nothing. Also None when it parses but isn't past the
+    threshold yet. Pure function of the version string and today's date -- no
+    subprocess, no network.
+    """
+    match = _YT_DLP_VERSION_RE.match(version.strip())
+    if not match:
+        return None
+    try:
+        released = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    except ValueError:
+        return None
+    age_days = (date.today() - released).days
+    return age_days if age_days > YT_DLP_STALE_DAYS else None
+
+
+def _yt_dlp_staleness(missing_binaries: list[str]) -> int | None:
+    """Flagged staleness (in days), or None if fresh/unknown/not installed.
+
+    Skips the version lookup entirely when yt-dlp is missing -- that's
+    already exit 2's job, and there's nothing to date-check.
+    """
+    if "yt-dlp" in missing_binaries:
+        return None
+    version = _yt_dlp_version()
+    if not version:
+        return None
+    return _yt_dlp_stale_days_from_version(version)
+
+
+def _stale_note(days: int) -> str:
+    return (
+        f"yt-dlp is {days} days old — YouTube rotates its download scheme "
+        f"every few weeks, so a stale yt-dlp is the most common cause of "
+        f'"HTTP 403: Forbidden" errors. Update: yt-dlp -U '
+        f"(or: pipx upgrade yt-dlp / brew upgrade yt-dlp)"
+    )
 
 
 _PERM_WARNED: set[str] = set()
@@ -249,6 +338,7 @@ def _status() -> dict:
     missing = _check_binaries()
     has_key, backend = _have_api_key()
     setup_complete = not is_first_run()
+    yt_dlp_stale_days = _yt_dlp_staleness(missing)
 
     if not missing and has_key:
         status = "ready"
@@ -270,6 +360,7 @@ def _status() -> dict:
         "missing_binaries": missing,
         "whisper_backend": backend,
         "has_api_key": has_key,
+        "yt_dlp_stale_days": yt_dlp_stale_days,
         "config_file": str(CONFIG_FILE),
         "watch_detail": cfg["detail"],
         "platform": platform.system(),
@@ -287,9 +378,17 @@ def cmd_check() -> int:
       2 → binaries missing
       3 → genuine first run with no API key (encourage one)
       4 → both missing
+    A stale yt-dlp never changes the exit code -- it's a warning, printed
+    even when otherwise ready (still exit 0) and folded into the failure
+    message otherwise. A stale binary that still works must not block a run.
     """
     s = _status()
+    stale_days = s["yt_dlp_stale_days"]
+
     if s["can_proceed"]:
+        if stale_days is not None:
+            sys.stderr.write(f"[watch] {_stale_note(stale_days)}\n")
+            sys.stderr.flush()
         return 0
 
     parts = []
@@ -297,6 +396,8 @@ def cmd_check() -> int:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
     if not s["has_api_key"] and not s["setup_complete"]:
         parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if stale_days is not None:
+        parts.append(_stale_note(stale_days))
     installer = Path(__file__).resolve()
     sys.stderr.write(
         f"[watch] setup incomplete ({'; '.join(parts)}). "
