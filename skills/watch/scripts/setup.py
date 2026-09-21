@@ -52,6 +52,15 @@ ENV_TEMPLATE = """# /watch API configuration
 GROQ_API_KEY=
 OPENAI_API_KEY=
 
+# Local / self-hosted transcription. Point this at any server exposing OpenAI's
+# /v1/audio/transcriptions route (whisper.cpp `server`, faster-whisper-server,
+# speaches, LM Studio) and audio never leaves the machine. When set, it takes
+# precedence over Groq and OpenAI; override per-run with --whisper groq|openai.
+# A bare origin is fine — the route is appended automatically.
+# WATCH_WHISPER_BASE_URL=http://localhost:8080
+# WATCH_WHISPER_MODEL=whisper-1
+# WATCH_WHISPER_API_KEY=          # usually unnecessary for a local server
+
 # Default watch behavior (the /watch first-run wizard sets this for you).
 # Allowed values: transcript | efficient | balanced | token-burner
 # Keep the value on its own line with no trailing comment.

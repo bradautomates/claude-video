@@ -57,9 +57,10 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai"],
+        choices=["groq", "openai", "local"],
         default=None,
-        help="Force a specific Whisper backend. Default: prefer Groq, fall back to OpenAI.",
+        help="Force a specific Whisper backend. Default: prefer a local server if "
+             "WATCH_WHISPER_BASE_URL is set, else Groq, else OpenAI.",
     )
     ap.add_argument(
         "--lang",
@@ -256,7 +257,8 @@ def main() -> int:
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
-        if backend and api_key:
+        # A local server may need no key, so an empty api_key is valid there.
+        if backend and (api_key or backend == "local"):
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
