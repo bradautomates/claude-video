@@ -169,3 +169,20 @@ def test_download_url_reuses_known_language(monkeypatch, tmp_path):
         download.download_url(URL, out)
     langs = _sub_langs(calls[0]).split(",")
     assert all(t.startswith("de") for t in langs), langs
+
+
+def test_cookies_are_off_by_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("WATCH_COOKIES_FILE", raising=False)
+    monkeypatch.delenv("WATCH_COOKIES_FROM_BROWSER", raising=False)
+    monkeypatch.setattr(download, "read_env_value", lambda name: None)
+    calls = _capture_argv(monkeypatch)
+    download.fetch_captions(URL, tmp_path / "download")
+    assert "--cookies" not in calls[0] and "--cookies-from-browser" not in calls[0]
+
+
+def test_cookie_file_is_passed_when_opted_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("WATCH_COOKIES_FILE", "/tmp/jar.txt")
+    monkeypatch.delenv("WATCH_COOKIES_FROM_BROWSER", raising=False)
+    calls = _capture_argv(monkeypatch)
+    download.fetch_captions(URL, tmp_path / "download")
+    assert calls[0][calls[0].index("--cookies") + 1] == "/tmp/jar.txt"

@@ -21,6 +21,11 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import read_env_value  # noqa: E402
+
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
 
@@ -50,6 +55,23 @@ def resolve_local(path: str) -> dict:
 
 
 DEFAULT_SUB_LANGS = "en.*"
+
+
+def _cookie_args() -> list[str]:
+    """Opt-in yt-dlp cookie flags, for sites that refuse signed-out requests.
+
+    WATCH_COOKIES_FILE=/path/to/cookies.txt          -> --cookies
+    WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox -> --cookies-from-browser
+    Read from the environment or ~/.config/watch/.env; both unset by default,
+    so the signed-out path is unchanged unless the user asks for this.
+    """
+    jar = read_env_value("WATCH_COOKIES_FILE")
+    if jar:
+        return ["--cookies", jar]
+    browser = read_env_value("WATCH_COOKIES_FROM_BROWSER")
+    if browser:
+        return ["--cookies-from-browser", browser]
+    return []
 
 
 def _read_raw_info(info_path: Path) -> dict:
@@ -186,6 +208,7 @@ def _resolve_subtitle(url: str, out_dir: Path, lang: str | None) -> Path | None:
 def _fetch_subs_only(url: str, out_dir: Path, langs: str) -> None:
     cmd = [
         "yt-dlp",
+        *_cookie_args(),
         "--skip-download",
         *_sub_lang_args(langs),
         "--no-playlist",
@@ -280,6 +303,7 @@ def fetch_captions(url: str, out_dir: Path, lang: str | None = None) -> dict:
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
         "yt-dlp",
+        *_cookie_args(),
         "--skip-download",
         "--write-info-json",
         *_sub_lang_args(DEFAULT_SUB_LANGS),
@@ -337,6 +361,7 @@ def download_url(
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
         "yt-dlp",
+        *_cookie_args(),
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
