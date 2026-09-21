@@ -205,6 +205,43 @@ def _resolve_subtitle(url: str, out_dir: Path, lang: str | None) -> Path | None:
     return _pick_subtitle(out_dir, raw, prefer=target)
 
 
+# Alternate YouTube player clients, tried in order when `web` is refused.
+# Cheapest and most permissive first; capped so a truly blocked host costs
+# three extra attempts, not a dozen.
+YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded")
+_REFUSAL_MARKERS = (
+    "http error 403", "403: forbidden", "http error 429", "too many requests",
+    "confirm you're not a bot", "confirm you\u2019re not a bot", "sign in to confirm",
+)
+
+
+def _is_youtube(url: str) -> bool:
+    host = (urlparse(url).netloc or "").lower()
+    return any(h in host for h in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
+
+
+def _looks_refused(output: str) -> bool:
+    low = output.lower()
+    return any(m in low for m in _REFUSAL_MARKERS)
+
+
+def _run_captured(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Run yt-dlp with output captured for diagnosis, then echoed to stderr.
+
+    Captured (rather than piped straight through) so a failure can be
+    explained -- a stale yt-dlp getting 403'd, a bot gate -- instead of only
+    surfacing a bare exit code. Nothing that was visible before is lost, it is
+    just no longer live-streamed.
+    """
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if result.stdout:
+        sys.stderr.write(result.stdout)
+    return result
+
+
 def _fetch_subs_only(url: str, out_dir: Path, langs: str) -> None:
     cmd = [
         "yt-dlp",
@@ -380,18 +417,23 @@ def download_url(
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    #
-    # Output is captured (rather than piped straight through to the inherited
-    # stderr fd) so a failure can be diagnosed -- e.g. a stale yt-dlp getting
-    # 403'd by YouTube's latest signature/client rotation -- instead of only
-    # surfacing a bare exit code. It's echoed to stderr after the fact so
-    # nothing that was visible before is lost, just no longer live-streamed.
-    result = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        encoding="utf-8", errors="replace",
-    )
-    if result.stdout:
-        sys.stderr.write(result.stdout)
+    result = _run_captured(cmd)
+
+    # YouTube gates the default `web` client on datacenter IPs (sandboxes, CI,
+    # VPSes) with 403/429/"confirm you're not a bot". Other player clients hit
+    # differently gated surfaces, so retry the *media* fetch through them. Only
+    # the media: alternate clients often drop caption tracks, and captions were
+    # already fetched by fetch_captions().
+    if _pick_video(out_dir) is None and _is_youtube(url) and _looks_refused(result.stdout or ""):
+        for client in YT_CLIENT_FALLBACKS:
+            print(f"[watch] media refused by the default client; retrying with player_client={client}…", file=sys.stderr)
+            retry = _run_captured(cmd[:-2] + ["--extractor-args", f"youtube:player_client={client}", "--", url])
+            result = subprocess.CompletedProcess(
+                retry.args, retry.returncode, (result.stdout or "") + (retry.stdout or ""), None
+            )
+            if _pick_video(out_dir) is not None:
+                print(f"[watch] media download succeeded via player_client={client}", file=sys.stderr)
+                break
 
     video = _pick_video(out_dir)
     subtitle = _resolve_subtitle(url, out_dir, lang)

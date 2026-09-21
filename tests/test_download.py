@@ -186,3 +186,41 @@ def test_cookie_file_is_passed_when_opted_in(monkeypatch, tmp_path):
     calls = _capture_argv(monkeypatch)
     download.fetch_captions(URL, tmp_path / "download")
     assert calls[0][calls[0].index("--cookies") + 1] == "/tmp/jar.txt"
+
+
+def test_youtube_media_refusal_retries_alternate_clients(monkeypatch, tmp_path):
+    """A 403 on the media stream from the default client retries through
+    player_client fallbacks; success on the second stops the loop."""
+    out = tmp_path / "download"
+    out.mkdir(parents=True)
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, *a, **k):
+        calls.append(list(cmd))
+        n = len(calls)
+        if n == 1:
+            return subprocess.CompletedProcess(cmd, 1, "ERROR: unable to download video data: HTTP Error 403: Forbidden\n", None)
+        if n == 2:
+            return subprocess.CompletedProcess(cmd, 1, "ERROR: HTTP Error 403: Forbidden\n", None)
+        (out / "video.mp4").write_bytes(b"x")
+        return subprocess.CompletedProcess(cmd, 0, "", None)
+
+    monkeypatch.setattr(download.subprocess, "run", fake_run)
+    monkeypatch.setattr(download.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(download, "_resolve_subtitle", lambda *a, **k: None)
+    res = download.download_url(URL, out)
+    assert res["video_path"].endswith("video.mp4")
+    assert len(calls) == 3
+    assert "--extractor-args" not in calls[0]
+    assert calls[1][calls[1].index("--extractor-args") + 1] == "youtube:player_client=mweb"
+    assert calls[2][calls[2].index("--extractor-args") + 1] == "youtube:player_client=tv"
+    assert calls[2][-1] == URL and calls[2][-2] == "--"
+
+
+def test_non_refusal_failure_does_not_retry(monkeypatch, tmp_path):
+    out = tmp_path / "download"
+    calls = _capture_argv(monkeypatch)
+    monkeypatch.setattr(download, "_resolve_subtitle", lambda *a, **k: None)
+    with pytest.raises(SystemExit):
+        download.download_url(URL, out)
+    assert len(calls) == 1
