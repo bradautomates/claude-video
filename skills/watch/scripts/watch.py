@@ -244,7 +244,14 @@ def main() -> int:
             )
 
     detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
-    if detail != "transcript" and video_path and detail_budget != 0:
+    # An audio-only file (a TikTok slideshow's soundtrack, a podcast feed, an
+    # audio-only fetch that wasn't meant to be) has no video stream. Handing it
+    # to ffmpeg's frame filters just crashes ("Input #0, mp3"), so skip frames
+    # and say so instead (#220).
+    audio_only_source = bool(video_path) and not audio_only and not meta.get("width")
+    if audio_only_source and detail != "transcript":
+        print("[watch] source has no video stream — skipping frame extraction (transcript only)", file=sys.stderr)
+    if detail != "transcript" and video_path and detail_budget != 0 and not audio_only_source:
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine_label = "keyframes" if detail == "efficient" else "scene-aware frames"
         print(
@@ -345,6 +352,8 @@ def main() -> int:
     detail_count = frame_meta.get("selected_count", 0)
     if degraded:
         print("- **Frames:** 0 — NO VIDEO OBTAINED")
+    elif audio_only_source and detail != "transcript":
+        print("- **Frames:** 0 — source has no video stream (audio only)")
     elif detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
