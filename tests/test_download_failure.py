@@ -194,7 +194,7 @@ def _run_watch(bin_dir: Path, work: Path, *extra_args: str) -> subprocess.Comple
         "--out-dir", str(work),
         *extra_args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
 
 
 def test_watch_transcript_only_on_video_missing_subtitle_present(tmp_path, stub_yt_dlp):

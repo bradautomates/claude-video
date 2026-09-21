@@ -43,7 +43,7 @@ def test_vfr_flag_matches_installed_ffmpeg():
         ["ffmpeg", "-hide_banner", "-f", "lavfi", "-i", "testsrc=duration=0.2:rate=10",
          *flag, "-f", "null", "-"],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
     assert probe.returncode == 0, probe.stderr.strip()
 

@@ -231,7 +231,7 @@ def _run_cli(args, *, home, extra_env=None):
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(SETUP_PATH), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
 
 
