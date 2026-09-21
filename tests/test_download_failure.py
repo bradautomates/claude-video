@@ -216,7 +216,7 @@ def test_watch_transcript_only_on_video_missing_subtitle_present(tmp_path, stub_
     assert "frame_0000" not in report
 
     # The 403/upgrade explanation from fix (a) is surfaced through.
-    assert "403" in report
+    assert "403" in report, f"report:\n{report}\nstderr:\n{proc.stderr}"
     assert "Update and retry" in report
 
     # Also flagged on stderr.
