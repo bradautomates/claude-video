@@ -196,3 +196,31 @@ class TestBackendKeyIsolation:
         backend = "openai" or detected_backend
         api_key = None or detected_key
         assert not (backend == "openai" and (api_key or "").startswith("gsk_"))
+class TestLoadApiKey:
+    """load_api_key now delegates parsing to config.read_env_value."""
+
+    def _home(self, monkeypatch, tmp_path, body):
+        cfg = tmp_path / ".config" / "watch"
+        cfg.mkdir(parents=True)
+        (cfg / ".env").write_text(body, encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.chdir(tmp_path)
+        for name in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_inline_comment_no_longer_reaches_the_api(self, monkeypatch, tmp_path):
+        # Regression: the comment used to be sent as part of the bearer token.
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-secret-abc   # my groq key\n")
+        assert whisper.load_api_key() == ("groq", "sk-secret-abc")
+
+    def test_groq_preferred_over_openai(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-g\nOPENAI_API_KEY=sk-o\n")
+        assert whisper.load_api_key() == ("groq", "sk-g")
+
+    def test_preferred_backend_ignores_the_other_key(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-g\nOPENAI_API_KEY=sk-o\n")
+        assert whisper.load_api_key("openai") == ("openai", "sk-o")
+
+    def test_blank_key_is_not_a_key(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+        assert whisper.load_api_key() == (None, None)

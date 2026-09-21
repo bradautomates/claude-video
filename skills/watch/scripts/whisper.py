@@ -25,6 +25,11 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import read_env_value  # noqa: E402
+
 
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MODEL = "whisper-large-v3"
@@ -66,46 +71,15 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
     If `preferred` is "groq" or "openai", only that backend's key is considered.
+    Resolution order per key is handled by config.read_env_value: the real
+    environment first, then ~/.config/watch/.env, then a project-local .env.
     """
-    def _from_env(name: str) -> str | None:
-        value = os.environ.get(name)
-        return value.strip() if value else None
-
-    def _from_dotenv(path: Path, name: str) -> str | None:
-        if not path.exists():
-            return None
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                if key.strip() != name:
-                    continue
-                value = value.strip()
-                if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-                    value = value[1:-1]
-                return value or None
-        except OSError:
-            return None
-        return None
-
-    dotenv_paths = [
-        Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
-    ]
-
     candidates = (("GROQ_API_KEY", "groq"), ("OPENAI_API_KEY", "openai"))
     if preferred is not None:
         candidates = tuple(c for c in candidates if c[1] == preferred)
 
     for key_name, backend in candidates:
-        value = _from_env(key_name)
-        if not value:
-            for candidate in dotenv_paths:
-                value = _from_dotenv(candidate, key_name)
-                if value:
-                    break
+        value = read_env_value(key_name)
         if value:
             return backend, value
 
