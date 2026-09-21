@@ -219,7 +219,7 @@ Other knobs (passed to `scripts/watch.py`):
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the one before them (held slides, static screen recordings, paused video), so the frame budget is spent on distinct content; this flag turns that off.
 - `--out-dir DIR` — keep working files somewhere specific (default: auto-generated tmp dir).
 
-Environment / `~/.config/watch/.env` settings: `WATCH_DETAIL` (default detail mode), `WATCH_MAX_FPS` (fps ceiling), `WATCH_WHISPER_BASE_URL` (local Whisper server), and opt-in `WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox` / `WATCH_COOKIES_FILE=/path/to/cookies.txt` for sites that refuse signed-out requests (Instagram, YouTube's bot gate). Cookies are never read unless you set one of these.
+Environment / `~/.config/watch/.env` settings: `WATCH_DETAIL` (default detail mode), `WATCH_MAX_FPS` (fps ceiling), `WATCH_WHISPER_BASE_URL` (local Whisper server), `WATCH_YTDLP` (which yt-dlp to run — a path, or a command like `python -m yt_dlp`, for machines with several copies), and opt-in `WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox` / `WATCH_COOKIES_FILE=/path/to/cookies.txt` for sites that refuse signed-out requests (Instagram, YouTube's bot gate). Cookies are never read unless you set one of these.
 
 ## Limits
 

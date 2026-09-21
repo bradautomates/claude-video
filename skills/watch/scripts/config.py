@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -143,3 +145,22 @@ def frame_cap(detail: str) -> int | None:
     if detail == "transcript":
         return None
     return 100
+
+
+def ytdlp_cmd() -> list[str]:
+    """The command that runs yt-dlp, as an argv prefix.
+
+    ``WATCH_YTDLP`` (environment or ~/.config/watch/.env) overrides it: either
+    a path to a specific binary — useful when Homebrew's curl_cffi-less copy
+    shadows the pipx one — or a command such as ``python -m yt_dlp``. Without
+    it, ``yt-dlp`` is resolved on PATH once and run by that path, so the
+    binary probed is the binary executed (Windows' CreateProcess otherwise
+    only appends .exe and may pick a different copy than shutil.which()).
+    """
+    override = read_env_value("WATCH_YTDLP")
+    if override:
+        raw = override.replace("\\", "\\\\") if os.name == "nt" else override
+        tokens = shlex.split(raw)
+        if tokens:
+            return tokens
+    return [shutil.which("yt-dlp") or "yt-dlp"]

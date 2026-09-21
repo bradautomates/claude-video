@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import ytdlp_env
+
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -186,7 +188,7 @@ SAMPLE_VTT = (
 
 def _run_watch(bin_dir: Path, work: Path, *extra_args: str) -> subprocess.CompletedProcess:
     env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env.update(ytdlp_env(bin_dir))
     cmd = [
         sys.executable, str(WATCH),
         "https://example.invalid/watch?v=stub-fixture",
@@ -194,7 +196,7 @@ def _run_watch(bin_dir: Path, work: Path, *extra_args: str) -> subprocess.Comple
         "--out-dir", str(work),
         *extra_args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=60)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60)
 
 
 def test_watch_transcript_only_on_video_missing_subtitle_present(tmp_path, stub_yt_dlp):
@@ -216,7 +218,7 @@ def test_watch_transcript_only_on_video_missing_subtitle_present(tmp_path, stub_
     assert "frame_0000" not in report
 
     # The 403/upgrade explanation from fix (a) is surfaced through.
-    assert "403" in report
+    assert "403" in report, f"report:\n{report}\nstderr:\n{proc.stderr}"
     assert "Update and retry" in report
 
     # Also flagged on stderr.

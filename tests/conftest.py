@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import os
+import sys
 import pytest
 
 # Make the bundled scripts importable (mirrors watch.py's sys.path insert).
@@ -19,7 +21,7 @@ COLORS = [
 
 
 def _run(cmd: list[str]) -> None:
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {' '.join(cmd)}\n{result.stderr}")
 
@@ -113,6 +115,11 @@ def fake_bin_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A PATH entry holding no-op stand-ins for every required binary."""
     bin_dir = tmp_path_factory.mktemp("fakebin")
     for name in STUB_BINARIES:
+        if os.name == "nt":
+            # shutil.which on Windows only matches PATHEXT extensions, so a
+            # bare shebang file is invisible there and the real binary wins.
+            (bin_dir / f"{name}.bat").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+            continue
         stub = bin_dir / name
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
@@ -145,6 +152,11 @@ def make_stub_yt_dlp(
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "yt-dlp"
+    if os.name == "nt":
+        # Windows: no shebang launch and no .bat shim (cmd.exe would read the
+        # `<` in the -f selector as a redirection). Tests point WATCH_YTDLP at
+        # `python yt-dlp.py` instead — see ytdlp_env().
+        stub = bin_dir / "yt-dlp.py"
     script = f'''#!/usr/bin/env python3
 import json
 import sys
@@ -205,3 +217,11 @@ def stub_yt_dlp(tmp_path: Path):
         return bin_dir
 
     return _make
+
+
+def ytdlp_env(bin_dir: Path) -> dict[str, str]:
+    """Environment additions that make watch.py run the stub in *bin_dir*."""
+    env = {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    if os.name == "nt":
+        env["WATCH_YTDLP"] = f'"{sys.executable}" "{bin_dir / "yt-dlp.py"}"'
+    return env

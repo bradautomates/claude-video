@@ -155,3 +155,15 @@ def test_read_env_file_keeps_hash_inside_quotes(tmp_path):
     path = tmp_path / ".env"
     path.write_text('K="a # b"\n', encoding="utf-8")
     assert config.read_env_file(path) == {"K": "a # b"}
+
+
+def test_ytdlp_cmd_defaults_to_path_lookup(monkeypatch):
+    monkeypatch.delenv("WATCH_YTDLP", raising=False)
+    monkeypatch.setattr(config, "read_env_value", lambda name: None)
+    monkeypatch.setattr(config.shutil, "which", lambda n: "/opt/bin/yt-dlp")
+    assert config.ytdlp_cmd() == ["/opt/bin/yt-dlp"]
+
+
+def test_ytdlp_cmd_override_may_be_a_command(monkeypatch):
+    monkeypatch.setattr(config, "read_env_value", lambda name: "python -m yt_dlp" if name == "WATCH_YTDLP" else None)
+    assert config.ytdlp_cmd() == ["python", "-m", "yt_dlp"]
