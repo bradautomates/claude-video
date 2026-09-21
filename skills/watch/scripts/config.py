@@ -54,20 +54,29 @@ def read_env_file(path: Path | None = None) -> dict[str, str]:
         if not raw or raw.startswith("#") or "=" not in raw:
             continue
         key, _, value = raw.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] in ('"', "'") and value[-1] == value[0]:
-            value = value[1:-1]
-        else:
-            # Strip an inline comment (a '#' preceded by whitespace) from an
-            # unquoted value. Without this, `WATCH_DETAIL=balanced  # note`
-            # parses as "balanced  # note", fails validation, and silently
-            # falls back to the default. Keeps '#' inside quotes / API keys.
-            for i, ch in enumerate(value):
-                if ch == "#" and i > 0 and value[i - 1] in " \t":
-                    value = value[:i].rstrip()
-                    break
-        values[key.strip()] = value
+        values[key.strip()] = _parse_value(value.strip())
     return values
+
+
+def _parse_value(value: str) -> str:
+    """Parse one .env value: unwrap quotes, strip an inline comment.
+
+    A quoted value may still carry a trailing comment after the closing quote
+    (`KEY="balanced"  # note`); resolve the quotes first, then accept the rest
+    only if it is empty or a comment. An unquoted value strips a '#' preceded
+    by whitespace, keeping '#' that is part of the value (e.g. inside a key).
+    """
+    if len(value) >= 2 and value[0] in ('"', "'"):
+        quote = value[0]
+        end = value.find(quote, 1)
+        if end != -1:
+            remainder = value[end + 1:].strip()
+            if not remainder or remainder.startswith("#"):
+                return value[1:end]
+    for i, ch in enumerate(value):
+        if ch == "#" and i > 0 and value[i - 1] in " \t":
+            return value[:i].rstrip()
+    return value
 
 
 def env_search_paths() -> list[Path]:

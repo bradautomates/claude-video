@@ -137,3 +137,21 @@ class TestReadEnvValue:
         seen = []
         config.read_env_value("GROQ_API_KEY", paths=paths, on_file=seen.append)
         assert seen == paths
+
+
+def test_read_env_file_strips_inline_comment(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("WATCH_DETAIL=balanced  # note\n", encoding="utf-8")
+    assert config.read_env_file(path) == {"WATCH_DETAIL": "balanced"}
+
+
+def test_read_env_file_strips_comment_after_quoted_value(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text('WATCH_DETAIL="balanced"  # note\n', encoding="utf-8")
+    assert config.read_env_file(path) == {"WATCH_DETAIL": "balanced"}
+
+
+def test_read_env_file_keeps_hash_inside_quotes(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text('K="a # b"\n', encoding="utf-8")
+    assert config.read_env_file(path) == {"K": "a # b"}
