@@ -196,6 +196,8 @@ def _yt_dlp_impersonation(missing_binaries: list[str]) -> bool | None:
         line for line in out.splitlines()
         if line.strip() and not line.startswith(("[", "Client", "---"))
     ]
+    if not rows:
+        return None  # no target table at all: can't tell, don't warn
     usable = [r for r in rows if "unavailable" not in r.lower()]
     return bool(usable)
 
