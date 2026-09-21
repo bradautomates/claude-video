@@ -48,6 +48,17 @@ def test_vfr_flag_matches_installed_ffmpeg():
     assert probe.returncode == 0, probe.stderr.strip()
 
 
+def _assert_candidates_add_up(meta: dict, out: list) -> None:
+    """A uniform fallback counts the uniform frames it actually extracted.
+
+    The fallback caps in ``extract`` and never even-samples, so every candidate
+    that survives dedup is selected and the three counts reconcile exactly.
+    """
+    assert meta["selected_count"] == len(out)
+    assert meta["candidate_count"] >= meta["selected_count"]
+    assert meta["candidate_count"] - meta["deduped_count"] == meta["selected_count"]
+
+
 def test_keyframe_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):
     out, meta = frames.extract_keyframes(str(cut_clip), tmp_path / "f", max_frames=50)
     assert meta["engine"] == "keyframe"
@@ -73,8 +84,10 @@ def test_keyframe_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     out, meta = frames.extract_keyframes(str(static_clip), tmp_path / "f", max_frames=50)
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+    assert meta["fallback_from"] == "keyframe"
     assert len(out) > 0
     assert all(fr["reason"] == "uniform" for fr in out)
+    _assert_candidates_add_up(meta, out)
 
 
 def test_scene_engine_on_cut_clip(cut_clip: Path, tmp_path: Path):
@@ -110,6 +123,29 @@ def test_scene_fallback_on_static_clip(static_clip: Path, tmp_path: Path):
     )
     assert meta["engine"] == "uniform"
     assert meta["fallback"] is True
+    assert meta["fallback_from"] == "scene"
+    _assert_candidates_add_up(meta, out)
+
+
+def test_scene_fallback_candidates_hold_without_dedup(static_clip: Path, tmp_path: Path):
+    """With dedup off nothing is dropped, so every uniform frame is selected."""
+    out, meta = frames.extract_scene_or_uniform(
+        str(static_clip), tmp_path / "f", fps=2.0, target_frames=12, max_frames=100,
+        dedup=False,
+    )
+    assert meta["fallback"] is True
+    assert meta["deduped_count"] == 0
+    assert meta["candidate_count"] == meta["selected_count"] == len(out)
+
+
+def test_keyframe_fallback_candidates_hold_without_dedup(static_clip: Path, tmp_path: Path):
+    out, meta = frames.extract_keyframes(
+        str(static_clip), tmp_path / "f", max_frames=50, dedup=False,
+    )
+    assert meta["fallback"] is True
+    assert meta["deduped_count"] == 0
+    assert meta["candidate_count"] == meta["selected_count"] == len(out)
+
 
 
 def test_even_time_indices_spreads_over_clustered_candidates():
