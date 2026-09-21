@@ -203,6 +203,7 @@ Other knobs (passed to `scripts/watch.py`):
 ## Limits
 
 - **Long-video accuracy depends on the detail mode.** On the capped modes (`efficient`, default `balanced`) coverage thins out past ~10 minutes — the frame cap spreads across the whole clip, so the script prints a "sparse scan" warning and you're better off re-running focused with `--start`/`--end`. `token-burner` lifts the cap and keeps *every* scene-change frame across the full video, so it stays complete on longer clips at the cost of more image tokens. The 10-minute mark is guidance for the capped modes, not a hard ceiling.
+- **Needs outbound network to the video host.** Sandboxed environments with a domain allowlist — Claude's cloud/web sandbox, locked-down CI — typically allow PyPI and GitHub but not `youtube.com`, and the proxy surfaces the block as `SSL: CERTIFICATE_VERIFY_FAILED` (a self-signed interception certificate), not as a clear "blocked" error. That is the environment, not the skill: add the host to your egress allowlist, or run `/watch` on a machine with normal internet and pass a local file. Datacenter IPs may additionally hit YouTube's bot gate; the script retries with alternate player clients and explains the failure if all are refused.
 - **Detail is one dial.** Defaults are balanced: scene-aware frames, 2 fps max, 100-frame cap. Use `--detail efficient` for a fast 50-frame keyframe pass, or `--detail token-burner` for uncapped scene candidates. Set `WATCH_DETAIL` in `~/.config/watch/.env` to change the default.
 
 ## Structure
