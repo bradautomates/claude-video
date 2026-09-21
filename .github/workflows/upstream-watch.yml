@@ -39,13 +39,17 @@ jobs:
           echo "since=$since" >> "$GITHUB_OUTPUT"
           echo "week=$week"   >> "$GITHUB_OUTPUT"
 
-          # Issues endpoint returns PRs too; split on pull_request. Skip items
-          # whose only recent activity is our own account's comment.
-          gh api --paginate "repos/$UPSTREAM/issues?state=all&since=$since&per_page=100" \
-            --jq '.[] | {n: .number, t: .title, u: .user.login, s: .state, pr: has("pull_request"), c: .created_at, up: .updated_at}' \
+          # The Actions token has no pull_requests permission on a foreign
+          # repo, so the /issues endpoint hands it issues only. Query PRs from
+          # /pulls (sorted by update time, stop at the window) and issues from
+          # /issues, and normalise both into one file.
+          gh api --paginate "repos/$UPSTREAM/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+            --jq --arg s "$since" '.[] | select(.updated_at >= $s) | {n: .number, t: .title, u: .user.login, s: .state, pr: true, c: .created_at, up: .updated_at}' \
             > items.jsonl || true
+          gh api --paginate "repos/$UPSTREAM/issues?state=all&since=$since&per_page=100" \
+            --jq '.[] | select(has("pull_request") | not) | {n: .number, t: .title, u: .user.login, s: .state, pr: false, c: .created_at, up: .updated_at}' \
+            >> items.jsonl || true
           echo "items: $(wc -l < items.jsonl) total, $(jq -c 'select(.pr)' items.jsonl | wc -l) PRs"
-          head -2 items.jsonl
 
           new_prs=$(jq -r --arg s "$since" 'select(.pr and .c >= $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/pull/\(.n)) @\(.u) — \(.t)"' items.jsonl)
           upd_prs=$(jq -r --arg s "$since" 'select(.pr and .c <  $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/pull/\(.n)) (\(.s)) — \(.t)"' items.jsonl)
