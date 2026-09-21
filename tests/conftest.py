@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import os
+import sys
 import pytest
 
 # Make the bundled scripts importable (mirrors watch.py's sys.path insert).
@@ -113,6 +115,11 @@ def fake_bin_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A PATH entry holding no-op stand-ins for every required binary."""
     bin_dir = tmp_path_factory.mktemp("fakebin")
     for name in STUB_BINARIES:
+        if os.name == "nt":
+            # shutil.which on Windows only matches PATHEXT extensions, so a
+            # bare shebang file is invisible there and the real binary wins.
+            (bin_dir / f"{name}.bat").write_text("@echo off\r\nexit /b 0\r\n", encoding="utf-8")
+            continue
         stub = bin_dir / name
         stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         stub.chmod(0o755)
@@ -145,6 +152,13 @@ def make_stub_yt_dlp(
     """
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "yt-dlp"
+    if os.name == "nt":
+        # Windows: a .bat shim that shutil.which can find, forwarding to the
+        # Python script (kept as yt-dlp.py so the shim can name it).
+        stub = bin_dir / "yt-dlp.py"
+        (bin_dir / "yt-dlp.bat").write_text(
+            f'@"{sys.executable}" "%~dp0yt-dlp.py" %*\r\n', encoding="utf-8"
+        )
     script = f'''#!/usr/bin/env python3
 import json
 import sys

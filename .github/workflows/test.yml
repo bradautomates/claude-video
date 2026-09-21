@@ -30,10 +30,10 @@ jobs:
           # Windows via Gyan builds, version-pinned: the oldest we claim to
           # support, a middle release, and the newest.
           - os: windows-latest
-            ffmpeg: "5.1"
+            ffmpeg: "5.1.2"
             install: action
           - os: windows-latest
-            ffmpeg: "7.1"
+            ffmpeg: "7.1.1"
             install: action
           - os: windows-latest
             ffmpeg: release

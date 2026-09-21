@@ -126,6 +126,9 @@ def _patch_ready(monkeypatch, version):
     monkeypatch.setattr(setup, "_have_api_key", lambda: (True, "groq"))
     monkeypatch.setattr(setup, "is_first_run", lambda: False)
     monkeypatch.setattr(setup, "_yt_dlp_version", lambda: version)
+    # Impersonation / JS-runtime notes are a separate concern with their own
+    # tests; on a CI runner whose pip yt-dlp lacks curl_cffi they would fire.
+    monkeypatch.setattr(setup, "_ytdlp_capability_notes", lambda missing: [])
 
 
 def test_stale_warns_and_still_exits_zero(monkeypatch, capsys):
