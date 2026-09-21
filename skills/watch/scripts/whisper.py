@@ -15,6 +15,7 @@ import json
 import math
 import mimetypes
 import os
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -50,6 +51,19 @@ LOCAL_MODEL_VAR = "WATCH_WHISPER_MODEL"
 LOCAL_KEY_VAR = "WATCH_WHISPER_API_KEY"
 LOCAL_MODEL_DEFAULT = "whisper-1"
 TRANSCRIPTIONS_PATH = "/v1/audio/transcriptions"
+
+# On-device CLI backends. `parakeet` runs NVIDIA Parakeet TDT 0.6B v3 through
+# parakeet-mlx (Apple Silicon, MLX): 25 European languages, faster than real
+# time, no key, no network after the one-time model download. `cli` is the
+# generic form: any command that writes a .vtt/.srt for the audio file.
+# Both are opt-in (`--whisper parakeet|cli` or WATCH_WHISPER_BACKEND); the
+# cloud/local-server defaults are unchanged.
+PARAKEET_CMD_VAR = "WATCH_PARAKEET_CMD"        # default: parakeet-mlx on PATH
+PARAKEET_MODEL_VAR = "WATCH_PARAKEET_MODEL"    # default: the CLI's own (tdt-0.6b-v3)
+PARAKEET_DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+PARAKEET_INSTALL_HINT = "uv tool install parakeet-mlx   (or: pipx install parakeet-mlx)"
+CLI_CMD_VAR = "WATCH_TRANSCRIBE_CMD"           # template with {audio} and {out_dir}
+CLI_BACKENDS = ("parakeet", "cli")
 
 # Both Groq's free tier and OpenAI whisper-1 cap uploads at 25 MB. We target a
 # margin under that so multipart framing overhead never pushes a chunk over.
@@ -117,6 +131,11 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     Resolution order per key is handled by config.read_env_value: the real
     environment first, then ~/.config/watch/.env, then a project-local .env.
     """
+    if preferred in CLI_BACKENDS:
+        # On-device: no key. Availability is checked when it actually runs, so
+        # the error names the missing binary rather than a missing key.
+        return preferred, ""
+
     if preferred in (None, "local"):
         local = local_endpoint()
         if local is not None:
@@ -134,8 +153,19 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     return None, None
 
 
-def extract_audio(video_path: str, out_path: Path) -> Path:
-    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit."""
+def extract_audio(
+    video_path: str,
+    out_path: Path,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> Path:
+    """Extract mono 16kHz 64kbps mp3 — ~480 kB/min, fits any Whisper limit.
+
+    With a range, only that window is extracted (input-side ``-ss`` so the
+    seek is a keyframe jump, not a decode of everything before it). Segment
+    timestamps then come back relative to ``start_seconds``; the caller shifts
+    them. A focused run thus uploads or transcribes seconds, not the whole file.
+    """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -145,7 +175,17 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-hide_banner",
         "-loglevel", "error",
         "-y",
+    ]
+    if start_seconds:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    cmd += [
         "-i", str(Path(video_path).resolve()),
+    ]
+    if end_seconds is not None:
+        # Output-side duration: unambiguous on every ffmpeg version, unlike an
+        # input-side -to whose meaning changed across releases.
+        cmd += ["-t", f"{max(0.0, end_seconds - (start_seconds or 0.0)):.3f}"]
+    cmd += [
         "-vn",
         "-acodec", "libmp3lame",
         "-ar", "16000",
@@ -521,12 +561,101 @@ def transcribe_chunks(
     return segments
 
 
+def _parakeet_template() -> str:
+    """Command template for the parakeet backend.
+
+    WATCH_PARAKEET_CMD overrides the whole template (must contain {audio} and
+    {out_dir}); otherwise parakeet-mlx from PATH with the configured model.
+    """
+    override = read_env_value(PARAKEET_CMD_VAR)
+    if override:
+        return override
+    model = read_env_value(PARAKEET_MODEL_VAR) or PARAKEET_DEFAULT_MODEL
+    return f"parakeet-mlx {{audio}} --model {shlex.quote(model)} --output-format vtt --output-dir {{out_dir}}"
+
+
+def cli_backend_available(backend: str) -> tuple[bool, str]:
+    """(available, hint) for a CLI backend, without running anything."""
+    if backend == "parakeet":
+        override = read_env_value(PARAKEET_CMD_VAR)
+        exe = shlex.split(override)[0] if override else "parakeet-mlx"
+        if shutil.which(exe) is None:
+            return False, (
+                f"{exe} is not on PATH. Install with: {PARAKEET_INSTALL_HINT}. "
+                f"The first run downloads {PARAKEET_DEFAULT_MODEL} (~500 MB) once."
+            )
+        return True, ""
+    if backend == "cli":
+        template = read_env_value(CLI_CMD_VAR)
+        if not template:
+            return False, (
+                f"--whisper cli needs {CLI_CMD_VAR}: a command with {{audio}} and {{out_dir}} "
+                "placeholders that writes a .vtt or .srt into {out_dir}."
+            )
+        if "{audio}" not in template or "{out_dir}" not in template:
+            return False, f"{CLI_CMD_VAR} must contain both {{audio}} and {{out_dir}}"
+        exe = shlex.split(template)[0]
+        if shutil.which(exe) is None:
+            return False, f"{exe} (from {CLI_CMD_VAR}) is not on PATH"
+        return True, ""
+    return False, f"not a CLI backend: {backend}"
+
+
+def _srt_to_vtt(text: str) -> str:
+    """Minimal SRT → WebVTT: comma decimals to dots, drop cue indices."""
+    out = ["WEBVTT", ""]
+    for line in text.splitlines():
+        if line.strip().isdigit():
+            continue
+        if "-->" in line:
+            line = line.replace(",", ".")
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
+def _transcribe_via_cli(backend: str, audio_path: Path) -> list[dict]:
+    """Run an on-device transcriber and parse the subtitle file it writes."""
+    ok, hint = cli_backend_available(backend)
+    if not ok:
+        raise SystemExit(f"--whisper {backend}: {hint}")
+    template = _parakeet_template() if backend == "parakeet" else read_env_value(CLI_CMD_VAR)
+    out_dir = audio_path.parent / f"{backend}-out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        part.replace("{audio}", str(audio_path.resolve())).replace("{out_dir}", str(out_dir.resolve()))
+        for part in shlex.split(template)
+    ]
+    cmd[0] = shutil.which(cmd[0]) or cmd[0]
+    print(f"[watch] running {backend}: {' '.join(shlex.quote(c) for c in cmd)}", file=sys.stderr)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        tail = (result.stderr or result.stdout or "").strip()[-600:]
+        raise SystemExit(f"{backend} transcription failed (exit {result.returncode}): {tail}")
+
+    # Prefer a file named after the audio, else the newest subtitle in out_dir.
+    stem = audio_path.stem
+    candidates = [p for p in out_dir.glob("*") if p.suffix.lower() in (".vtt", ".srt")]
+    named = [p for p in candidates if p.stem == stem or p.stem.startswith(stem + ".")]
+    pick = sorted(named or candidates, key=lambda p: p.stat().st_mtime)[-1:] 
+    if not pick:
+        raise SystemExit(f"{backend} produced no .vtt/.srt in {out_dir}")
+    sub = pick[0]
+    if sub.suffix.lower() == ".srt":
+        vtt = sub.with_suffix(".vtt")
+        vtt.write_text(_srt_to_vtt(sub.read_text(encoding="utf-8", errors="replace")), encoding="utf-8")
+        sub = vtt
+    from transcribe import parse_vtt  # local import: transcribe imports nothing from here
+    return parse_vtt(str(sub))
+
+
 def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]:
     """Upload one audio file and return its 0-based segments."""
     if backend == "groq":
         response = _post_whisper(GROQ_ENDPOINT, api_key, GROQ_MODEL, audio_path)
     elif backend == "openai":
         response = _post_whisper(OPENAI_ENDPOINT, api_key, OPENAI_MODEL, audio_path)
+    elif backend in CLI_BACKENDS:
+        return _transcribe_via_cli(backend, audio_path)
     elif backend == "local":
         local = local_endpoint()
         if local is None:
@@ -547,10 +676,14 @@ def transcribe_video(
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio → upload → parse segments.
 
-    Returns (segments, backend_used). Raises SystemExit on any failure.
+    With ``start_seconds``/``end_seconds`` only that window is transcribed and
+    the returned timestamps are in source time. Returns (segments,
+    backend_used). Raises SystemExit on any failure.
     """
     if backend is None or api_key is None:
         # Scope the lookup to the requested backend. Without `preferred`, forcing
@@ -562,7 +695,7 @@ def transcribe_video(
 
     # A local backend may legitimately have an empty key, so only Groq/OpenAI
     # require one.
-    if not backend or (not api_key and backend != "local"):
+    if not backend or (not api_key and backend not in ("local", *CLI_BACKENDS)):
         setup_py = Path(__file__).resolve().parent / "setup.py"
         raise SystemExit(
             "No Whisper backend available. Set GROQ_API_KEY or OPENAI_API_KEY, or point "
@@ -571,14 +704,25 @@ def transcribe_video(
             f"Run `python3 {setup_py}` to configure."
         )
 
-    print(f"[watch] extracting audio for Whisper ({backend})…", file=sys.stderr)
-    audio_path = extract_audio(video_path, audio_out)
+    print(f"[watch] extracting audio for transcription ({backend})…", file=sys.stderr)
+    audio_path = extract_audio(video_path, audio_out, start_seconds, end_seconds)
     audio_bytes = audio_path.stat().st_size
+    if start_seconds or end_seconds is not None:
+        print(
+            f"[watch] transcribing only {start_seconds or 0:.0f}s–"
+            f"{'end' if end_seconds is None else f'{end_seconds:.0f}s'} of the audio",
+            file=sys.stderr,
+        )
 
     def transcribe_one(path: Path) -> list[dict]:
         return _transcribe_file(backend, api_key, path)
 
-    if audio_bytes <= MAX_UPLOAD_BYTES:
+    if backend in CLI_BACKENDS:
+        # On-device tools chunk long audio themselves; the 25 MB cap is an
+        # upload limit and does not apply.
+        print(f"[watch] audio: {audio_bytes / 1024:.0f} kB — transcribing on-device with {backend}…", file=sys.stderr)
+        segments = transcribe_one(audio_path)
+    elif audio_bytes <= MAX_UPLOAD_BYTES:
         print(
             f"[watch] audio: {audio_bytes / 1024:.0f} kB — uploading to {backend} Whisper…",
             file=sys.stderr,
@@ -597,6 +741,12 @@ def transcribe_video(
 
     if not segments:
         raise SystemExit("Whisper returned no transcript segments")
+
+    if start_seconds:
+        # Timestamps are relative to the trimmed clip; put them back in source time.
+        for seg in segments:
+            seg["start"] = round(seg["start"] + start_seconds, 2)
+            seg["end"] = round(seg["end"] + start_seconds, 2)
 
     print(f"[watch] transcribed {len(segments)} segments via {backend}", file=sys.stderr)
     return segments, backend

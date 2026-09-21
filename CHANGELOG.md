@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fork additions (originating here — tracked with the `fork-feature` label)
+- **On-device transcription with NVIDIA Parakeet** ([#19](https://github.com/frinsen/claude-video/issues/19)). `--whisper parakeet` runs Parakeet TDT 0.6B v3 through [parakeet-mlx](https://github.com/senstella/parakeet-mlx) on Apple Silicon — 25 European languages, faster than real time, no key, no network after the one-time model download. Model via `WATCH_PARAKEET_MODEL`, command via `WATCH_PARAKEET_CMD`. Install: `uv tool install parakeet-mlx` (or pipx).
+- **Generic on-device backend** `--whisper cli`: `WATCH_TRANSCRIBE_CMD` is any command with `{audio}` and `{out_dir}` placeholders that writes a `.vtt`/`.srt` (sherpa-onnx, whisper-cli, …); parakeet is a preset on it. CLI backends skip the 25 MB chunking — they handle long audio themselves.
+- **`WATCH_WHISPER_BACKEND`** sets the default backend persistently, so `--whisper parakeet` need not be typed every run. Cloud defaults are unchanged unless set.
+- **Focused runs transcribe only the window.** With `--start`/`--end`, audio is extracted for that range (`-ss`/`-t`) and timestamps shifted back to source time, for every backend. Measured: a 30 s window of a 29-minute German video went from transcribing all 246 segments to 5, in 5.6 s wall on Parakeet; a Groq upload shrinks the same way.
+
+### Fixed
+- **Test suite read the developer's real `~/.config/watch/.env`** (#96 part 1; from PR #106, @greekr4). A configured `WATCH_DETAIL` made five tests fail; HOME is now redirected for the whole suite.
+
 ## [0.3.0] — 2026-09-21
 
 Community release from the [frinsen/claude-video](https://github.com/frinsen/claude-video) fork. Upstream had 50 open pull requests and 41 open issues with no maintainer response since July; this release lands the fixes from those PRs (deduplicated — the ffmpeg `-vsync` bug alone had 13 PRs and 15 issues), resolves the remaining open issues, and adds tests for each. Merged PRs are credited in the git history; where several PRs fixed the same thing the most complete one was taken and the others' extra cases folded in.
@@ -9,9 +20,9 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 ### Fixed
 - **Frame extraction on ffmpeg 8 and newer** (#99 #101 #117 #122 #126 #134 #141 #143 #149 #161 #163 #174 #180 #195 #229; PR #219). `-vsync` was removed in ffmpeg 8.0, so every frame-producing mode aborted with `Unrecognized option 'vsync'` on current Homebrew/winget builds — `/watch` returned no frames at all. The flag is now probed once (`-fps_mode` on 5.0+, `-vsync` on older builds) and cached; a missing ffmpeg no longer crashes the probe.
 - **Windows: `UnicodeEncodeError` printing the report** (#51 #109 #150 #134 #67; PR #192). stdout/stderr are reconfigured to UTF-8 with `errors="replace"`, so the arrow/em-dash/ellipsis glyphs no longer kill a run *after* the download and Whisper spend.
-- **Windows: `UnicodeDecodeError` reading ffmpeg output** (#108). Every `subprocess.run(text=True)` now decodes as UTF-8 regardless of console codepage, so a filename with an emoji no longer crashes frame extraction.
+- **Windows: `UnicodeDecodeError` reading ffmpeg output** (#108; fork fix, no upstream PR). Every `subprocess.run(text=True)` now decodes as UTF-8 regardless of console codepage, so a filename with an emoji no longer crashes frame extraction.
 - **Windows: permanent false "permissions 644 (should be 600)" warning** (#47 #107 #189; PR #206). POSIX mode bits are meaningless on NTFS and `chmod` is a no-op there, so the hook and `setup.py` skip the check and the chmod on Windows and document the ACL posture instead.
-- **SessionStart hook aborted when `.env` existed but was unreadable** (#120). `read_key()` checks `-r` and tolerates awk failing under `set -e`.
+- **SessionStart hook aborted when `.env` existed but was unreadable** (#120; fork fix). `read_key()` checks `-r` and tolerates awk failing under `set -e`.
 - **Non-English videos got YouTube's machine-translated English captions, or none at all** (#144 #153; PRs #212 #221 #234 #187). English is still requested first, but the video's own language (from yt-dlp's metadata) is then fetched with one bounded extra call, and uploader-supplied tracks rank above auto-generated ones. `--lang` overrides detection. `all` is never requested.
 - **YouTube auto-caption transcripts were ~2× their real length** (PR #182; also #225). Rolling cues repeat the tail of the previous cue; the parser now uses the inline word-timing tags to identify genuinely new text and a word-overlap guard for the rest. Whitespace-padded cue bodies are no longer dropped; HTML entities are unescaped.
 - **Whisper hallucinations were presented as a normal transcript** (#222; PR #223). Segments with high `no_speech_prob`, or a phrase looping at regular intervals, mark the transcript LOW CONFIDENCE with an explicit warning to judge it against the frames.
@@ -22,8 +33,8 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 - **Scene engine "succeeded" with all its frames bunched in one spot** (PR #210). Clearing `SCENE_MIN_FRAMES` said nothing about coverage; a worst-gap check now triggers the uniform fallback and the report says why.
 - **Frame report arithmetic that could not hold** (PR #224). Fallbacks reported the rejected detector's candidates, so "12 selected from 3 candidates" was possible; counts now reconcile.
 - **Bare "yt-dlp did not produce a video file"** (PR #228). A 403 now explains the likely cause (stale yt-dlp, no impersonation, no JS runtime) with the matching upgrade command, and when captions came down the run finishes in clearly labelled transcript-only mode instead of dying.
-- **Re-running on the downloaded file inside the same `--out-dir` could destroy it** (#80). The report footer now says whether the work dir is temporary or user-supplied, the script warns when the source lives inside it, and SKILL.md forbids deleting anything but an auto-created temp dir.
-- **`ffprobe.exe` blocked by Windows App Control aborted the run** (#128). Metadata falls back to parsing `ffmpeg -i`'s banner; `setup.py` treats ffprobe as optional.
+- **Re-running on the downloaded file inside the same `--out-dir` could destroy it** (#80; fork fix). The report footer now says whether the work dir is temporary or user-supplied, the script warns when the source lives inside it, and SKILL.md forbids deleting anything but an auto-created temp dir.
+- **`ffprobe.exe` blocked by Windows App Control aborted the run** (#128; fork fix). Metadata falls back to parsing `ffmpeg -i`'s banner; `setup.py` treats ffprobe as optional.
 - **Audio-only downloads crashed frame extraction with `Input #0, mp3`** (from PR #220). Sources without a video stream finish in transcript-only mode.
 - **Test suite depended on the developer's machine** (#96; PRs #231 #208).
 - **`efficient` detail crashed on a range with no keyframes** (PR #97). ffmpeg fails at encoder init when a short `--start/--end` window holds no keyframe; that now falls back to uniform sampling like the too-sparse case it is.
@@ -44,10 +55,12 @@ Community release from the [frinsen/claude-video](https://github.com/frinsen/cla
 - **Correct image-token arithmetic** in SKILL.md (PR #176): 28-px patches, so a 512×288 frame is 209 tokens and contact sheets save nothing.
 - **Skill description says when to invoke** (PR #154).
 - `android` joins the YouTube media-fetch client fallbacks (PRs #127 #179).
+- Docs: sandbox egress blocks (`CERTIFICATE_VERIFY_FAILED` from an allowlist proxy) explained as environmental (#83 #135).
+
+#### Fork additions (not from an upstream PR)
 - `UPSTREAM.md`: disposition of all 99 upstream PRs and 41 issues open at fork time; a weekly upstream-watch workflow opens a tracking issue for new activity.- **`WATCH_YTDLP`** — choose which yt-dlp runs (a path, or a command such as `python -m yt_dlp`) for machines with several copies; the resolved binary is always the one executed.
 - **CI** on every push/PR and weekly: pytest on Ubuntu 22.04 (ffmpeg 4.4), Ubuntu 24.04 (6.1), macOS (9.x), Windows (8.1.2, latest).
 - `AUTHORS.md`, and the MIT notice inside the skill package so bundles and `npx skills add` installs carry it.
-- Docs: sandbox egress blocks (`CERTIFICATE_VERIFY_FAILED` from an allowlist proxy) explained as environmental (#83 #135).
 
 ### Not taken (deferred, with reasons)
 - PR #215 (screen-recording bundle, 2k lines: quality dial, tile-based screen detection, run manifest) — too entangled to review safely; its yt-dlp capability detection is covered by the preflight warnings above.
