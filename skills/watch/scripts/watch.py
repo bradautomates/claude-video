@@ -15,7 +15,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import force_utf8_output, frame_cap, get_config  # noqa: E402
+from config import WHISPER_BACKENDS, force_utf8_output, frame_cap, get_config  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
@@ -57,10 +57,13 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "local"],
+        choices=list(WHISPER_BACKENDS),
         default=None,
-        help="Force a specific Whisper backend. Default: prefer a local server if "
-             "WATCH_WHISPER_BASE_URL is set, else Groq, else OpenAI.",
+        help="Transcription backend. groq/openai: cloud Whisper. local: an OpenAI-compatible "
+             "server (WATCH_WHISPER_BASE_URL). parakeet: on-device NVIDIA Parakeet TDT 0.6B v3 via "
+             "parakeet-mlx (Apple Silicon). cli: any command from WATCH_TRANSCRIBE_CMD that writes a "
+             ".vtt/.srt. Default: WATCH_WHISPER_BACKEND, else local server if configured, else Groq, "
+             "else OpenAI.",
     )
     ap.add_argument(
         "--lang",
@@ -88,6 +91,8 @@ def main() -> int:
 
     config = get_config()
     detail = args.detail or str(config["detail"])
+    if args.whisper is None and config.get("whisper_backend"):
+        args.whisper = str(config["whisper_backend"])
     configured_cap = frame_cap(detail)
     if args.max_frames is not None:
         max_frames = args.max_frames
@@ -296,14 +301,16 @@ def main() -> int:
 
     if not transcript_segments and not args.no_whisper and video_path and meta.get("has_audio"):
         backend, api_key = load_api_key(args.whisper)
-        # A local server may need no key, so an empty api_key is valid there.
-        if backend and (api_key or backend == "local"):
+        # Local servers and on-device CLIs need no key, so an empty api_key is valid there.
+        if backend and (api_key or backend in ("local", "parakeet", "cli")):
             try:
                 all_segments, used_backend = transcribe_video(
                     video_path,
                     work / "audio.mp3",
                     backend=backend,
                     api_key=api_key,
+                    start_seconds=start_sec if focused else None,
+                    end_seconds=end_sec if focused else None,
                 )
                 transcript_segments = filter_range(all_segments, start_sec, end_sec) if focused else all_segments
                 transcript_text = format_transcript(transcript_segments)

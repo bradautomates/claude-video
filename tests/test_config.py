@@ -30,7 +30,7 @@ def test_get_config_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("WATCH_DETAIL", raising=False)
     monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "missing.env")
     cfg = config.get_config()
-    assert set(cfg) == {"detail", "config_file"}
+    assert set(cfg) == {"detail", "config_file", "whisper_backend"}
 
 
 def test_frame_cap_mapping():

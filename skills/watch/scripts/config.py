@@ -18,6 +18,9 @@ DEFAULT_DETAIL = "balanced"
 
 DETAILS = {"transcript", "efficient", "balanced", "token-burner"}
 
+# Transcription backends `--whisper` accepts; WATCH_WHISPER_BACKEND sets the default.
+WHISPER_BACKENDS = ("groq", "openai", "local", "parakeet", "cli")
+
 
 
 def force_utf8_output() -> None:
@@ -187,8 +190,13 @@ def get_config() -> dict[str, object]:
     if detail not in DETAILS:
         detail = DEFAULT_DETAIL
 
+    backend = os.environ.get("WATCH_WHISPER_BACKEND") or file_values.get("WATCH_WHISPER_BACKEND") or None
+    if backend not in (None, *WHISPER_BACKENDS):
+        backend = None
+
     return {
         "detail": detail,
+        "whisper_backend": backend,
         "config_file": str(CONFIG_FILE),
     }
 

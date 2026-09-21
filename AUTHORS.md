@@ -51,13 +51,14 @@ other changes, with the author credited in the commit message.
 | [@stickersfxlab](https://github.com/stickersfxlab) | #119 `.env` in the encodings Windows writes | adapted |
 | [@gqbeerman](https://github.com/gqbeerman) | #136 preflight reads `./.env` like whisper.py | adapted |
 | [@caleb436](https://github.com/caleb436), [@pornthepp](https://github.com/pornthepp) | #127 #179 `android` client fallback | adapted |
+| [@greekr4](https://github.com/greekr4) | #106 isolate the suite from the developer's real config | adapted |
 
 The ffmpeg `-vsync` fix was also independently submitted by @PollxTroy-create (#102), @varunsahni18 (#103), @vgrosetti-maker (#125), @apalm8 (#133), @syrusdigital (#138), @utkarshbindal-wq (#148), @dustymurph (#162), @vakogogu-coder (#166), @ELpistolero21 (#171), @ZiCoreDom (#172), @SVSOnderwijs (#177), @MaCeeeee (#181), @victoropp (#130), @tiff4183 (#132), @sauveteur71 (#168), @thetimlee1 (#139), @rainervianaprocurador (#230),
 @blkzera (#213), @SatishGs01 (#211), @tradersc2020-oss (#202), @dd58mk72wv-stack (#198),
 @crybbyforreal (#197), @amipcoaching2027 (#188), @endiaye677 (#183), @aromat24 (#194) and
 @oheewono (#216); the Windows permission fix by @frankkeil (#201), @ppradeep123-ops (#190),
 @vanlieropf-dot (#185) and @Rchardd (#191); the Windows console fix by @tradersc2020-oss (#203)
-and @oheewono (#217). Further independent fixes for problems landed above: @fabio-pisoni-hw (#100), @ZiCoreDom (#173), @stickersfxlab (#118), @dungartoriaaa (#146), @khcho98-maker (#159) for Windows; @weekly100million (#104) for subprocess decoding; @redonto-007 (#110) for console encoding; @Maktorin (#105), @drlee91 (#129), @waxandwires (#151), @Ydiouri (#124) for caption parsing; @greekr4 (#106) for test isolation; @tomimoyano15-byte (#113), @nacho-marin (#114), @ai-websites-poland (#116), @Nicopatron (#123), @djhammer20k (#164) for caption language; @Diterex (#112), @androsland (#169) for local transcription; @xiaoqian289-foece (#140) for cookies. Thank you all — the duplicates are how we knew which bugs mattered most. The full disposition is in [UPSTREAM.md](UPSTREAM.md).
+and @oheewono (#217). Further independent fixes for problems landed above: @fabio-pisoni-hw (#100), @ZiCoreDom (#173), @stickersfxlab (#118), @dungartoriaaa (#146), @khcho98-maker (#159) for Windows; @weekly100million (#104) for subprocess decoding; @redonto-007 (#110) for console encoding; @Maktorin (#105), @drlee91 (#129), @waxandwires (#151), @Ydiouri (#124) for caption parsing; @tomimoyano15-byte (#113), @nacho-marin (#114), @ai-websites-poland (#116), @Nicopatron (#123), @djhammer20k (#164) for caption language; @Diterex (#112), @androsland (#169) for local transcription; @xiaoqian289-foece (#140) for cookies. Thank you all — the duplicates are how we knew which bugs mattered most. The full disposition is in [UPSTREAM.md](UPSTREAM.md).
 
 ## Related project
 

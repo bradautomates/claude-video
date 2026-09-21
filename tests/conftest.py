@@ -9,6 +9,39 @@ import os
 import sys
 import pytest
 
+# ---------------------------------------------------------------------------
+# Isolation from the developer's real config (#96, PR #106).
+#
+# Every script module computes CONFIG_DIR/CONFIG_FILE from Path.home() at
+# import time, and test modules import them at collection — before any
+# fixture runs. So HOME is redirected here, at conftest import, to a scratch
+# dir; the autouse fixture below re-asserts it per test and strips the shell
+# variables that would otherwise change what watch.py / setup.py resolve.
+# ---------------------------------------------------------------------------
+import tempfile as _tempfile
+
+_ISOLATED_HOME = Path(_tempfile.mkdtemp(prefix="watch-test-home-"))
+os.environ["HOME"] = str(_ISOLATED_HOME)
+os.environ["USERPROFILE"] = str(_ISOLATED_HOME)  # Windows
+for _var in ("WATCH_DETAIL", "WATCH_WHISPER_BACKEND", "WATCH_YTDLP", "WATCH_MAX_FPS",
+             "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE",
+             "WATCH_WHISPER_BASE_URL", "WATCH_COOKIES_FILE", "WATCH_COOKIES_FROM_BROWSER"):
+    os.environ.pop(_var, None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the developer's real ~/.config/watch/.env and shell env out of tests.
+
+    Subprocess-based tests inherit os.environ, so a customised WATCH_DETAIL or
+    a real API key on the developer's machine would otherwise change what
+    watch.py / setup.py resolve (#96).
+    """
+    monkeypatch.setenv("HOME", str(_ISOLATED_HOME))
+    monkeypatch.setenv("USERPROFILE", str(_ISOLATED_HOME))
+    for var in ("WATCH_DETAIL", "WATCH_WHISPER_BACKEND", "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE"):
+        monkeypatch.delenv(var, raising=False)
+
 # Make the bundled scripts importable (mirrors watch.py's sys.path insert).
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
