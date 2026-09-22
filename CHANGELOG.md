@@ -2,6 +2,12 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- **JS-runtime preflight had a false negative** (review of upstream #237 by @Verohomie). yt-dlp enables only `deno` by default; a machine with `node`/`bun`/`qjs` but no `deno` passed the check and still lost formats. When `deno` is absent but another supported runtime is on PATH, every yt-dlp call now passes `--js-runtimes <runtime>` so the finding is actually used, and the preflight says which runtime is in use. Wording softened to match yt-dlp's own: a missing runtime degrades (formats missing, lower quality), it does not fail outright.
+- **Docs: `-vsync` was removed in ffmpeg 9.0, not 8.0** (also @Verohomie). Verified against the FFmpeg source: the option is present in `n8.1.2`, gone in `n9.0`; 8.x prints a deprecation notice and works. The probe-based fix was already right for both; the affected population is "ffmpeg 9", which is what Homebrew and winget ship today.
+
 ## [0.4.0] — 2026-09-22
 
 Bump because Claude Code keys plugin updates on the `plugin.json` version string: 0.3.0 users saw "already at the latest version" while `main` had moved. Every release bumps it from now on.
@@ -25,7 +31,7 @@ Bump because Claude Code keys plugin updates on the `plugin.json` version string
 Community release from the [frinsen/claude-video](https://github.com/frinsen/claude-video) fork. Upstream had 50 open pull requests and 41 open issues with no maintainer response since July; this release lands the fixes from those PRs (deduplicated — the ffmpeg `-vsync` bug alone had 13 PRs and 15 issues), resolves the remaining open issues, and adds tests for each. Merged PRs are credited in the git history; where several PRs fixed the same thing the most complete one was taken and the others' extra cases folded in.
 
 ### Fixed
-- **Frame extraction on ffmpeg 8 and newer** (#99 #101 #117 #122 #126 #134 #141 #143 #149 #161 #163 #174 #180 #195 #229; PR #219). `-vsync` was removed in ffmpeg 8.0, so every frame-producing mode aborted with `Unrecognized option 'vsync'` on current Homebrew/winget builds — `/watch` returned no frames at all. The flag is now probed once (`-fps_mode` on 5.0+, `-vsync` on older builds) and cached; a missing ffmpeg no longer crashes the probe.
+- **Frame extraction on ffmpeg 9** (#99 #101 #117 #122 #126 #134 #141 #143 #149 #161 #163 #174 #180 #195 #229; PR #219). `-vsync` (deprecated since 5.1) was removed in ffmpeg 9.0, so every frame-producing mode aborted with `Unrecognized option 'vsync'` on current Homebrew/winget builds — `/watch` returned no frames at all. The flag is now probed once (`-fps_mode` on 5.0+, `-vsync` on older builds) and cached; a missing ffmpeg no longer crashes the probe.
 - **Windows: `UnicodeEncodeError` printing the report** (#51 #109 #150 #134 #67; PR #192). stdout/stderr are reconfigured to UTF-8 with `errors="replace"`, so the arrow/em-dash/ellipsis glyphs no longer kill a run *after* the download and Whisper spend.
 - **Windows: `UnicodeDecodeError` reading ffmpeg output** (#108; fork fix, no upstream PR). Every `subprocess.run(text=True)` now decodes as UTF-8 regardless of console codepage, so a filename with an emoji no longer crashes frame extraction.
 - **Windows: permanent false "permissions 644 (should be 600)" warning** (#47 #107 #189; PR #206). POSIX mode bits are meaningless on NTFS and `chmod` is a no-op there, so the hook and `setup.py` skip the check and the chmod on Windows and document the ACL posture instead.

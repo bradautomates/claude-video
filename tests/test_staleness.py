@@ -277,7 +277,43 @@ def test_capability_notes_skip_when_ytdlp_missing():
 
 
 def test_capability_notes_mention_js_runtime(monkeypatch):
+    import config as _cfg
     monkeypatch.setattr(_setup, "_yt_dlp_impersonation", lambda missing: True)
-    monkeypatch.setattr(_setup, "_which", lambda n: None)
+    monkeypatch.setattr(_cfg.shutil, "which", lambda n: None)
     notes = _setup._ytdlp_capability_notes([])
     assert len(notes) == 1 and "JavaScript runtime" in notes[0]
+
+
+# --- JS runtime: yt-dlp only enables deno by default (#237 review) ----------
+
+import config as _config  # noqa: E402
+
+
+def _which_only(*names):
+    return lambda n: f"/usr/bin/{n}" if n in names else None
+
+
+def test_deno_present_needs_no_flag(monkeypatch):
+    monkeypatch.setattr(_config.shutil, "which", _which_only("deno", "node"))
+    assert _config.js_runtime_args() == []
+    assert _setup._ytdlp_capability_notes([]) == [] or all("deno not found" not in n for n in _setup._ytdlp_capability_notes([]))
+
+
+def test_node_without_deno_is_passed_to_ytdlp(monkeypatch):
+    monkeypatch.setattr(_config.shutil, "which", _which_only("node", "yt-dlp", "ffmpeg"))
+    assert _config.js_runtime_args() == ["--js-runtimes", "node"]
+    monkeypatch.setattr(_setup, "_yt_dlp_impersonation", lambda missing: True)
+    notes = _setup._ytdlp_capability_notes([])
+    assert len(notes) == 1 and "--js-runtimes" in notes[0] and "node" in notes[0]
+
+
+def test_qjs_binary_maps_to_quickjs_runtime_name(monkeypatch):
+    monkeypatch.setattr(_config.shutil, "which", _which_only("qjs"))
+    assert _config.js_runtime_args() == ["--js-runtimes", "quickjs"]
+
+
+def test_no_runtime_warns_about_degradation_not_failure(monkeypatch):
+    monkeypatch.setattr(_config.shutil, "which", _which_only("yt-dlp", "ffmpeg"))
+    monkeypatch.setattr(_setup, "_yt_dlp_impersonation", lambda missing: True)
+    notes = _setup._ytdlp_capability_notes([])
+    assert len(notes) == 1 and "formats go missing" in notes[0] and "fail" not in notes[0].lower()

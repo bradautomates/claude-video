@@ -255,3 +255,10 @@ def test_resolve_local_ignores_unrelated_vtt(tmp_path):
     video = _make_video(tmp_path)
     (tmp_path / "other.vtt").write_text("WEBVTT\n", encoding="utf-8")
     assert download.resolve_local(str(video))["subtitle_path"] is None
+
+
+def test_ytdlp_argv_carries_js_runtime_when_deno_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(download, "js_runtime_args", lambda: ["--js-runtimes", "node"])
+    calls = _capture_argv(monkeypatch)
+    download.fetch_captions(URL, tmp_path / "download")
+    assert calls[0][calls[0].index("--js-runtimes") + 1] == "node"
