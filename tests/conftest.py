@@ -140,7 +140,7 @@ def long_cut_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
 # put on PATH so the guard passes deterministically everywhere.
 # ---------------------------------------------------------------------------
 
-STUB_BINARIES = ("ffmpeg", "ffprobe", "yt-dlp")
+STUB_BINARIES = ("ffmpeg", "ffprobe", "yt-dlp", "deno")  # deno: keep the JS-runtime preflight off host state
 
 
 @pytest.fixture(scope="session")
