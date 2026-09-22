@@ -18,7 +18,7 @@ We use `/watch` daily and want to keep building on it. In September 2026 that wa
 
 ## Quick install
 
-Claude Code (recommended — auto-updates via marketplace). Two separate commands; if the **Add Marketplace** dialog opens, its source field takes only `frinsen/claude-video`:
+Claude Code (recommended). Two separate commands; if the **Add Marketplace** dialog opens, its source field takes only `frinsen/claude-video`:
 ```
 /plugin marketplace add frinsen/claude-video
 ```
@@ -131,7 +131,7 @@ End-to-end from a cold URL, `transcript` is the cheapest mode by far; the frame 
 /plugin install watch@claude-video
 ```
 
-Update later with `/plugin update watch@claude-video`.
+Updating: see [Updating](#updating) — third-party marketplaces do **not** auto-update unless you enable it.
 
 ### Codex, Cursor, Copilot, Gemini CLI, and 50+ other hosts
 
@@ -170,6 +170,19 @@ ln -s "$(pwd)/claude-video/skills/watch" ~/.claude/skills/watch   # or ~/.codex/
 
 For claude.ai, build the `.skill` bundle from source: `bash skills/watch/scripts/build-skill.sh` produces `dist/watch.skill`.
 
+## Updating
+
+Nothing updates itself unless you tell it to; each install path has its own step. New versions are announced in [CHANGELOG.md](CHANGELOG.md) and on the [Releases](https://github.com/frinsen/claude-video/releases) page.
+
+| Installed via | Update with |
+|---|---|
+| **Claude Code marketplace** | `/plugin update watch@claude-video` (refreshes the marketplace and installs the latest `main`; then `/reload-plugins` or restart). To make it automatic: `/plugin` → **Marketplaces** → `claude-video` → **Enable auto-update** — Claude Code then checks in the background after each session start. Third-party marketplaces are *off* by default; only Anthropic's own are on. |
+| **`npx skills add`** (Codex, Cursor, Copilot, …) | `npx skills update watch -g` (or `npx skills update` for everything). The skill lives in `~/.agents/skills/watch`; nothing checks upstream on its own. |
+| **claude.ai web** (`.skill` upload) | Download the new `watch.skill` from the latest release and upload it again in Settings → Capabilities → Skills; the upload replaces the old version. |
+| **Manual clone** | `git -C ~/.claude/skills/watch pull` |
+
+The installed version is in the report footer of every run and in `SKILL.md`'s frontmatter; compare it with the latest release tag.
+
 ## First run
 
 On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpeg` / `yt-dlp` aren't on your PATH, or no Whisper API key is set, it walks you through fixing it:
@@ -180,6 +193,21 @@ On the first `/watch` call, the skill runs `scripts/setup.py --check`. If `ffmpe
 - **API key** — scaffolds `~/.config/watch/.env` with commented placeholders for `GROQ_API_KEY` (preferred) and `OPENAI_API_KEY`. Restricted to mode `0600` on macOS/Linux; on Windows it keeps the inherited profile ACL (you, SYSTEM, Administrators) — POSIX modes are not settable there.
 
 After setup, preflight is silent and `/watch` just works. The check is a sub-100ms lookup, so it doesn't slow you down on subsequent runs.
+
+## On-device transcription
+
+No captions and no API key? Run the transcription locally. **Parakeet** is NVIDIA's Parakeet TDT 0.6B v3 through [parakeet-mlx](https://github.com/senstella/parakeet-mlx) on Apple Silicon: 25 European languages, faster than real time, audio never leaves the machine.
+
+```bash
+uv tool install parakeet-mlx      # or: pipx install parakeet-mlx
+```
+```
+/watch <video-or-url> --whisper parakeet
+```
+
+The first run downloads the model (~2 GB) once. Make it the default with `WATCH_WHISPER_BACKEND=parakeet` in `~/.config/watch/.env`; pick another Parakeet checkpoint with `WATCH_PARAKEET_MODEL`. Measured on a German tech video: a 30 s `--start/--end` window transcribed in **5.6 s** wall, model load included, with correct German and product names. Focused runs transcribe only the requested window, for every backend. On very long *untrimmed* audio Parakeet's 120 s chunks can leave mixed-language sentences at chunk edges — trim with `--start/--end`, or use captions / Whisper-large for full-length multilingual talks.
+
+Any other local tool works the same way: `--whisper cli` runs `WATCH_TRANSCRIBE_CMD` (a command with `{audio}` and `{out_dir}` placeholders that writes a `.vtt` or `.srt`), and `--whisper local` talks to any server exposing OpenAI's `/v1/audio/transcriptions` route (`WATCH_WHISPER_BASE_URL`: whisper.cpp `server`, faster-whisper-server, speaches, LM Studio).
 
 ## Bring your own keys
 

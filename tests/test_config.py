@@ -190,3 +190,10 @@ class TestEnvEncodings:
         p = tmp_path / ".env"; p.write_bytes("GROQ_API_KEY=abc # ó\n".encode("cp1252"))
         assert config.read_env_file(p)["GROQ_API_KEY"] == "abc"
         assert "not valid UTF-8" in capsys.readouterr().err
+
+
+def test_skill_version_matches_frontmatter():
+    v = config.skill_version()
+    assert v != "unknown"
+    front = (config.Path(config.__file__).resolve().parent.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert f'version: "{v}"' in front
