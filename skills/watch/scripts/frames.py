@@ -273,12 +273,20 @@ def extract(
     max_frames: int = 100,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    prefix: str = "frame",
 ) -> list[dict]:
+    """Uniformly sample the range at ``fps``, capped at ``max_frames``.
+
+    ``prefix`` names the output files (``<prefix>_0001.jpg``) and is the only
+    thing this wipes on entry. The hybrid engine fills gaps around scene cuts it
+    wants to keep, so it passes a different prefix to avoid deleting them —
+    every writer here clears its own prefix and no one else's.
+    """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for existing in out_dir.glob("frame_*.jpg"):
+    for existing in out_dir.glob(f"{prefix}_*.jpg"):
         existing.unlink()
 
     # `fps` picks density, `max_frames` picks a hard cap. The `fps` filter
@@ -306,7 +314,7 @@ def extract(
         if wanted - max_frames > 1e-6:
             effective_fps = max_frames / range_duration
 
-    output_pattern = str(out_dir / "frame_%04d.jpg")
+    output_pattern = str(out_dir / f"{prefix}_%04d.jpg")
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
@@ -335,7 +343,7 @@ def extract(
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
     offset = range_start
-    frames = sorted(out_dir.glob("frame_*.jpg"))
+    frames = sorted(out_dir.glob(f"{prefix}_*.jpg"))
     return [
         {
             "index": i,
@@ -496,20 +504,26 @@ def extract_at_timestamps(
     max_frames: int | None = None,
     start_seconds: float | None = None,
     end_seconds: float | None = None,
+    reason: str = "transcript-cue",
+    prefix: str = "cue",
 ) -> tuple[list[dict], dict]:
-    """Grab exactly one frame at each requested timestamp (transcript cues).
+    """Grab exactly one frame at each requested timestamp (pinned frames).
 
     Timestamps are absolute source seconds. Any falling outside an active
-    ``[start, end]`` focus window are dropped. Files use a ``cue_*.jpg`` prefix
-    so they sit alongside detail-engine ``frame_*.jpg`` output without either
-    clobbering the other. When more cues than ``max_frames`` survive, they are
-    even-sampled (first + last kept) before extraction.
+    ``[start, end]`` focus window are dropped. Files use a ``<prefix>_*.jpg``
+    name so they sit alongside detail-engine ``frame_*.jpg`` output without
+    either clobbering the other. When more points than ``max_frames`` survive,
+    they are even-sampled (first + last kept) before extraction.
+
+    Two callers pin frames this way: ``--timestamps`` (``transcript-cue``) and
+    the boundaries pass (``post-fade``), which is why the reason and the prefix
+    are parameters — they must not overwrite each other's JPEGs.
     """
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    for existing in out_dir.glob("cue_*.jpg"):
+    for existing in out_dir.glob(f"{prefix}_*.jpg"):
         existing.unlink()
 
     lo = start_seconds or 0.0
@@ -527,7 +541,7 @@ def extract_at_timestamps(
 
     out: list[dict] = []
     for t in points:
-        path = out_dir / f"cue_{len(out):04d}.jpg"
+        path = out_dir / f"{prefix}_{len(out):04d}.jpg"
         cmd = [
             "ffmpeg",
             "-hide_banner",
@@ -546,7 +560,7 @@ def extract_at_timestamps(
                 "index": len(out),
                 "timestamp_seconds": t,
                 "path": str(path),
-                "reason": "transcript-cue",
+                "reason": reason,
             })
 
     meta = {
@@ -634,7 +648,8 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
 
 
 def dedupe_perceptual(
-    candidates: list[dict], threshold: float = DEDUP_THRESHOLD
+    candidates: list[dict], threshold: float = DEDUP_THRESHOLD,
+    protect: set[str] | None = None,
 ) -> tuple[list[dict], int]:
     """Drop near-identical frames from a chronological candidate list.
 
@@ -642,29 +657,45 @@ def dedupe_perceptual(
     per-channel RGB difference from the last kept one is within ``threshold``.
     Returns ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
     unavailable or there are fewer than two candidates.
+
+    ``protect`` is a set of ``reason`` values that are never dropped — a pinned
+    frame (a scene cut the hybrid engine is keeping, a post-fade pin, a
+    transcript cue) was selected because of *when* it is, so a near-identical
+    neighbour is not grounds to delete it.
+
+    Note: :func:`_thumb_frames` reads the JPEGs back as one numbered ffmpeg
+    sequence, so every candidate here must share a prefix and be contiguous.
+    Callers with two prefixes (the hybrid engine) dedup each list separately and
+    merge afterwards rather than deduping the merged list.
     """
     if len(candidates) <= 1:
         return candidates, 0
     thumbs = _thumb_frames([Path(c["path"]) for c in candidates])
-    return _dedupe_by_deltas(candidates, thumbs, threshold)
+    return _dedupe_by_deltas(candidates, thumbs, threshold, protect)
 
 
 def _dedupe_by_deltas(
-    candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
+    candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD,
+    protect: set[str] | None = None,
 ) -> tuple[list[dict], int]:
     """Greedily drop frames within ``threshold`` mean per-channel difference of the
     last *kept* frame. Deletes dropped JPEGs and reindexes survivors 0..n-1 (same
     cleanup contract as :func:`_even_sample`). Fail-open: if ``thumbs`` does not
     line up 1:1 with ``candidates``, return them unchanged.
+
+    A frame whose ``reason`` is in ``protect`` is always kept, and still becomes
+    the new reference — so a run of identical frames after a protected one
+    collapses against it rather than starting a fresh run.
     """
     if len(thumbs) != len(candidates) or len(candidates) <= 1:
         return candidates, 0
 
+    protect = protect or set()
     kept = [candidates[0]]
     last = thumbs[0]
     dropped: list[dict] = []
     for cand, thumb in zip(candidates[1:], thumbs[1:]):
-        if _frame_delta(thumb, last) <= threshold:
+        if _frame_delta(thumb, last) <= threshold and cand.get("reason") not in protect:
             dropped.append(cand)
         else:
             kept.append(cand)
@@ -703,6 +734,120 @@ def _covers_range(times: list[float], start: float, end: float) -> bool:
     return _worst_gap(times, start, end) <= ideal * MAX_GAP_RATIO
 
 
+PINNED_REASONS = {"scene-change", "first-frame", "post-fade", "transcript-cue"}
+
+
+def _drop_near_pinned(fill: list[dict], pinned_times: list[float]) -> tuple[list[dict], int]:
+    """Drop fill frames sitting within half a fill-interval of a pinned time.
+
+    "Half the interval the fill itself chose" is the natural radius: closer than
+    that and the fill frame is not showing a moment the grid meant to cover, it
+    is showing the pinned moment a second time. Deletes the JPEGs it drops (same
+    cleanup contract as :func:`_even_sample`) and reindexes the survivors.
+    """
+    if not fill or not pinned_times:
+        return fill, 0
+    times = [fr["timestamp_seconds"] for fr in fill]
+    if len(times) > 1:
+        radius = (max(times) - min(times)) / (len(times) - 1) / 2
+    else:
+        radius = 0.0
+
+    kept = [fr for fr in fill
+            if all(abs(fr["timestamp_seconds"] - t) > radius for t in pinned_times)]
+    dropped = [fr for fr in fill if fr not in kept]
+    for fr in dropped:
+        try:
+            Path(fr["path"]).unlink()
+        except OSError:
+            pass
+    for i, fr in enumerate(kept):
+        fr["index"] = i
+    return kept, len(dropped)
+
+
+def _hybrid_scene_uniform(
+    video_path: str,
+    out_dir: Path,
+    scene_frames: list[dict],
+    fps: float,
+    target_frames: int,
+    resolution: int,
+    max_frames: int | None,
+    start_seconds: float | None,
+    end_seconds: float | None,
+    dedup: bool,
+) -> tuple[list[dict], dict]:
+    """Keep clustered scene cuts as pinned frames and fill the rest uniformly.
+
+    The coverage check rejects a detector whose cuts bunch into part of the range,
+    but "bunched" is not "wrong": on a montage the hard cuts are real (card to
+    card) and the uncovered stretch is uncovered because it *fades* rather than
+    cuts, which no per-frame scene score can see. Discarding them, as the pure
+    uniform fallback did, threw away the only frames landing exactly on a
+    boundary and spent the whole budget re-sampling what the cuts already showed.
+
+    So: cuts are reserved against the cap first (like transcript cues), uniform
+    sampling gets whatever budget is left, and the two are merged chronologically.
+
+    The two engines write different filename prefixes, which is also why each
+    list is deduped on its own before the merge — :func:`_thumb_frames` reads a
+    single numbered sequence, so a mixed-prefix list would silently fail open.
+    """
+    scene_count = len(scene_frames)
+    scene_times = [fr["timestamp_seconds"] for fr in scene_frames]
+
+    pinned, n_dropped_scene = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
+
+    if max_frames is not None and len(pinned) > max_frames:
+        # More cuts than the whole budget: thin them by time and skip the fill.
+        pinned = _even_sample(pinned, max_frames)
+        fill_budget = 0
+    else:
+        # Uncapped (token-burner) keeps every cut and still fills to the budget.
+        ceiling = target_frames if max_frames is None else min(max_frames, max(target_frames, len(pinned)))
+        fill_budget = max(0, ceiling - len(pinned))
+
+    fill: list[dict] = []
+    n_dropped_fill = 0
+    n_redundant = 0
+    if fill_budget > 0:
+        fill = extract(
+            video_path,
+            out_dir,
+            fps=fps,
+            resolution=resolution,
+            max_frames=fill_budget,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            prefix="fill",
+        )
+        # The uniform grid spans the whole range, so some of its frames land on
+        # moments a cut already pinned — a frame at t=0.0 beside the first-frame
+        # pin, or 2.12s beside a cut at 2.10s. Content dedup cannot catch these
+        # (the two lists have different filename prefixes and are thumbnailed
+        # separately), and they are redundant by *time*, which is cheaper to
+        # judge anyway. The budget they free is not respent: a second frame of a
+        # moment already covered is not worth a round trip.
+        fill, n_redundant = _drop_near_pinned(fill, [fr["timestamp_seconds"] for fr in pinned])
+        if dedup:
+            fill, n_dropped_fill = dedupe_perceptual(fill)
+
+    merged = merge_frames(fill, pinned)
+    return merged, {
+        "engine": "scene+uniform",
+        "candidate_count": scene_count + len(fill) + n_dropped_fill + n_redundant,
+        "deduped_count": n_dropped_scene + n_dropped_fill + n_redundant,
+        "selected_count": len(merged),
+        "fallback": False,
+        "hybrid": True,
+        "hybrid_reason": "coverage",
+        "pinned_count": len(pinned),
+        "fill_count": len(fill),
+        "scene_times": scene_times,
+    }
+
+
 def extract_scene_or_uniform(
     video_path: str,
     out_dir: Path,
@@ -735,10 +880,11 @@ def extract_scene_or_uniform(
         end_seconds=end_seconds,
     )
     scene_count = len(scene_frames)
+    scene_times = [fr["timestamp_seconds"] for fr in scene_frames]
     eff_start = start_seconds or 0.0
     # Only costs an ffprobe when the caller gave no explicit end.
     eff_end = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
-    covered = _covers_range([fr["timestamp_seconds"] for fr in scene_frames], eff_start, eff_end)
+    covered = _covers_range(scene_times, eff_start, eff_end)
     if scene_count >= SCENE_MIN_FRAMES and covered:
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
         cap = len(deduped) if max_frames is None else max_frames
@@ -749,7 +895,21 @@ def extract_scene_or_uniform(
             "deduped_count": n_dropped,
             "selected_count": len(selected),
             "fallback": False,
+            "scene_times": scene_times,
         }
+
+    if scene_count >= SCENE_MIN_FRAMES:
+        # Enough real cuts, just clustered. They are still the most informative
+        # frames in the video — a montage cuts hard between its cards and fades
+        # between its long segments, so the detector finding cuts in one stretch
+        # is a FINDING about the edit, not a failure to be thrown away. Keep them
+        # and let uniform sampling cover what they miss.
+        return _hybrid_scene_uniform(
+            video_path, out_dir, scene_frames,
+            fps=fps, target_frames=target_frames, resolution=resolution,
+            max_frames=max_frames, start_seconds=start_seconds,
+            end_seconds=end_seconds, dedup=dedup,
+        )
 
     fallback_cap = target_frames if max_frames is None else min(max_frames, target_frames)
     frames = extract(
@@ -776,7 +936,10 @@ def extract_scene_or_uniform(
         "fallback": True,
         "fallback_from": "scene",
         "fallback_candidate_count": scene_count,
-        "fallback_reason": "sparse" if scene_count < SCENE_MIN_FRAMES else "coverage",
+        "fallback_reason": "sparse",
+        # The cuts are gone as frames, but where they were is still evidence:
+        # report them so the caller has a timeline even with nothing sampled there.
+        "scene_times": scene_times,
     }
 
 
@@ -855,6 +1018,7 @@ def extract_keyframes(
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
         keyframe_count = len(candidates)
+        keyframe_times = [cand["timestamp_seconds"] for cand in candidates]
         for cand in candidates:
             try:
                 Path(cand["path"]).unlink()
@@ -890,6 +1054,7 @@ def extract_keyframes(
             "fallback": True,
             "fallback_from": "keyframe",
             "fallback_candidate_count": keyframe_count,
+            "scene_times": keyframe_times,
         }
 
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +
