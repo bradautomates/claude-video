@@ -303,8 +303,8 @@ def test_node_without_deno_is_passed_to_ytdlp(monkeypatch):
     monkeypatch.setattr(_config.shutil, "which", _which_only("node", "yt-dlp", "ffmpeg"))
     assert _config.js_runtime_args() == ["--js-runtimes", "node"]
     monkeypatch.setattr(_setup, "_yt_dlp_impersonation", lambda missing: True)
-    notes = _setup._ytdlp_capability_notes([])
-    assert len(notes) == 1 and "--js-runtimes" in notes[0] and "node" in notes[0]
+    # Handled automatically via --js-runtimes, so --check must stay silent.
+    assert _setup._ytdlp_capability_notes([]) == []
 
 
 def test_qjs_binary_maps_to_quickjs_runtime_name(monkeypatch):

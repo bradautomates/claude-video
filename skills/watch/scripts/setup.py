@@ -230,12 +230,8 @@ def _ytdlp_capability_notes(missing_binaries: list[str]) -> list[str]:
             "formats go missing and downloads degrade to lower quality. "
             "Install deno: brew install deno / winget install DenoLand.Deno"
         )
-    elif found[1] != "deno":
-        notes.append(
-            f"deno not found; yt-dlp will be told to use {found[1]} via --js-runtimes "
-            f"(only deno is enabled by default). deno is preferred: brew install deno / "
-            "winget install DenoLand.Deno"
-        )
+    # A non-deno runtime is handled automatically (download.py passes
+    # --js-runtimes), so it is not a warning: --check stays silent on success.
     return notes
 
 
