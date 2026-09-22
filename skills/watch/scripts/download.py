@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import read_env_value, ytdlp_cmd  # noqa: E402
+from config import js_runtime_args, read_env_value, ytdlp_cmd  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
@@ -262,6 +262,7 @@ def _fetch_subs_only(url: str, out_dir: Path, langs: str) -> None:
     cmd = [
         *ytdlp_cmd(),
         *_cookie_args(),
+        *js_runtime_args(),
         "--skip-download",
         *_sub_lang_args(langs),
         "--no-playlist",
@@ -361,6 +362,7 @@ def fetch_captions(url: str, out_dir: Path, lang: str | None = None) -> dict:
     cmd = [
         *ytdlp_cmd(),
         *_cookie_args(),
+        *js_runtime_args(),
         "--skip-download",
         "--write-info-json",
         *_sub_lang_args(DEFAULT_SUB_LANGS),
@@ -419,6 +421,7 @@ def download_url(
     cmd = [
         *ytdlp_cmd(),
         *_cookie_args(),
+        *js_runtime_args(),
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",

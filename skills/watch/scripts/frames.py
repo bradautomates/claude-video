@@ -69,8 +69,9 @@ SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 def _vfr_flag() -> tuple[str, ...]:
     """Return the frame-rate-mode flag this ffmpeg understands.
 
-    ffmpeg 8.0 removed the long-deprecated ``-vsync``; ``-fps_mode`` has existed
-    since 5.0. Probe once and cache, so old and new builds both work.
+    ffmpeg 9.0 removed ``-vsync`` (deprecated since 5.1; 8.x still accepts it
+    with a notice); ``-fps_mode`` has existed since 5.1. Probe once and cache,
+    so old and new builds both work.
     """
     try:
         result = subprocess.run(

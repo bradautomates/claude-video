@@ -38,7 +38,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
-from config import force_utf8_output, get_config, read_env_value, ytdlp_cmd  # noqa: E402
+from config import force_utf8_output, get_config, js_runtime, read_env_value, ytdlp_cmd  # noqa: E402
 
 
 REQUIRED_BINARIES = ["ffmpeg", "yt-dlp"]
@@ -207,10 +207,8 @@ def _yt_dlp_impersonation(missing_binaries: list[str]) -> bool | None:
 
 def _js_runtime() -> str | None:
     """Name of a JavaScript runtime yt-dlp can use for YouTube's challenge solver."""
-    for name in ("deno", "node", "bun", "qjs"):
-        if _which(name):
-            return name
-    return None
+    found = js_runtime()
+    return found[0] if found else None
 
 
 def _ytdlp_capability_notes(missing_binaries: list[str]) -> list[str]:
@@ -224,11 +222,19 @@ def _ytdlp_capability_notes(missing_binaries: list[str]) -> list[str]:
             "Homebrew's formula omits it). YouTube will likely return 403 for the video "
             f"stream while captions still work. Fix: {YTDLP_FULL_INSTALL}"
         )
-    if _js_runtime() is None:
+    found = js_runtime()
+    if found is None:
         notes.append(
-            "no JavaScript runtime found (deno/node). Recent yt-dlp needs one to solve "
-            "YouTube's player challenge; without it downloads can fail with 403. "
+            "no JavaScript runtime found (deno preferred; node/quickjs/bun also work). "
+            "Recent yt-dlp uses one to solve YouTube's player challenge; without it some "
+            "formats go missing and downloads degrade to lower quality. "
             "Install deno: brew install deno / winget install DenoLand.Deno"
+        )
+    elif found[1] != "deno":
+        notes.append(
+            f"deno not found; yt-dlp will be told to use {found[1]} via --js-runtimes "
+            f"(only deno is enabled by default). deno is preferred: brew install deno / "
+            "winget install DenoLand.Deno"
         )
     return notes
 

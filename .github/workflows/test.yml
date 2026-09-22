@@ -32,8 +32,8 @@ jobs:
             ffmpeg: brew (latest)
             install: brew
           # Windows via Gyan builds. setup-ffmpeg only sees Gyan's most recent
-          # release page, so only 8.x/9.x are pinnable here; the 8.0 removal of
-          # -vsync is what broke upstream 0.2.0 on winget installs.
+          # release page, so only 8.x/9.x are pinnable here. 8.x still accepts
+          # -vsync (deprecated); 9.0 removed it and broke upstream 0.2.0 on winget.
           - os: windows-latest
             ffmpeg: "8.1.2"
             install: action

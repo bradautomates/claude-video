@@ -242,3 +242,31 @@ def skill_version() -> str:
     except OSError:
         pass
     return "unknown"
+
+
+# yt-dlp needs a JavaScript runtime for YouTube's player challenge. Only deno is
+# enabled by default; the others must be named with --js-runtimes or yt-dlp
+# ignores them (its own warning: "Only deno is enabled by default"). Binary name
+# on PATH -> the runtime name yt-dlp expects, in yt-dlp's priority order.
+JS_RUNTIMES = (("deno", "deno"), ("node", "node"), ("qjs", "quickjs"), ("bun", "bun"))
+
+
+def js_runtime() -> tuple[str, str] | None:
+    """(binary, yt-dlp runtime name) of the best JS runtime on PATH, or None."""
+    for binary, name in JS_RUNTIMES:
+        if shutil.which(binary):
+            return binary, name
+    return None
+
+
+def js_runtime_args() -> list[str]:
+    """yt-dlp flags that make a non-deno runtime actually count.
+
+    With deno present nothing is needed. With only node/quickjs/bun, pass
+    --js-runtimes so the runtime the preflight found is the one yt-dlp uses —
+    otherwise the check passes and formats still go missing (#237 review).
+    """
+    found = js_runtime()
+    if found is None or found[1] == "deno":
+        return []
+    return ["--js-runtimes", found[1]]
