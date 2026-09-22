@@ -1,6 +1,6 @@
 ---
 name: watch
-version: "0.3.0"
+version: "0.4.0"
 description: Watch a video from a URL or local path and answer questions about its content. Use when the user shares a video and asks what is in it, wants it summarised, or asks about something shown or said on screen.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion

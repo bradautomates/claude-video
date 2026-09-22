@@ -2,7 +2,9 @@
 
 All notable changes to `/watch` are documented here.
 
-## [Unreleased]
+## [0.4.0] — 2026-09-22
+
+Bump because Claude Code keys plugin updates on the `plugin.json` version string: 0.3.0 users saw "already at the latest version" while `main` had moved. Every release bumps it from now on.
 
 ### Fork additions (originating here — tracked with the `fork-feature` label)
 - **On-device transcription with NVIDIA Parakeet** ([#19](https://github.com/frinsen/claude-video/issues/19)). `--whisper parakeet` runs Parakeet TDT 0.6B v3 through [parakeet-mlx](https://github.com/senstella/parakeet-mlx) on Apple Silicon — 25 European languages, faster than real time, no key, no network after the one-time model download. Model via `WATCH_PARAKEET_MODEL`, command via `WATCH_PARAKEET_CMD`. Install: `uv tool install parakeet-mlx` (or pipx).
@@ -11,6 +13,9 @@ All notable changes to `/watch` are documented here.
 - **Report footer shows the skill version** (read from `SKILL.md`'s frontmatter), so "which version am I running?" has an answer in every run.
 - README: **Updating** section for all four install paths — Claude Code marketplaces from third parties do not auto-update unless enabled in `/plugin` → Marketplaces; `npx skills update`; re-upload the `.skill`; `git pull`. On-device transcription has its own section.
 - **Focused runs transcribe only the window.** With `--start`/`--end`, audio is extracted for that range (`-ss`/`-t`) and timestamps shifted back to source time, for every backend. Measured: a 30 s window of a 29-minute German video went from transcribing all 246 segments to 5, in 5.6 s wall on Parakeet; a Groq upload shrinks the same way.
+
+### Upstream PRs landed after 0.3.0
+- Merged #97 (keyframe-less range → uniform fallback), #147 (sidecar `.vtt` for local files), #175 (RGB dedup), #176 (image-token arithmetic), #154 (skill description says when to invoke); adapted #119 (`.env` in Windows encodings), #136 (preflight reads `./.env`), #127/#179 (`android` client fallback), #106 (test isolation). Full disposition of all 99 upstream PRs: [UPSTREAM.md](UPSTREAM.md).
 
 ### Fixed
 - **Test suite read the developer's real `~/.config/watch/.env`** (#96 part 1; from PR #106, @greekr4). A configured `WATCH_DETAIL` made five tests fail; HOME is now redirected for the whole suite.
