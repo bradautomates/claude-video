@@ -8,6 +8,8 @@ All notable changes to `/watch` are documented here.
 - **On-device transcription with NVIDIA Parakeet** ([#19](https://github.com/frinsen/claude-video/issues/19)). `--whisper parakeet` runs Parakeet TDT 0.6B v3 through [parakeet-mlx](https://github.com/senstella/parakeet-mlx) on Apple Silicon — 25 European languages, faster than real time, no key, no network after the one-time model download. Model via `WATCH_PARAKEET_MODEL`, command via `WATCH_PARAKEET_CMD`. Install: `uv tool install parakeet-mlx` (or pipx).
 - **Generic on-device backend** `--whisper cli`: `WATCH_TRANSCRIBE_CMD` is any command with `{audio}` and `{out_dir}` placeholders that writes a `.vtt`/`.srt` (sherpa-onnx, whisper-cli, …); parakeet is a preset on it. CLI backends skip the 25 MB chunking — they handle long audio themselves.
 - **`WATCH_WHISPER_BACKEND`** sets the default backend persistently, so `--whisper parakeet` need not be typed every run. Cloud defaults are unchanged unless set.
+- **Report footer shows the skill version** (read from `SKILL.md`'s frontmatter), so "which version am I running?" has an answer in every run.
+- README: **Updating** section for all four install paths — Claude Code marketplaces from third parties do not auto-update unless enabled in `/plugin` → Marketplaces; `npx skills update`; re-upload the `.skill`; `git pull`. On-device transcription has its own section.
 - **Focused runs transcribe only the window.** With `--start`/`--end`, audio is extracted for that range (`-ss`/`-t`) and timestamps shifted back to source time, for every backend. Measured: a 30 s window of a 29-minute German video went from transcribing all 246 segments to 5, in 5.6 s wall on Parakeet; a Groq upload shrinks the same way.
 
 ### Fixed

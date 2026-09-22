@@ -230,3 +230,15 @@ def ytdlp_cmd() -> list[str]:
         if tokens:
             return tokens
     return [shutil.which("yt-dlp") or "yt-dlp"]
+
+
+def skill_version() -> str:
+    """Version from SKILL.md's frontmatter (the single place it is bumped)."""
+    skill_md = Path(__file__).resolve().parent.parent / "SKILL.md"
+    try:
+        for line in skill_md.read_text(encoding="utf-8").splitlines()[:20]:
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip().strip('"\'')
+    except OSError:
+        pass
+    return "unknown"
