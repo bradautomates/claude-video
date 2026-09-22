@@ -1,12 +1,12 @@
 ---
 name: watch
-version: "0.2.0"
-description: Watch a video (URL or local path). Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls the transcript from captions (or Whisper API fallback), and hands the result to Claude so it can answer questions about what's in the video.
+version: "0.4.0"
+description: Watch a video from a URL or local path and answer questions about its content. Use when the user shares a video and asks what is in it, wants it summarised, or asks about something shown or said on screen.
 argument-hint: "<video-url-or-path> [question]"
 allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/bradautomates/claude-video
-repository: https://github.com/bradautomates/claude-video
-author: bradautomates
+homepage: https://github.com/frinsen/claude-video
+repository: https://github.com/frinsen/claude-video
+author: frinsen (fork of bradautomates/claude-video by Bradley Bonanno, MIT)
 license: MIT
 user-invocable: true
 ---
@@ -81,7 +81,7 @@ The installer is idempotent — safe to re-run:
 python3 "${SKILL_DIR}/scripts/setup.py"
 ```
 
-On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings at `0600` perms.
+On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings, restricted to `0600` on macOS/Linux (on Windows the file keeps the inherited user-profile ACL — POSIX modes do not apply).
 
 **If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
 
@@ -186,11 +186,13 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
 
+**Proper nouns in a transcript are unverified.** Captions and Whisper both transcribe phonetically, so names come back wrong or invented — "Diogo Almeida" as "Dooo Almeida", "Vercel" as "Verscell", ChatGPT as "chatbt". Frames are the corrective: title cards, slides and on-screen UI usually spell a name correctly, so check it against a frame before stating it. Where no frame confirms it — including every `transcript`-detail run, which has no frames at all — give the name as-heard and say it is from the transcript and unverified. This applies to people, companies, products, model names, URLs, prices and figures: anything the user might repeat, quote or act on.
+
 If the user asked a specific question, answer it directly citing timestamps. If they didn't ask anything, summarize what happens in the video — structure, key moments, notable visuals, spoken content.
 
 This holds for `transcript` detail too: even with no frames, produce a **summary** like the other modes — do not paste the full transcript into chat. Synthesize structure, key moments, and spoken content with timestamps; quote only the lines that matter. Offer the raw transcript only if the user explicitly asks for it.
 
-**Step 5 — clean up.** The script prints a working directory at the end. If the user isn't going to ask follow-ups about this video, delete it with `rm -rf <dir>`. If they might, leave it in place.
+**Step 5 — clean up.** The script's last line names the working directory and says whether it is *temporary* or *user-supplied*. Only a **temporary** dir (auto-created under the system temp dir, prefix `watch-`) may be deleted, and only if the user isn't going to ask follow-ups — then `rm -rf <dir>`. **Never delete a user-supplied `--out-dir`**, and never delete a directory that contains the source file you were given (the script warns when it does): that is the user's data, and a local recording may have no upstream copy.
 
 ## Detail and frames
 
@@ -220,10 +222,12 @@ Behavior:
 
 ## Transcription
 
-The script gets a timestamped transcript in one of two ways:
+The script gets a timestamped transcript in one of three ways:
 
 1. **Native captions (free, preferred).** yt-dlp pulls manual or auto-generated subtitles from the source platform if available.
-2. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+2. **Sidecar VTT (free, local files).** For a local path, a `.vtt` next to the video (`clip.vtt`, or a language-tagged `clip.en.vtt`) is used as the transcript. This is the only free transcript route for a file that never came from a caption-bearing platform — put your own transcription output there and no API key is needed.
+3. **Whisper API fallback.** If no captions came back (or the source is a local file), the script extracts audio (`ffmpeg -vn -ac 1 -ar 16000 -b:a 64k`, ~0.5 MB/min) and uploads it to whichever Whisper API has a key configured:
+   - **On-device alternative:** `--whisper parakeet` (or `WATCH_WHISPER_BACKEND=parakeet` in the config) transcribes with NVIDIA Parakeet TDT 0.6B v3 via `parakeet-mlx` on Apple Silicon — no key, no upload. If the user asks for offline/local transcription and `parakeet-mlx` is missing, tell them: `uv tool install parakeet-mlx` (first run downloads the model once). `--whisper cli` runs any `WATCH_TRANSCRIBE_CMD` that writes a `.vtt`/`.srt`.
    - **Groq** — `whisper-large-v3`. Preferred default: cheaper, faster. Get a key at console.groq.com/keys.
    - **OpenAI** — `whisper-1`. Fallback. Get a key at platform.openai.com/api-keys.
 
@@ -234,15 +238,24 @@ Both keys live in `~/.config/watch/.env`. The script prefers Groq when both are 
 - **Setup preflight failed** → run `python3 "${SKILL_DIR}/scripts/setup.py"` (auto-installs ffmpeg/yt-dlp via brew on macOS, scaffolds the `.env`). For API key, ask the user via `AskUserQuestion` and write it to `~/.config/watch/.env`.
 - **No transcript available** → captions missing AND (no Whisper key OR Whisper API failed). Script prints a hint pointing to setup. Proceed frames-only and tell the user.
 - **Long video warning printed** → acknowledge it in your answer. Offer to re-run focused on a specific section via `--start`/`--end` rather than a sparse full-video scan.
-- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying.
+- **Download fails** → yt-dlp's error goes to stderr. If it's a login-required or region-locked video, tell the user plainly; do not keep retrying. If the site needs a signed-in session (or is challenging the request as a bot), tell the user they can re-run with `WATCH_COOKIES_FROM_BROWSER=chrome` or `WATCH_COOKIES_FILE=/path/to/cookies.txt` — ask before reading their cookies, never do it unprompted.
+- **`SSL: CERTIFICATE_VERIFY_FAILED` on the very first request, or every host unreachable** → you are in a network-restricted sandbox whose proxy blocks the video host (typical of Claude's cloud/web sandbox: PyPI and GitHub allowed, youtube.com not). It is not a certificate problem and not fixable from here — tell the user plainly, suggest adding the host to the egress allowlist or running on their own machine, and stop retrying.
 - **Whisper request fails** → the error is printed to stderr (likely: invalid key or rate limit). Audio over the API's 25 MB upload cap is split into chunks and transcribed automatically, so length alone won't fail it; if some chunks fail the transcript is partial and the dropped chunks are noted on stderr. The report will say "none available" only if every chunk fails. You can retry with `--whisper openai` if Groq failed (or vice versa).
 
 ## Token efficiency
 
-This skill burns tokens primarily on frames. Order of magnitude:
-- 80 frames at 512px wide is roughly 50-80k image tokens depending on aspect ratio.
+This skill burns tokens primarily on frames. Claude prices an image in 28x28-pixel
+patches, so one frame costs `ceil(width / 28) * ceil(height / 28)` visual tokens
+([vision docs](https://platform.claude.com/docs/en/build-with-claude/vision#resolution-and-token-cost)).
+Cost tracks pixel area, not image count:
+- At the default 512px width a 16:9 frame is 512x288, so `19 * 11 = 209` tokens.
+  80 of them is about **17k**.
 - The transcript is cheap (a few thousand tokens at most for a 10-minute video).
-- Bumping `--resolution` to 1024 roughly quadruples the image tokens per frame. Only do it when necessary.
+- Bumping `--resolution` to 1024 makes a frame `37 * 21 = 777` tokens - 3.7x more.
+  Only do it when necessary.
+- Because cost follows pixel area, tiling frames into contact sheets saves nothing:
+  the same nine frames cost the same whether sent as nine images or one 3x3 sheet.
+  Lower `--resolution` or `--max-frames` to actually spend less.
 
 If you already watched a video this session and the user asks a follow-up, do **not** re-run the script — you already have the frames and transcript in context. Just answer from what you have.
 
@@ -254,11 +267,11 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
-- Reads / creates `~/.config/watch/.env` (mode `0600`) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
+- Reads / creates `~/.config/watch/.env` (mode `0600` on macOS/Linux; inherited user-profile ACL on Windows) to store the Whisper API key(s) and a `SETUP_COMPLETE` marker. As a fallback, also reads `.env` in the current working directory
 
 **What this skill does NOT do:**
 - Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
-- Does not access any platform account (no login, no session cookies, no posting) — yt-dlp only ever requests public data
+- Does not access any platform account by default — yt-dlp runs signed-out and requests only public data. It uses a signed-in session **only** when the user explicitly sets `WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox` (yt-dlp `--cookies-from-browser`) or `WATCH_COOKIES_FILE=/path/to/cookies.txt` (`--cookies`), and even then it only reads — it never posts, comments, or changes account state. Cookies go only to the host the URL points at and are never copied into the working directory or printed
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)

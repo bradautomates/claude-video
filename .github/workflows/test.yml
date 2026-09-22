@@ -1,0 +1,78 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly: yt-dlp/ffmpeg rot on their own schedule, not ours.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / ffmpeg ${{ matrix.ffmpeg }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 apt ships ffmpeg 4.4 — no -fps_mode at all, so this
+          # is the only job that exercises the legacy -vsync branch of the probe.
+          - os: ubuntu-22.04
+            ffmpeg: apt (4.4)
+            install: apt
+          # Ubuntu 24.04 apt ships ffmpeg 6.1: knows both flags.
+          - os: ubuntu-latest
+            ffmpeg: apt (6.x)
+            install: apt
+          # Homebrew ships current ffmpeg (9.x at the time of writing): the
+          # build that removed -vsync and broke upstream 0.2.0.
+          - os: macos-latest
+            ffmpeg: brew (latest)
+            install: brew
+          # Windows via Gyan builds. setup-ffmpeg only sees Gyan's most recent
+          # release page, so only 8.x/9.x are pinnable here. 8.x still accepts
+          # -vsync (deprecated); 9.0 removed it and broke upstream 0.2.0 on winget.
+          - os: windows-latest
+            ffmpeg: "8.1.2"
+            install: action
+          - os: windows-latest
+            ffmpeg: release
+            install: action
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ffmpeg (apt)
+        if: matrix.install == 'apt'
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+
+      - name: Install ffmpeg (brew)
+        if: matrix.install == 'brew'
+        run: brew install ffmpeg
+
+      - name: Install ffmpeg (pinned)
+        if: matrix.install == 'action'
+        uses: FedericoCarboni/setup-ffmpeg@v3
+        with:
+          ffmpeg-version: ${{ matrix.ffmpeg }}
+          github-token: ${{ github.token }}
+
+      - name: Install test deps
+        run: python -m pip install -q pytest yt-dlp
+
+      - name: Versions
+        shell: bash
+        run: |
+          python --version
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+          yt-dlp --version
+
+      - name: Run tests
+        shell: bash
+        run: python -m pytest -q -p no:cacheprovider

@@ -7,7 +7,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SETUP = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts" / "setup.py"
+
+
+@pytest.fixture(autouse=True)
+def _stub_host_binaries(fake_bin_dir, monkeypatch):
+    """Pretend every required binary is installed.
+
+    These tests assert on the *key* state machine; whether the developer's
+    machine has ffmpeg/yt-dlp is an unrelated variable that otherwise short
+    -circuits `--check` with exit 2 before the key logic ever runs. `_run`
+    copies `os.environ`, so prepending here is enough to reach the subprocess.
+    """
+    monkeypatch.setenv("PATH", f"{fake_bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 def _run(args, *, home=None, extra_env=None):
@@ -24,7 +38,7 @@ def _run(args, *, home=None, extra_env=None):
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, str(SETUP), *args],
-        capture_output=True, text=True, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
     )
 
 

@@ -1,0 +1,97 @@
+name: Upstream watch
+
+# Weekly look at bradautomates/claude-video: anything new or updated there in
+# the past 8 days — PRs, issues, commits on main — lands in one tracking issue
+# here, so the queue this fork exists to drain never regrows unnoticed.
+# Triage outcome goes into UPSTREAM.md.
+
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Look-back window in days
+        default: "8"
+
+permissions:
+  issues: write
+  pull-requests: read
+  contents: read
+
+env:
+  UPSTREAM: bradautomates/claude-video
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect upstream activity
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DAYS: ${{ inputs.days || '8' }}
+        run: |
+          set -euo pipefail
+          since=$(date -u -d "-${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          week=$(date -u +%Y-%m-%d)
+          echo "since=$since" >> "$GITHUB_OUTPUT"
+          echo "week=$week"   >> "$GITHUB_OUTPUT"
+
+          # The Actions token has no pull_requests permission on a foreign
+          # repo, so the /issues endpoint hands it issues only. Query PRs from
+          # /pulls (sorted by update time, stop at the window) and issues from
+          # /issues, and normalise both into one file.
+          gh api --paginate "repos/$UPSTREAM/pulls?state=all&sort=updated&direction=desc&per_page=100" \
+            --jq '.[] | {n: .number, t: .title, u: .user.login, s: .state, pr: true, c: .created_at, up: .updated_at}' \
+            | jq -c --arg s "$since" 'select(.up >= $s)' > items.jsonl
+          gh api --paginate "repos/$UPSTREAM/issues?state=all&since=$since&per_page=100" \
+            --jq '.[] | select(has("pull_request") | not) | {n: .number, t: .title, u: .user.login, s: .state, pr: false, c: .created_at, up: .updated_at}' \
+            >> items.jsonl
+          echo "items: $(wc -l < items.jsonl) total, $(jq -c 'select(.pr)' items.jsonl | wc -l) PRs"
+
+          new_prs=$(jq -r --arg s "$since" 'select(.pr and .c >= $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/pull/\(.n)) @\(.u) — \(.t)"' items.jsonl)
+          upd_prs=$(jq -r --arg s "$since" 'select(.pr and .c <  $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/pull/\(.n)) (\(.s)) — \(.t)"' items.jsonl)
+          new_iss=$(jq -r --arg s "$since" 'select((.pr|not) and .c >= $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/issues/\(.n)) @\(.u) — \(.t)"' items.jsonl)
+          upd_iss=$(jq -r --arg s "$since" 'select((.pr|not) and .c <  $s) | "- [#\(.n)](https://github.com/'"$UPSTREAM"'/issues/\(.n)) (\(.s)) — \(.t)"' items.jsonl)
+          commits=$(gh api "repos/$UPSTREAM/commits?since=$since&per_page=50" \
+            --jq '.[] | "- `\(.sha[:7])` \(.commit.message | split("\n")[0]) — \(.commit.author.name)"' || true)
+          release=$(gh api "repos/$UPSTREAM/releases/latest" --jq '.tag_name + " (" + .published_at[:10] + ")"' 2>/dev/null || echo "none")
+
+          total=$(( $(wc -l < items.jsonl) + $(printf '%s' "$commits" | grep -c . || true) ))
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Upstream: https://github.com/$UPSTREAM — window: since \`$since\` (${DAYS} days). Latest upstream release: $release."
+            echo
+            echo "## New pull requests"; echo "${new_prs:-_none_}"; echo
+            echo "## Updated pull requests"; echo "${upd_prs:-_none_}"; echo
+            echo "## New issues"; echo "${new_iss:-_none_}"; echo
+            echo "## Updated issues"; echo "${upd_iss:-_none_}"; echo
+            echo "## Commits on upstream main"; echo "${commits:-_none_ — upstream main has not moved}"; echo
+            echo "---"
+            echo "Triage: for each new PR/issue decide merge / adapt / duplicate / deferred / not-applicable and add a row to [UPSTREAM.md](../blob/main/UPSTREAM.md). If upstream main moved, rebase or merge early while the drift is small."
+          } > body.md
+
+      - name: Open or update tracking issue
+        if: steps.collect.outputs.total != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEEK: ${{ steps.collect.outputs.week }}
+        run: |
+          set -euo pipefail
+          title="Upstream activity — week of $WEEK"
+          gh label create upstream-watch --description "Automated weekly upstream activity report" --color 0e8a16 --force >/dev/null
+          existing=$(gh issue list --label upstream-watch --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue edit "$existing" --body-file body.md
+            echo "updated #$existing"
+          else
+            gh issue create --title "$title" --label upstream-watch --body-file body.md
+          fi
+
+      - name: Nothing to report
+        if: steps.collect.outputs.total == '0'
+        run: echo "No upstream activity in the window."

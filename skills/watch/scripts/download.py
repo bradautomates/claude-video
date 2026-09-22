@@ -3,6 +3,14 @@
 
 Also fetches subtitles (manual first, then auto-generated) in VTT format so
 transcribe.py can parse them without needing Whisper.
+
+Caption language: English is requested first, which keeps English videos at a
+single round trip. The info.json yt-dlp writes alongside is then consulted: if
+the video is in another language (``language`` / ``original_language``), or
+``--lang`` named one, or English returned nothing, one bounded second fetch is
+made for that language so the transcript is the speech itself rather than
+YouTube's machine translation of it. ``all`` is never requested — on YouTube
+that means hundreds of auto-translated tracks and minutes of stalling.
 """
 from __future__ import annotations
 
@@ -12,6 +20,11 @@ import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from config import js_runtime_args, read_env_value, ytdlp_cmd  # noqa: E402
 
 
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}
@@ -24,6 +37,20 @@ def is_url(source: str) -> bool:
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
 
 
+def _sidecar_subtitle(video: Path) -> Path | None:
+    """Find a VTT sitting next to a local video file.
+
+    Matches ``clip.vtt`` first, then any language-tagged sibling
+    (``clip.en.vtt``, ``clip.nl.vtt``) as yt-dlp writes them.
+    """
+    exact = video.with_suffix(".vtt")
+    if exact.exists():
+        return exact
+    prefix = f"{video.stem}."
+    tagged = sorted(c for c in video.parent.glob("*.vtt") if c.name.startswith(prefix))
+    return tagged[0] if tagged else None
+
+
 def resolve_local(path: str) -> dict:
     p = Path(path).expanduser().resolve()
     if not p.exists():
@@ -33,23 +60,218 @@ def resolve_local(path: str) -> dict:
             f"[watch] warning: {p.suffix} is not a known video extension, proceeding anyway",
             file=sys.stderr,
         )
+    sidecar = _sidecar_subtitle(p)
     return {
         "video_path": str(p),
-        "subtitle_path": None,
+        "subtitle_path": str(sidecar) if sidecar else None,
         "info": {"title": p.name, "url": str(p)},
         "downloaded": False,
     }
 
 
-def _pick_subtitle(out_dir: Path) -> Path | None:
+DEFAULT_SUB_LANGS = "en.*"
+
+
+
+def _cookie_args() -> list[str]:
+    """Opt-in yt-dlp cookie flags, for sites that refuse signed-out requests.
+
+    WATCH_COOKIES_FILE=/path/to/cookies.txt          -> --cookies
+    WATCH_COOKIES_FROM_BROWSER=chrome|safari|firefox -> --cookies-from-browser
+    Read from the environment or ~/.config/watch/.env; both unset by default,
+    so the signed-out path is unchanged unless the user asks for this.
+    """
+    jar = read_env_value("WATCH_COOKIES_FILE")
+    if jar:
+        return ["--cookies", jar]
+    browser = read_env_value("WATCH_COOKIES_FROM_BROWSER")
+    if browser:
+        return ["--cookies-from-browser", browser]
+    return []
+
+
+def _read_raw_info(info_path: Path) -> dict:
+    if not info_path.exists():
+        return {}
+    try:
+        raw = json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _base_lang(tag: str) -> str:
+    """``de-DE`` / ``de-orig`` / ``DE`` -> ``de``."""
+    return tag.split("-")[0].lower()
+
+
+def _native_lang(raw: dict) -> str | None:
+    """The language the video is spoken in, or None if unknown or English.
+
+    yt-dlp reports ``language`` or ``original_language`` depending on the
+    extractor. Falls back to the ``-orig`` automatic-caption tag, which YouTube
+    only emits for the language actually spoken.
+    """
+    lang = raw.get("language") or raw.get("original_language")
+    if not isinstance(lang, str) or not lang:
+        for tag in (raw.get("automatic_captions") or {}):
+            if tag.endswith("-orig"):
+                lang = tag
+                break
+    if not isinstance(lang, str) or not lang:
+        return None
+    base = _base_lang(lang)
+    return None if base in ("", "en") else base
+
+
+def _manual_langs(raw: dict) -> set[str]:
+    """Tags of uploader-supplied (human) caption tracks."""
+    return {t for t in (raw.get("subtitles") or {}) if t != "live_chat"}
+
+
+def _sub_langs_for(base: str) -> str:
+    """Bounded --sub-langs pattern for one language.
+
+    Exact code, its ``-orig`` variant and region variants (``de-AT``). Not
+    ``de.*`` — that also matches unrelated multi-part tags, and every extra
+    track is another request that can draw a 429 and cost the transcript.
+    """
+    return f"{base},{base}-orig,{base}-[A-Za-z][A-Za-z]"
+
+
+def _sub_lang_args(langs: str) -> list[str]:
+    return [
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs", langs,
+        "--sub-format", "vtt",
+        "--convert-subs", "vtt",
+    ]
+
+
+def _lang_of(path: Path) -> str:
+    # video.en-US.vtt -> en-US
+    return path.name[len("video."):-len(".vtt")]
+
+
+def _pick_subtitle(
+    out_dir: Path,
+    raw_info: dict | None = None,
+    prefer: str | None = None,
+) -> Path | None:
+    """Pick the best VTT in *out_dir*.
+
+    Ranking: a human-authored track always wins (punctuated, speaker-labelled,
+    about a third the size of the rolling auto track); then the ``-orig``
+    track of the preferred language, then any track of it; then English.
+    """
     candidates = sorted(out_dir.glob("video*.vtt"))
     if not candidates:
         return None
-    preferred = [
-        c for c in candidates
-        if any(marker in c.name for marker in (".en.", ".en-US.", ".en-GB.", ".en-orig."))
+    manual = _manual_langs(raw_info or {})
+    prefer_base = _base_lang(prefer) if prefer else None
+
+    def rank(path: Path) -> tuple[int, int, int]:
+        tag = _lang_of(path)
+        base = _base_lang(tag)
+        is_manual = 0 if tag in manual else 1
+        if prefer_base and base == prefer_base:
+            pref = 0 if tag.endswith("-orig") else 1
+        else:
+            pref = 2
+        en_order = {"en": 1, "en-US": 2, "en-GB": 3, "en-orig": 4}.get(tag, 5)
+        return (is_manual, pref, en_order)
+
+    return min(candidates, key=rank)
+
+
+def _has_sub_for(out_dir: Path, base: str) -> bool:
+    return any(_base_lang(_lang_of(p)) == base for p in out_dir.glob("video*.vtt"))
+
+
+def _resolve_subtitle(url: str, out_dir: Path, lang: str | None) -> Path | None:
+    """Decide whether the English pass was enough and, if not, fetch once more.
+
+    *lang* is an explicit override (``--lang``); otherwise the video's own
+    language from info.json. Makes at most one extra yt-dlp call.
+    """
+    raw = _read_raw_info(out_dir / "video.info.json")
+    target = _base_lang(lang) if lang else _native_lang(raw)
+
+    if target and target != "en" and not _has_sub_for(out_dir, target):
+        print(
+            f"[watch] video language is {target}; fetching its own captions "
+            f"instead of a translated track",
+            file=sys.stderr,
+        )
+        _fetch_subs_only(url, out_dir, _sub_langs_for(target))
+        if not _has_sub_for(out_dir, target):
+            print(f"[watch] no {target} captions available; falling back to English", file=sys.stderr)
+    elif target is None and not any(out_dir.glob("video*.vtt")):
+        # Unknown language and English returned nothing: take an uploader track
+        # in any language, else the spoken-language -orig automatic track.
+        fallback = next(iter(sorted(_manual_langs(raw))), None) or next(
+            (t for t in (raw.get("automatic_captions") or {}) if t.endswith("-orig")), None
+        )
+        if fallback:
+            print(f"[watch] no English captions — retrying with {fallback}", file=sys.stderr)
+            _fetch_subs_only(url, out_dir, fallback)
+            target = _base_lang(fallback)
+
+    return _pick_subtitle(out_dir, raw, prefer=target)
+
+
+# Alternate YouTube player clients, tried in order when `web` is refused.
+# Cheapest and most permissive first; capped so a truly blocked host costs
+# three extra attempts, not a dozen.
+YT_CLIENT_FALLBACKS = ("mweb", "tv", "web_embedded", "android")
+_REFUSAL_MARKERS = (
+    "http error 403", "403: forbidden", "http error 429", "too many requests",
+    "confirm you're not a bot", "confirm you\u2019re not a bot", "sign in to confirm",
+)
+
+
+def _is_youtube(url: str) -> bool:
+    host = (urlparse(url).netloc or "").lower()
+    return any(h in host for h in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
+
+
+def _looks_refused(output: str) -> bool:
+    low = output.lower()
+    return any(m in low for m in _REFUSAL_MARKERS)
+
+
+def _run_captured(cmd: list[str]) -> subprocess.CompletedProcess:
+    """Run yt-dlp with output captured for diagnosis, then echoed to stderr.
+
+    Captured (rather than piped straight through) so a failure can be
+    explained -- a stale yt-dlp getting 403'd, a bot gate -- instead of only
+    surfacing a bare exit code. Nothing that was visible before is lost, it is
+    just no longer live-streamed.
+    """
+    result = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if result.stdout:
+        sys.stderr.write(result.stdout)
+    return result
+
+
+def _fetch_subs_only(url: str, out_dir: Path, langs: str) -> None:
+    cmd = [
+        *ytdlp_cmd(),
+        *_cookie_args(),
+        *js_runtime_args(),
+        "--skip-download",
+        *_sub_lang_args(langs),
+        "--no-playlist",
+        "--ignore-errors",
+        "-o", str(out_dir / "video.%(ext)s"),
+        "--",
+        url,
     ]
-    return preferred[0] if preferred else candidates[0]
+    subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
 
 
 def _pick_video(out_dir: Path) -> Path | None:
@@ -62,22 +284,88 @@ def _pick_video(out_dir: Path) -> Path | None:
     return None
 
 
-def fetch_captions(url: str, out_dir: Path) -> dict:
-    """Fetch metadata and best available VTT captions without downloading video."""
-    if shutil.which("yt-dlp") is None:
+def _yt_dlp_version() -> str | None:
+    """Best-effort `yt-dlp --version` output, or None if it can't be read.
+
+    No network call -- this just execs the already-installed binary. Used only
+    to enrich a 403 failure message, so any failure here (missing binary,
+    timeout, odd build) degrades to omitting the version rather than raising.
+    """
+    try:
+        proc = subprocess.run(
+            [*ytdlp_cmd(), "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=5
+        )
+        return proc.stdout.strip() or None
+    except Exception:
+        return None
+
+
+def _update_hint() -> str:
+    """Upgrade command matching how yt-dlp appears to be installed."""
+    path = shutil.which("yt-dlp") or ""
+    if "pipx" in path:
+        return "pipx upgrade yt-dlp"
+    if "Cellar" in path or "homebrew" in path.lower():
+        return "brew upgrade yt-dlp"
+    return "yt-dlp -U  (or: pip install -U yt-dlp)"
+
+
+def _download_failure_message(
+    output: str, returncode: int, out_dir: Path, subtitle: Path | None
+) -> str:
+    """Build the error surfaced when yt-dlp produced no video file.
+
+    A bare exit code tells the user nothing actionable. Real incident
+    (2026-09-17): a 403 on the media stream was actually a yt-dlp build 2.5
+    months stale that had lost YouTube's current client/signature rotation --
+    upgrading fixed it with no code change. So a 403/Forbidden in the captured
+    output gets the actionable explanation; every other failure keeps the
+    original bare message unchanged, since we have no comparable evidence
+    about what those mean.
+    """
+    base = f"yt-dlp did not produce a video file in {out_dir} (exit {returncode})"
+    if "403" not in output and "Forbidden" not in output:
+        return base
+    version = _yt_dlp_version()
+    version_note = f" (yt-dlp {version})" if version else ""
+    lines = [
+        base,
+        f"HTTP 403 on the media stream{version_note} -- almost always a yt-dlp that has "
+        "fallen behind YouTube's latest signature/client rotation, or one built without "
+        "browser impersonation (curl_cffi) / no JavaScript runtime for the player "
+        "challenge -- not a video that's actually blocked or region-locked.",
+        f"Update and retry: {_update_hint()}",
+        "If it persists: pipx install --force 'yt-dlp[default,curl-cffi]' and install deno "
+        "(brew install deno / winget install DenoLand.Deno). Run setup.py --check to see "
+        "which of these applies.",
+    ]
+    if subtitle:
+        lines.append(
+            f"Captions downloaded fine ({subtitle.name}) -- the transcript is usable even "
+            "before you retry the video."
+        )
+    return "\n".join(lines)
+
+
+def fetch_captions(url: str, out_dir: Path, lang: str | None = None) -> dict:
+    """Fetch metadata and best available VTT captions without downloading video.
+
+    *lang* forces a caption language (base code such as ``de``); by default the
+    video's own language is used, with English as the fallback.
+    """
+    if shutil.which(ytdlp_cmd()[0]) is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
     cmd = [
-        "yt-dlp",
+        *ytdlp_cmd(),
+        *_cookie_args(),
+        *js_runtime_args(),
         "--skip-download",
         "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en.*",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
+        *_sub_lang_args(DEFAULT_SUB_LANGS),
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
@@ -85,7 +373,7 @@ def fetch_captions(url: str, out_dir: Path) -> dict:
         url,
     ]
     subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    subtitle = _pick_subtitle(out_dir)
+    subtitle = _resolve_subtitle(url, out_dir, lang)
     info = _read_info(out_dir / "video.info.json", url)
     return {
         "video_path": None,
@@ -116,25 +404,29 @@ def download_url(
     url: str,
     out_dir: Path,
     audio_only: bool = False,
+    lang: str | None = None,
 ) -> dict:
-    if shutil.which("yt-dlp") is None:
+    if shutil.which(ytdlp_cmd()[0]) is None:
         raise SystemExit("yt-dlp is not installed. Install with: brew install yt-dlp")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     output_template = str(out_dir / "video.%(ext)s")
 
+    # fetch_captions usually ran first into this same directory, so the video's
+    # language is already known and the right track can be asked for up front.
+    known = _base_lang(lang) if lang else _native_lang(_read_raw_info(out_dir / "video.info.json"))
+    langs = _sub_langs_for(known) if known and known != "en" else DEFAULT_SUB_LANGS
+
     fmt = "ba/bestaudio" if audio_only else "bv*[height<=720]+ba/b[height<=720]/bv+ba/b"
     cmd = [
-        "yt-dlp",
+        *ytdlp_cmd(),
+        *_cookie_args(),
+        *js_runtime_args(),
         "-N", "8",
         "-f", fmt,
         "--merge-output-format", "mp4",
         "--write-info-json",
-        "--write-subs",
-        "--write-auto-subs",
-        "--sub-langs", "en.*",
-        "--sub-format", "vtt",
-        "--convert-subs", "vtt",
+        *_sub_lang_args(langs),
         "--no-playlist",
         "--ignore-errors",
         "-o", output_template,
@@ -144,15 +436,49 @@ def download_url(
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
     # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
-    video = _pick_video(out_dir)
-    if video is None:
-        raise SystemExit(
-            f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
-        )
+    result = _run_captured(cmd)
 
-    subtitle = _pick_subtitle(out_dir)
+    # YouTube gates the default `web` client on datacenter IPs (sandboxes, CI,
+    # VPSes) with 403/429/"confirm you're not a bot". Other player clients hit
+    # differently gated surfaces, so retry the *media* fetch through them. Only
+    # the media: alternate clients often drop caption tracks, and captions were
+    # already fetched by fetch_captions().
+    if _pick_video(out_dir) is None and _is_youtube(url) and _looks_refused(result.stdout or ""):
+        for client in YT_CLIENT_FALLBACKS:
+            print(f"[watch] media refused by the default client; retrying with player_client={client}…", file=sys.stderr)
+            retry = _run_captured(cmd[:-2] + ["--extractor-args", f"youtube:player_client={client}", "--", url])
+            result = subprocess.CompletedProcess(
+                retry.args, retry.returncode, (result.stdout or "") + (retry.stdout or ""), None
+            )
+            if _pick_video(out_dir) is not None:
+                print(f"[watch] media download succeeded via player_client={client}", file=sys.stderr)
+                break
+
+    video = _pick_video(out_dir)
+    subtitle = _resolve_subtitle(url, out_dir, lang)
     info = _read_info(out_dir / "video.info.json", url)
+
+    if video is None:
+        failure_message = _download_failure_message(
+            result.stdout or "", result.returncode, out_dir, subtitle
+        )
+        if subtitle is None:
+            raise SystemExit(failure_message)
+        # The media stream is unavailable (e.g. 403'd) but captions DID come
+        # down -- hand back a degraded-but-usable result instead of discarding
+        # a complete transcript. watch.py finishes the run in transcript-only
+        # mode rather than dying, per the 2026-09-17 incident: subtitles were
+        # 272 KB and carried essentially the whole talk while only the media
+        # stream failed.
+        print(failure_message, file=sys.stderr)
+        return {
+            "video_path": None,
+            "subtitle_path": str(subtitle),
+            "info": info or {"url": url},
+            "downloaded": False,
+            "degraded": True,
+            "failure_message": failure_message,
+        }
 
     return {
         "video_path": str(video),
@@ -166,9 +492,10 @@ def download(
     source: str,
     out_dir: Path,
     audio_only: bool = False,
+    lang: str | None = None,
 ) -> dict:
     if is_url(source):
-        return download_url(source, out_dir, audio_only=audio_only)
+        return download_url(source, out_dir, audio_only=audio_only, lang=lang)
     return resolve_local(source)
 
 

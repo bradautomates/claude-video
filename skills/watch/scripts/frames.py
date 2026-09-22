@@ -8,7 +8,9 @@ zooming in for detail).
 """
 from __future__ import annotations
 
+import functools
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -16,7 +18,22 @@ import sys
 from pathlib import Path
 
 
-MAX_FPS = 2.0
+# 2.0 is the sane default ceiling, not a law of nature — a fight scene or
+# any fast choreography needs more. Raising it changes nothing on its own: auto_fps and
+# auto_fps_focus target a frame *budget*, so the ceiling only ever binds an explicit
+# --fps. Pair it with --start/--end and --max-frames on a short range:
+#   WATCH_MAX_FPS=24 watch.py clip.mp4 --start 1:10 --end 1:40 --fps 24 --max-frames 720
+# Cost is the real ceiling: ~200 tokens per 512px frame, so 24fps is affordable for
+# tens of seconds, not minutes.
+def _max_fps() -> float:
+    try:
+        value = float(os.environ.get("WATCH_MAX_FPS", "2.0"))
+    except ValueError:
+        value = 2.0
+    return value if value > 0 else 2.0
+
+
+MAX_FPS = _max_fps()
 SCENE_THRESHOLD = 0.20
 # Keep scene-detection results once we have at least this many distinct shots.
 # Below this the video is effectively static (screen recording, talking head),
@@ -24,19 +41,53 @@ SCENE_THRESHOLD = 0.20
 # this is a low floor — NOT the frame budget — so normal videos with cuts use
 # the (single-pass) scene engine instead of paying for a wasted second decode.
 SCENE_MIN_FRAMES = 8
+# Clearing SCENE_MIN_FRAMES is not the same as covering the range. A
+# 10-minute stretch of a film returned 23 scene candidates — enough to pass the
+# floor — with 15 of them inside seven seconds and a 3.5-minute hole in the middle,
+# so the frames "spanned" the range while showing none of it. Count can't see a
+# hole; measure the worst one against the spacing the frame budget implies.
+MAX_GAP_RATIO = 4.0
 # Below this many decoded keyframes a clip is too sparse for keyframe coverage
 # (very short or oddly encoded), so the cheap tier falls back to uniform.
 KEYFRAME_MIN = 4
 MAX_READ_DIMENSION = 1998
-# Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB
-# grayscale thumbnail and treat two frames as near-identical when their mean
-# per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
+# Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB RGB
+# thumbnail and treat two frames as near-identical when their mean per-channel
+# difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
 # purpose: only collapses frames that are visually the same shot, so a code diff
 # / scrolling terminal / slide-gaining-a-bullet survives. Unlike a within-frame
-# perceptual hash, this distinguishes flat frames (solid slides, fades) by luma.
+# perceptual hash, this distinguishes flat frames (solid slides, fades) by colour.
+# RGB and not luma: a hard cut between two hues of equal brightness — a red card
+# to a green card in a motion-graphics piece — reads as a 1.0 delta in grayscale,
+# under the threshold, and the incoming shot gets deleted as a duplicate.
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+
+
+@functools.lru_cache(maxsize=1)
+def _vfr_flag() -> tuple[str, ...]:
+    """Return the frame-rate-mode flag this ffmpeg understands.
+
+    ffmpeg 9.0 removed ``-vsync`` (deprecated since 5.1; 8.x still accepts it
+    with a notice); ``-fps_mode`` has existed since 5.1. Probe once and cache,
+    so old and new builds both work.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-h", "full"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError:
+        # ffmpeg missing or unrunnable: the callers already raise a clear
+        # "ffmpeg is not installed" error, so don't mask it with a probe crash.
+        return ("-vsync", "vfr")
+    if "-fps_mode" in (result.stdout or "") + (result.stderr or ""):
+        return ("-fps_mode", "vfr")
+    return ("-vsync", "vfr")
 
 
 def _scale_filter(resolution: int) -> str:
@@ -83,23 +134,78 @@ def format_time(seconds: float) -> str:
     return f"{minutes:02d}:{sec:02d}"
 
 
-def get_metadata(video_path: str) -> dict:
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
+_FFMPEG_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)")
+_FFMPEG_VIDEO_RE = re.compile(r"Stream #\d+:\d+.*?: Video: (\w+).*?, (\d{2,5})x(\d{2,5})")
+_FFMPEG_AUDIO_RE = re.compile(r"Stream #\d+:\d+.*?: Audio:")
 
+
+def _metadata_via_ffmpeg(video_path: str) -> dict:
+    """Fallback probe using ffmpeg's own banner when ffprobe is unusable.
+
+    Windows Application Control can block ffprobe.exe while allowing
+    ffmpeg.exe from the same install (#128). `ffmpeg -i` prints the container
+    duration and stream lines to stderr before complaining about the missing
+    output, which is enough for everything get_metadata() is asked for.
+    """
+    path = Path(video_path).resolve()
     result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            str(Path(video_path).resolve()),
-        ],
+        ["ffmpeg", "-hide_banner", "-i", str(path)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
+    banner = result.stderr or ""
+    m = _FFMPEG_DURATION_RE.search(banner)
+    duration = (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))) if m else 0.0
+    v = _FFMPEG_VIDEO_RE.search(banner)
+    if not m and not v:
+        raise SystemExit(f"ffmpeg could not read {path}: {banner.strip()[-400:]}")
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return {
+        "duration_seconds": duration,
+        "width": int(v.group(2)) if v else None,
+        "height": int(v.group(3)) if v else None,
+        "codec": v.group(1) if v else None,
+        "size_bytes": size,
+        "has_audio": bool(_FFMPEG_AUDIO_RE.search(banner)),
+    }
+
+
+def get_metadata(video_path: str) -> dict:
+    if shutil.which("ffprobe") is None:
+        if shutil.which("ffmpeg") is None:
+            raise SystemExit("ffmpeg/ffprobe are not installed. Install with: brew install ffmpeg")
+        print("[watch] ffprobe not found; reading metadata via ffmpeg instead", file=sys.stderr)
+        return _metadata_via_ffmpeg(video_path)
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                "-show_streams",
+                str(Path(video_path).resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        # Present on PATH but refused by the OS (e.g. an App Control policy
+        # that blocks ffprobe.exe yet allows ffmpeg.exe) — fall back.
+        print(f"[watch] ffprobe could not be run ({exc}); reading metadata via ffmpeg instead", file=sys.stderr)
+        return _metadata_via_ffmpeg(video_path)
     if result.returncode != 0:
+        if not (result.stdout or "").strip() and shutil.which("ffmpeg"):
+            print("[watch] ffprobe failed; reading metadata via ffmpeg instead", file=sys.stderr)
+            return _metadata_via_ffmpeg(video_path)
         raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
 
     data = json.loads(result.stdout or "{}")
@@ -175,6 +281,31 @@ def extract(
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
 
+    # `fps` picks density, `max_frames` picks a hard cap. The `fps` filter
+    # samples evenly across the whole input, but `-frames:v` just makes
+    # ffmpeg STOP after N output frames — so if the two disagree (fps *
+    # duration > max_frames), sampling at the requested fps and letting
+    # -frames:v cut the run short would only ever capture the HEAD of the
+    # range, not a spread across it. (The auto path never hits this: it
+    # derives fps FROM max_frames, so fps*duration never exceeds the cap.)
+    # Lower the effective fps instead so the capped frame count spreads
+    # across the whole requested range — the same principle already applied
+    # to the scene engine in extract_scene_or_uniform (see its docstring:
+    # capping detection with -frames:v "would keep only the first max_frames
+    # cuts and drop the tail of long videos").
+    range_start = start_seconds or 0.0
+    if end_seconds is not None:
+        range_end = end_seconds
+    else:
+        range_end = get_metadata(video_path)["duration_seconds"]
+    range_duration = max(0.0, range_end - range_start)
+
+    effective_fps = fps
+    if range_duration > 0 and max_frames > 0:
+        wanted = fps * range_duration
+        if wanted - max_frames > 1e-6:
+            effective_fps = max_frames / range_duration
+
     output_pattern = str(out_dir / "frame_%04d.jpg")
     cmd: list[str] = [
         "ffmpeg",
@@ -191,22 +322,24 @@ def extract(
 
     cmd += [
         "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps={fps},{_scale_filter(resolution)}",
+        "-vf", f"fps={effective_fps},{_scale_filter(resolution)}",
+        # Rounding backstop only (an odd extra boundary frame) — effective_fps
+        # above is what actually decides coverage now, not this cap.
         "-frames:v", str(max_frames),
         "-q:v", "4",
         output_pattern,
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
 
-    offset = start_seconds or 0.0
+    offset = range_start
     frames = sorted(out_dir.glob("frame_*.jpg"))
     return [
         {
             "index": i,
-            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
+            "timestamp_seconds": round(offset + (i / effective_fps if effective_fps > 0 else 0.0), 2),
             "path": str(p),
             "reason": "uniform",
         }
@@ -253,7 +386,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *_vfr_flag(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -261,7 +394,7 @@ def extract_scene_candidates(
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
@@ -290,6 +423,40 @@ def _even_indices(count: int, n: int) -> list[int]:
     if n <= 1:
         return [0]
     return [round(i * (count - 1) / (n - 1)) for i in range(n)]
+
+
+def _even_time_indices(times: list[float], n: int) -> list[int]:
+    """Indices of ``n`` candidates spread evenly over the *timeline* (first and
+    last always kept), each interior slot taking the candidate nearest its
+    evenly-spaced target time.
+
+    Index-spacing hands a cluster its share of the budget: 36 keyframes packed
+    into 6% of a video keep ~90% of the slots and the other 94% of the runtime
+    gets what's left. Spacing by timestamp gives every stretch of runtime the
+    same shot at a frame. Degenerate timelines (all one instant) fall back to
+    index-spacing.
+
+    ponytail: O(n * len(times)) nearest-search, fine for the ~10^3 frames these
+    engines produce; sort the targets and merge if that ever stops being true.
+    """
+    count = len(times)
+    if n >= count:
+        return list(range(count))
+    if n <= 1:
+        return [0]
+
+    span = times[-1] - times[0]
+    if span <= 0:
+        return _even_indices(count, n)
+
+    chosen = {0, count - 1}
+    for i in range(1, n - 1):
+        target = times[0] + span * i / (n - 1)
+        chosen.add(min(
+            (j for j in range(1, count - 1) if j not in chosen),
+            key=lambda j: (abs(times[j] - target), j),
+        ))
+    return sorted(chosen)
 
 
 def parse_timestamps(value: str | None) -> list[float]:
@@ -352,7 +519,9 @@ def extract_at_timestamps(
     dropped = len(requested) - len(in_window)
 
     if max_frames is not None and len(in_window) > max_frames:
-        points = [in_window[i] for i in _even_indices(len(in_window), max_frames)]
+        # in_window is already sorted times, so thin it the same way the frame
+        # engines do: by timestamp, not by position in the list.
+        points = [in_window[i] for i in _even_time_indices(in_window, max_frames)]
     else:
         points = in_window
 
@@ -371,7 +540,7 @@ def extract_at_timestamps(
             "-q:v", "4",
             str(path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0 and path.exists():
             out.append({
                 "index": len(out),
@@ -391,14 +560,17 @@ def extract_at_timestamps(
 
 
 def _even_sample(candidates: list[dict], n: int) -> list[dict]:
-    """Pick ``n`` evenly-spaced candidates (always including first and last),
-    delete the JPEGs we drop, and reindex the survivors 0..len-1.
+    """Pick ``n`` candidates evenly spaced *in time* (always including first and
+    last), delete the JPEGs we drop, and reindex the survivors 0..len-1.
 
     Shared by every capped engine so all detail modes sample the same way:
     detect all candidates across the full range, then thin down to the cap.
     ``n >= len(candidates)`` keeps everything (the uncapped / under-cap case).
+    Spacing is by timestamp, not position in the list, so a burst of cuts in a
+    short stretch cannot eat the budget and leave the rest of the video bare.
     """
-    selected = [candidates[i] for i in _even_indices(len(candidates), n)]
+    times = [cand["timestamp_seconds"] for cand in candidates]
+    selected = [candidates[i] for i in _even_time_indices(times, n)]
 
     keep_paths = {sel["path"] for sel in selected}
     for cand in candidates:
@@ -413,20 +585,21 @@ def _even_sample(candidates: list[dict], n: int) -> list[dict]:
 
 
 def _frame_delta(a: bytes, b: bytes) -> float:
-    """Mean absolute per-pixel difference (0-255) between two grayscale
-    thumbnails. Mismatched lengths are treated as maximally different so a
-    decode hiccup never collapses distinct frames."""
+    """Mean absolute per-channel difference (0-255) between two RGB thumbnails.
+    Averaging across all three channels means an equal-luma hue change still
+    registers, unlike a grayscale comparison. Mismatched lengths are treated as
+    maximally different so a decode hiccup never collapses distinct frames."""
     if not a or len(a) != len(b):
         return float("inf")
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
 
 
 def _thumb_frames(paths: list[Path]) -> list[bytes]:
-    """Decode every frame in ``paths`` to a small grayscale thumbnail via one
+    """Decode every frame in ``paths`` to a small RGB thumbnail via one
     ffmpeg pass over the JPEG sequence.
 
     ffmpeg does the pixel decode (keeps us pure-stdlib); we slice the raw
-    grayscale stream into one ``DEDUP_THUMB``-square thumbnail per frame.
+    RGB stream into one ``DEDUP_THUMB``-square thumbnail per frame.
     Fail-open: any ffmpeg error, an unrecognized name, or a byte-count mismatch
     returns ``[]`` so the caller skips dedup rather than breaking extraction.
     """
@@ -445,7 +618,7 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
         "-loglevel", "error",
         "-start_number", str(int(digits)),
         "-i", pattern,
-        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=gray",
+        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=rgb24",
         "-f", "rawvideo",
         "-",
     ]
@@ -453,7 +626,7 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
     if result.returncode != 0:
         return []
 
-    chunk = DEDUP_THUMB * DEDUP_THUMB
+    chunk = DEDUP_THUMB * DEDUP_THUMB * 3  # 3 bytes per pixel (rgb24)
     data = result.stdout
     if len(data) != chunk * len(paths):
         return []
@@ -466,8 +639,8 @@ def dedupe_perceptual(
     """Drop near-identical frames from a chronological candidate list.
 
     Thumbnails the extracted JPEGs and greedily removes frames whose mean
-    per-pixel difference from the last kept one is within ``threshold``. Returns
-    ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
+    per-channel RGB difference from the last kept one is within ``threshold``.
+    Returns ``(survivors, dropped_count)``; a no-op (unchanged list) when thumbnails are
     unavailable or there are fewer than two candidates.
     """
     if len(candidates) <= 1:
@@ -479,7 +652,7 @@ def dedupe_perceptual(
 def _dedupe_by_deltas(
     candidates: list[dict], thumbs: list[bytes], threshold: float = DEDUP_THRESHOLD
 ) -> tuple[list[dict], int]:
-    """Greedily drop frames within ``threshold`` mean per-pixel difference of the
+    """Greedily drop frames within ``threshold`` mean per-channel difference of the
     last *kept* frame. Deletes dropped JPEGs and reindexes survivors 0..n-1 (same
     cleanup contract as :func:`_even_sample`). Fail-open: if ``thumbs`` does not
     line up 1:1 with ``candidates``, return them unchanged.
@@ -505,6 +678,29 @@ def _dedupe_by_deltas(
     for i, frame in enumerate(kept):
         frame["index"] = i
     return kept, len(dropped)
+
+
+def _worst_gap(times: list[float], start: float, end: float) -> float:
+    """Longest stretch of ``start``-``end`` containing no candidate, edges included."""
+    if end <= start:
+        return 0.0
+    marks = [start, *sorted(times), end]
+    return max(b - a for a, b in zip(marks, marks[1:]))
+
+
+def _covers_range(times: list[float], start: float, end: float) -> bool:
+    """True when the candidates are spread across the range rather than bunched.
+
+    The test is clustering, not density: whatever the engine found, spacing it evenly
+    would put a candidate every ``span / (n + 1)`` seconds, and a hole more than
+    ``MAX_GAP_RATIO`` times that means the frames skip a stretch of the video. Judging
+    against the frame *budget* instead would demand scene detection return as many
+    cuts as the cap, which is just a slower way of never using the scene engine.
+    """
+    if not times or end <= start:
+        return True
+    ideal = (end - start) / (len(times) + 1)
+    return _worst_gap(times, start, end) <= ideal * MAX_GAP_RATIO
 
 
 def extract_scene_or_uniform(
@@ -539,7 +735,11 @@ def extract_scene_or_uniform(
         end_seconds=end_seconds,
     )
     scene_count = len(scene_frames)
-    if scene_count >= SCENE_MIN_FRAMES:
+    eff_start = start_seconds or 0.0
+    # Only costs an ffprobe when the caller gave no explicit end.
+    eff_end = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
+    covered = _covers_range([fr["timestamp_seconds"] for fr in scene_frames], eff_start, eff_end)
+    if scene_count >= SCENE_MIN_FRAMES and covered:
         deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
@@ -561,15 +761,22 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
     )
+    # The uniform frames are the candidates here; the rejected scene cuts never
+    # reach dedup or selection. Their count is reported separately so the
+    # summary can say how short the detector came up.
+    uniform_count = len(frames)
     n_dropped = 0
     if dedup:
         frames, n_dropped = dedupe_perceptual(frames)
     return frames, {
         "engine": "uniform",
-        "candidate_count": scene_count,
+        "candidate_count": uniform_count,
         "deduped_count": n_dropped,
         "selected_count": len(frames),
         "fallback": True,
+        "fallback_from": "scene",
+        "fallback_candidate_count": scene_count,
+        "fallback_reason": "sparse" if scene_count < SCENE_MIN_FRAMES else "coverage",
     }
 
 
@@ -612,17 +819,29 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *_vfr_flag(),
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    files = sorted(out_dir.glob("frame_*.jpg"))
+    # A range holding no keyframes makes ffmpeg fail at encoder init ("No
+    # filtered frames for output stream") instead of exiting 0 with no output.
+    # That is common on a short --start/--end window, since encoders space
+    # keyframes seconds apart — and it is precisely the too-sparse case the
+    # uniform fallback below exists for, so treat an empty result as zero
+    # candidates rather than a hard error. A genuine decode failure also lands
+    # here and still surfaces, via the fallback's own ffmpeg call.
+    if result.returncode != 0 and files:
         raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
+    if result.returncode != 0:
+        print(
+            "[watch] no keyframes decoded in range — falling back to uniform sampling",
+            file=sys.stderr,
+        )
 
     offset = start_seconds or 0.0
     timestamps = [round(offset + float(m.group(1)), 2) for m in SHOWINFO_TS_RE.finditer(result.stderr)]
-    files = sorted(out_dir.glob("frame_*.jpg"))
     candidates: list[dict] = []
     for i, path in enumerate(files):
         ts = timestamps[i] if i < len(timestamps) else offset
@@ -635,6 +854,7 @@ def extract_keyframes(
 
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
+        keyframe_count = len(candidates)
         for cand in candidates:
             try:
                 Path(cand["path"]).unlink()
@@ -656,15 +876,20 @@ def extract_keyframes(
             start_seconds=start_seconds,
             end_seconds=end_seconds,
         )
+        # Same as the scene fallback: the keyframes are discarded above (their
+        # files are unlinked), so the uniform frames are the real candidates.
+        uniform_count = len(frames_out)
         n_dropped = 0
         if dedup:
             frames_out, n_dropped = dedupe_perceptual(frames_out)
         return frames_out, {
             "engine": "uniform",
-            "candidate_count": len(candidates),
+            "candidate_count": uniform_count,
             "deduped_count": n_dropped,
             "selected_count": len(frames_out),
             "fallback": True,
+            "fallback_from": "keyframe",
+            "fallback_candidate_count": keyframe_count,
         }
 
     # Detect-all, drop near-duplicates, then even-sample down to the cap (first +

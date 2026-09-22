@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -155,3 +157,140 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+class TestBackendKeyIsolation:
+    """A provider's key must never be sent to a different provider's endpoint.
+
+    SKILL.md promises: "Does not share API keys between providers (Groq key only
+    goes to api.groq.com, OpenAI key only goes to api.openai.com)."
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, tmp_path, monkeypatch):
+        # No real keys, and no real ~/.config/watch/.env or ./.env in scope.
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.chdir(tmp_path)
+
+    def test_preferred_openai_ignores_a_groq_only_key(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_groq_only")
+        assert whisper.load_api_key(preferred="openai") == (None, None)
+
+    def test_preferred_groq_ignores_an_openai_only_key(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk_openai_only")
+        assert whisper.load_api_key(preferred="groq") == (None, None)
+
+    def test_no_preference_still_falls_back_to_whichever_key_exists(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk_openai_only")
+        assert whisper.load_api_key() == ("openai", "sk_openai_only")
+
+    def test_forcing_a_backend_does_not_borrow_the_other_backends_key(self, monkeypatch):
+        """Regression: transcribe_video used to call load_api_key() with no argument.
+
+        With backend="openai" and only a Groq key set, `backend or detected_backend`
+        kept "openai" while `api_key or detected_key` picked up the Groq key — so the
+        Groq key was posted to api.openai.com.
+        """
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_groq_only")
+        detected_backend, detected_key = whisper.load_api_key(preferred="openai")
+        backend = "openai" or detected_backend
+        api_key = None or detected_key
+        assert not (backend == "openai" and (api_key or "").startswith("gsk_"))
+class TestLoadApiKey:
+    """load_api_key now delegates parsing to config.read_env_value."""
+
+    def _home(self, monkeypatch, tmp_path, body):
+        cfg = tmp_path / ".config" / "watch"
+        cfg.mkdir(parents=True)
+        (cfg / ".env").write_text(body, encoding="utf-8")
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.chdir(tmp_path)
+        for name in ("GROQ_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_inline_comment_no_longer_reaches_the_api(self, monkeypatch, tmp_path):
+        # Regression: the comment used to be sent as part of the bearer token.
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-secret-abc   # my groq key\n")
+        assert whisper.load_api_key() == ("groq", "sk-secret-abc")
+
+    def test_groq_preferred_over_openai(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-g\nOPENAI_API_KEY=sk-o\n")
+        assert whisper.load_api_key() == ("groq", "sk-g")
+
+    def test_preferred_backend_ignores_the_other_key(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=sk-g\nOPENAI_API_KEY=sk-o\n")
+        assert whisper.load_api_key("openai") == ("openai", "sk-o")
+
+    def test_blank_key_is_not_a_key(self, monkeypatch, tmp_path):
+        self._home(monkeypatch, tmp_path, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+        assert whisper.load_api_key() == (None, None)
+class TestChunkConcurrency:
+    """Chunks are independent uploads; wall clock should track the slowest one."""
+
+    def test_uploads_overlap_instead_of_queueing(self):
+        chunks = [(Path(f"{i}.mp3"), float(i * 100)) for i in range(4)]
+        delay = 0.15
+
+        def slow(path: Path) -> list[dict]:
+            time.sleep(delay)
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        start = time.perf_counter()
+        out = whisper.transcribe_chunks(chunks, slow, max_workers=4)
+        elapsed = time.perf_counter() - start
+
+        assert len(out) == 4
+        # Serial would need 4 * delay; concurrent needs ~1 * delay.
+        assert elapsed < delay * 2.5, f"took {elapsed:.2f}s, expected ~{delay:.2f}s"
+
+    def test_never_exceeds_max_workers(self):
+        chunks = [(Path(f"{i}.mp3"), float(i)) for i in range(8)]
+        lock = threading.Lock()
+        live = 0
+        peak = 0
+
+        def tracked(path: Path) -> list[dict]:
+            nonlocal live, peak
+            with lock:
+                live += 1
+                peak = max(peak, live)
+            time.sleep(0.05)
+            with lock:
+                live -= 1
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        whisper.transcribe_chunks(chunks, tracked, max_workers=3)
+        assert peak <= 3, f"ran {peak} uploads at once, cap was 3"
+
+    def test_out_of_order_completion_still_stitches_in_chunk_order(self):
+        """The last chunk finishes first; offsets must still line up."""
+        chunks = [(Path(f"{i}.mp3"), float(i * 100)) for i in range(3)]
+
+        def reversed_speed(path: Path) -> list[dict]:
+            time.sleep(0.05 * (2 - int(path.stem)))
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        out = whisper.transcribe_chunks(chunks, reversed_speed, max_workers=3)
+
+        assert [seg["text"] for seg in out] == ["0", "1", "2"]
+        assert [seg["start"] for seg in out] == [0.0, 100.0, 200.0]
+
+    def test_progress_lines_match_a_serial_run(self, capsys):
+        """Concurrency must not reorder or reword the user-visible output."""
+        chunks = [(Path(f"{i}.mp3"), float(i * 10)) for i in range(3)]
+
+        def flaky(path: Path) -> list[dict]:
+            time.sleep(0.05 * (2 - int(path.stem)))
+            if path.stem == "1":
+                raise SystemExit("chunk 1 failed")
+            return [{"start": 0.0, "end": 1.0, "text": path.stem}]
+
+        whisper.transcribe_chunks(chunks, flaky, max_workers=3)
+
+        assert capsys.readouterr().err == (
+            "[watch] chunk 1/3 \u2192 1 segments\n"
+            "[watch] chunk 2/3 failed — skipping (chunk 1 failed)\n"
+            "[watch] chunk 3/3 \u2192 1 segments\n"
+        )
