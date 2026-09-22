@@ -300,7 +300,7 @@ See [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Roadmap
 
-CI across ffmpeg 5/7/9 · the deferred upstream PRs (download cache #235, quality dial #215, TikTok slideshows #220) · an opt-in `--report` editorial mode (hook analysis, pacing, structured report) · upstream sync if `bradautomates/claude-video` resumes. Issues and PRs welcome.
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). CI across ffmpeg 5/7/9 · the deferred upstream PRs (download cache #235, quality dial #215, TikTok slideshows #220) · an opt-in `--report` editorial mode (hook analysis, pacing, structured report) · upstream sync if `bradautomates/claude-video` resumes. Issues and PRs welcome.
 
 ## Credits & license
 
