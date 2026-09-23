@@ -131,7 +131,7 @@ def extract_audio(video_path: str, out_path: Path) -> Path:
         "-b:a", "64k",
         str(out_path.resolve()),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg audio extraction failed: {result.stderr.strip()}")
     if not out_path.exists() or out_path.stat().st_size == 0:
@@ -154,6 +154,8 @@ def audio_duration(audio_path: Path) -> float:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
@@ -189,7 +191,7 @@ def split_audio(
             "-c", "copy",
             str(out_path.resolve()),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
             raise SystemExit(
                 f"ffmpeg failed to split audio chunk {index + 1}: {result.stderr.strip()}"
