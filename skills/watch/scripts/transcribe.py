@@ -6,6 +6,7 @@ scrolls). We dedupe consecutive identical cues and merge their time ranges.
 """
 from __future__ import annotations
 
+import html
 import re
 import sys
 from pathlib import Path
@@ -39,7 +40,9 @@ def parse_vtt(path: str) -> list[dict]:
 
         cue_lines: list[str] = []
         while i < len(lines) and lines[i].strip():
-            cleaned = TAG_RE.sub("", lines[i]).strip()
+            # Unescape after tag-stripping: caption tracks carry entities such as
+            # &gt;&gt; speaker markers and &amp;, which otherwise reach the transcript raw.
+            cleaned = html.unescape(TAG_RE.sub("", lines[i])).strip()
             if cleaned:
                 cue_lines.append(cleaned)
             i += 1
