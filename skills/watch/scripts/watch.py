@@ -8,6 +8,15 @@ from __future__ import annotations
 
 import argparse
 import sys
+
+# Windows consoles default to the ANSI codepage (cp949/cp932/cp1252), which
+# cannot encode the em-dash and ellipsis this script prints. Without this the
+# run dies with UnicodeEncodeError after the report is already complete.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):  # pragma: no cover - non-reconfigurable stream
+        pass
 import tempfile
 from pathlib import Path
 

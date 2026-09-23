@@ -9,7 +9,7 @@ from pathlib import Path
 def _duration(path: Path) -> float:
     out = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", str(path)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8",
     ).stdout
     return float(json.loads(out)["format"]["duration"])
 

@@ -7,7 +7,10 @@ set -euo pipefail
 CONFIG_FILE="$HOME/.config/watch/.env"
 
 # Warn if the secrets file has loose permissions.
-if [[ -f "$CONFIG_FILE" ]]; then
+# Git Bash and Cygwin mount NTFS with `noacl`, so chmod is a no-op and stat
+# always reports 644 regardless of the real Windows ACL. The check can only
+# emit a false warning there, and the fix it prints can never clear it.
+if [[ -f "$CONFIG_FILE" && "$OSTYPE" != msys* && "$OSTYPE" != cygwin* ]]; then
   perms=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
     echo "/watch: WARNING — $CONFIG_FILE has permissions $perms (should be 600)."

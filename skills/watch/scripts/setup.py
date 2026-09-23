@@ -76,6 +76,11 @@ def _check_file_permissions(path: Path) -> None:
     key = str(path)
     if key in _PERM_WARNED:
         return
+    if os.name == "nt":
+        # Windows has no POSIX mode bits: stat() synthesises 0o666/0o444 from the
+        # read-only attribute alone, so this check can only ever warn falsely and
+        # the chmod it suggests is a no-op. Real protection there is an ACL.
+        return
     try:
         mode = path.stat().st_mode
         if mode & 0o044:
