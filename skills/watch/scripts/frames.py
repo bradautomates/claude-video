@@ -39,6 +39,36 @@ DEDUP_THRESHOLD = 2.0
 SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
 
 
+_FPS_MODE_SUPPORTED: bool | None = None
+
+
+def _supports_fps_mode() -> bool:
+    """True when this ffmpeg understands -fps_mode.
+
+    -vsync was deprecated in ffmpeg 5.1 in favour of -fps_mode and removed
+    outright in ffmpeg 8, so neither spelling works everywhere. Probe once
+    against a null source rather than parsing version strings.
+    """
+    global _FPS_MODE_SUPPORTED
+    if _FPS_MODE_SUPPORTED is None:
+        probe = subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "nullsrc=d=0.1",
+                "-fps_mode", "vfr", "-frames:v", "1", "-f", "null", "-",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        _FPS_MODE_SUPPORTED = probe.returncode == 0
+    return _FPS_MODE_SUPPORTED
+
+
+def fps_mode_args() -> list[str]:
+    """The variable-frame-rate flag this ffmpeg accepts."""
+    return ["-fps_mode", "vfr"] if _supports_fps_mode() else ["-vsync", "vfr"]
+
+
 def _scale_filter(resolution: int) -> str:
     return (
         f"scale=w='min({resolution},iw)':h='min({MAX_READ_DIMENSION},ih)':"
@@ -253,7 +283,7 @@ def extract_scene_candidates(
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *fps_mode_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -612,7 +642,7 @@ def extract_keyframes(
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *fps_mode_args(),
         "-q:v", "4",
         output_pattern,
     ]

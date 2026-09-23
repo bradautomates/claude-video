@@ -76,6 +76,10 @@ def _check_file_permissions(path: Path) -> None:
     key = str(path)
     if key in _PERM_WARNED:
         return
+    if os.name == "nt":
+        # Windows files report 0o666 regardless of their real ACL, so this
+        # check can only produce false positives there.
+        return
     try:
         mode = path.stat().st_mode
         if mode & 0o044:
