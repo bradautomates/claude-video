@@ -14,6 +14,17 @@ import tempfile
 from pathlib import Path
 
 
+# Windows stdout/stderr default to the locale code page (cp1252), which raises
+# UnicodeEncodeError on emoji / non-Latin-1 characters in video titles and
+# aborts the report. Force UTF-8 so the report (and frame paths) always print.
+# Guarded in case the streams don't support reconfigure().
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
