@@ -1,364 +1,338 @@
 #!/usr/bin/env python3
-"""Setup / preflight for /watch.
-
-Modes:
-  setup.py --check      Silent preflight. Exit 0 if ready, 2/3/4 on failure.
-  setup.py --json       Machine-readable status for Claude to parse.
-  setup.py              Installer. Auto-installs deps, scaffolds .env, marks SETUP_COMPLETE.
-
-Design:
-- Silent on success: --check exits 0 with no output when everything's ready so
-  that /watch doesn't spam "setup is complete" on every turn.
-- Idempotent: re-running the installer is safe — it never clobbers existing
-  keys and only appends missing ones.
-- SETUP_COMPLETE=true in ~/.config/watch/.env tells us the user has been
-  through a successful installer run at least once.
-- Never sudo. On macOS, auto-install via brew. Elsewhere, print exact commands.
-- Never write an API key to disk automatically — only scaffold placeholders.
-"""
+"""Base preflight, backend configuration, and an opt-in managed WhisperX install."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-from config import get_config  # noqa: E402
+from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
+                    load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
+from runtime import configure_stdio, diagnostic, run_text
 
-
-REQUIRED_BINARIES = ["ffmpeg", "ffprobe", "yt-dlp"]
-CONFIG_DIR = Path.home() / ".config" / "watch"
-CONFIG_FILE = CONFIG_DIR / ".env"
-ENV_TEMPLATE = """# /watch API configuration
-#
-# Whisper transcription fallback — used only when yt-dlp cannot get captions
-# (or when you point /watch at a local file with no subtitles).
-#
-# Groq is preferred: it runs whisper-large-v3 at a fraction of OpenAI's price
-# and is faster in practice. OpenAI is the compatible fallback.
-#
-# Get a Groq key:  https://console.groq.com/keys
-# Get an OpenAI key:  https://platform.openai.com/api-keys
-#
-# Leave both blank to disable Whisper — /watch will still work, but videos
-# without native captions will come back frames-only.
-
+REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
+WHISPERX_VERSION = '3.8.6'
+_PERM_WARNED: set[str] = set()
+ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignment wins.
+# Native captions always come first. Optional fallback: auto|whisperx|groq|openai|none.
+# auto preserves the Groq-then-OpenAI preference for existing installations.
+# The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
+# WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
+# With the gemini engine, local videos are uploaded to Google for analysis.
+GEMINI_API_KEY=
 GROQ_API_KEY=
 OPENAI_API_KEY=
-
-# Default watch behavior (the /watch first-run wizard sets this for you).
-# Allowed values: transcript | efficient | balanced | token-burner
-# Keep the value on its own line with no trailing comment.
-# WATCH_DETAIL=balanced
-"""
+'''
 
 
-def _which(name: str) -> str | None:
+def _which(name):
     return shutil.which(name)
 
 
-def _check_binaries() -> list[str]:
-    return [b for b in REQUIRED_BINARIES if not _which(b)]
-
-
-_PERM_WARNED: set[str] = set()
+def _check_binaries():
+    return [name for name in REQUIRED_BINARIES if not _which(name)]
 
 
 def _check_file_permissions(path: Path) -> None:
-    """Warn to stderr (once per path per process) if a secrets file is
-    world/group readable."""
-    key = str(path)
-    if key in _PERM_WARNED:
+    # Native Windows mode bits do not describe NTFS ACLs. WSL Linux homes do.
+    if os.name == 'nt' or platform.system() == 'Windows' or str(path) in _PERM_WARNED:
         return
     try:
-        mode = path.stat().st_mode
-        if mode & 0o044:
-            _PERM_WARNED.add(key)
-            sys.stderr.write(
-                f"[watch] WARNING: {path} is readable by other users. "
-                f"Run: chmod 600 {path}\n"
-            )
-            sys.stderr.flush()
+        if path.stat().st_mode & 0o044:
+            _PERM_WARNED.add(str(path))
+            print(f'[watch] WARNING: {path} is readable by other users. Run: chmod 600 "{path}"', file=sys.stderr)
     except OSError:
         pass
 
 
-def _read_env_key(name: str) -> str | None:
-    value = os.environ.get(name)
-    if value and value.strip():
-        return value.strip()
-    if not CONFIG_FILE.exists():
-        return None
-    _check_file_permissions(CONFIG_FILE)
-    try:
-        for line in CONFIG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, raw = line.partition("=")
-            if key.strip() != name:
-                continue
-            raw = raw.strip()
-            if len(raw) >= 2 and raw[0] in ('"', "'") and raw[-1] == raw[0]:
-                raw = raw[1:-1]
-            return raw or None
-    except OSError:
-        return None
-    return None
+def _have_api_key():
+    backend, key = load_api_key()
+    return bool(key), backend
 
 
-def _have_api_key() -> tuple[bool, str | None]:
-    if _read_env_key("GROQ_API_KEY"):
-        return True, "groq"
-    if _read_env_key("OPENAI_API_KEY"):
-        return True, "openai"
-    return False, None
+def is_first_run():
+    return read_env_file(CONFIG_FILE).get('SETUP_COMPLETE') != 'true'
 
 
-def is_first_run() -> bool:
-    """True if the installer hasn't completed successfully yet."""
-    return _read_env_key("SETUP_COMPLETE") != "true"
-
-
-def _scaffold_env() -> bool:
-    """Create ~/.config/watch/.env with placeholders if missing."""
+def _scaffold_env():
     if CONFIG_FILE.exists():
+        read_env_file(CONFIG_FILE)  # Fail safely before modifying bad config.
         return False
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(ENV_TEMPLATE, encoding="utf-8")
-    try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+    fd = os.open(CONFIG_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        stream.write(ENV_TEMPLATE)
     return True
 
 
-def _write_setup_complete() -> None:
-    """Idempotently append SETUP_COMPLETE=true to .env.
+def _write_setup_complete():
+    _scaffold_env()
+    write_settings({'SETUP_COMPLETE': 'true'}, CONFIG_FILE)
 
-    Used only after a fully successful install (deps + key). Future sessions
-    detect this marker to skip wizard-style UI and stay silent.
-    """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    existing = ""
-    if CONFIG_FILE.exists():
-        existing = CONFIG_FILE.read_text(encoding="utf-8")
-        for line in existing.splitlines():
-            if line.strip().startswith("SETUP_COMPLETE="):
-                return
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        CONFIG_FILE.write_text(existing + "SETUP_COMPLETE=true\n", encoding="utf-8")
-    else:
-        CONFIG_FILE.write_text(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n", encoding="utf-8")
+
+def _brew_pkg(missing):
+    return list(dict.fromkeys('ffmpeg' if name == 'ffprobe' else name for name in missing))
+
+
+def _install_step(cmd, step):
+    print(f"[setup] {step}: {' '.join(map(str, cmd))}", file=sys.stderr, flush=True)
     try:
-        CONFIG_FILE.chmod(0o600)
-    except OSError:
-        pass
+        result = subprocess.run(list(map(str, cmd)))
+    except OSError as exc:
+        raise SystemExit(f'{step}: cannot run {cmd[0]} ({type(exc).__name__}); install or repair that executable, then retry.') from None
+    if result.returncode:
+        raise SystemExit(f'{step} failed (exit {result.returncode}): retry setup after checking the error above. '
+                         'For WhisperX, allow at least 3 GB free disk and 8 GB RAM; package/model downloads need network access.')
 
 
-def _brew_pkg(missing: list[str]) -> list[str]:
-    pkgs: list[str] = []
-    for bin_name in missing:
-        if bin_name in ("ffmpeg", "ffprobe"):
-            if "ffmpeg" not in pkgs:
-                pkgs.append("ffmpeg")
-        elif bin_name == "yt-dlp":
-            if "yt-dlp" not in pkgs:
-                pkgs.append("yt-dlp")
-        else:
-            pkgs.append(bin_name)
-    return pkgs
+def _install_macos(missing):
+    if not _which('brew'):
+        return False, 'Homebrew is missing. Install it from https://brew.sh, then rerun setup.'
+    _install_step(['brew', 'install', *_brew_pkg(missing)], 'Install media dependencies')
+    return True, 'Installed media dependencies with Homebrew.'
 
 
-def _install_macos(missing: list[str]) -> tuple[bool, str]:
-    if _which("brew") is None:
-        return False, (
-            "Homebrew is not installed. Install it from https://brew.sh, then re-run setup. "
-            "Or install manually: `brew install " + " ".join(_brew_pkg(missing)) + "`"
-        )
-    pkgs = _brew_pkg(missing)
-    if not pkgs:
-        return True, "nothing to install"
-    cmd = ["brew", "install", *pkgs]
-    print(f"[setup] running: {' '.join(cmd)}", file=sys.stderr)
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        return False, f"brew install failed with exit code {result.returncode}"
-    return True, f"installed via brew: {', '.join(pkgs)}"
-
-
-def _install_hint_linux(missing: list[str]) -> str:
-    pkgs = _brew_pkg(missing)
+def _install_hint_linux(missing):
     hints = []
-    if "ffmpeg" in pkgs:
-        hints.append("apt: `sudo apt install ffmpeg` or dnf: `sudo dnf install ffmpeg`")
-    if "yt-dlp" in pkgs:
-        hints.append("`pipx install yt-dlp` (recommended) or `pip install --user yt-dlp`")
-    return "\n  ".join(hints) if hints else "nothing to install"
+    if 'ffmpeg' in _brew_pkg(missing):
+        hints.append('apt: sudo apt install ffmpeg (or the equivalent package for your distribution)')
+    if 'yt-dlp' in missing:
+        hints.append('Install pipx, then: pipx install "yt-dlp[default,curl-cffi]"; pipx ensurepath. For YouTube also install Deno: https://deno.com/')
+    return '\n'.join(hints)
 
 
-def _install_hint_windows(missing: list[str]) -> str:
-    pkgs = _brew_pkg(missing)
+def _install_hint_windows(missing):
     hints = []
-    if "ffmpeg" in pkgs:
-        hints.append("winget: `winget install Gyan.FFmpeg`")
-    if "yt-dlp" in pkgs:
-        hints.append("winget: `winget install yt-dlp.yt-dlp` or pip: `pip install --user yt-dlp`")
-    return "\n  ".join(hints) if hints else "nothing to install"
+    if 'ffmpeg' in _brew_pkg(missing):
+        hints.append('winget install --id Gyan.FFmpeg --exact')
+    if 'yt-dlp' in missing:
+        hints.extend(['winget install --id yt-dlp.yt-dlp --exact', 'winget install --id DenoLand.Deno --exact'])
+    return '\n'.join(hints) + '\nReopen your terminal/agent after PATH changes.'
 
 
-def _status() -> dict:
-    """Structured preflight snapshot.
+def _probe(cmd):
+    try:
+        result = run_text(cmd, timeout=20)
+        output = result.stdout or result.stderr
+        return {'ok': result.returncode == 0, 'version_line': output.splitlines()[0] if output else None, 'output': diagnostic(output, 2500)}
+    except SystemExit as exc:
+        return {'ok': False, 'output': str(exc)}
 
-    `status` describes the *ideal* state (a Whisper key is encouraged), so a
-    keyless install still reports `needs_key` on the very first run — that's
-    the agent's cue to encourage adding one.
 
-    `can_proceed` is the operational gate: /watch can run as long as the
-    binaries are present AND the user has either set a key or already finished
-    setup (consciously opting out of Whisper). A keyless user who completed
-    setup is NOT nagged on every call.
-    """
+def _whisperx_status(cfg, detailed=False):
+    from local_whisperx import sentinel_for
+    value = cfg['whisperx_bin']
+    executable = Path(value) if value else None
+    ready = bool(executable and executable.is_absolute() and executable.is_file() and sentinel_for(executable).is_file())
+    if ready and detailed:
+        # Explicit detailed diagnostics may start the CLI. --check never does.
+        try:
+            from local_whisperx import child_env
+            result = run_text([str(executable), '--help'], timeout=30, env=child_env())
+            ready = result.returncode == 0 and '--no_align' in result.stdout
+        except SystemExit:
+            ready = False
+    return ready
+
+
+def _status(detailed=False):
     missing = _check_binaries()
-    has_key, backend = _have_api_key()
-    setup_complete = not is_first_run()
-
-    if not missing and has_key:
-        status = "ready"
-    elif missing and not has_key:
-        status = "needs_install_and_key"
-    elif missing:
-        status = "needs_install"
-    else:
-        status = "needs_key"
-
-    can_proceed = (not missing) and (has_key or setup_complete)
-
+    _check_file_permissions(CONFIG_FILE)
     cfg = get_config()
-    return {
-        "status": status,
-        "can_proceed": can_proceed,
-        "first_run": not setup_complete,
-        "setup_complete": setup_complete,
-        "missing_binaries": missing,
-        "whisper_backend": backend,
-        "has_api_key": has_key,
-        "config_file": str(CONFIG_FILE),
-        "watch_detail": cfg["detail"],
-        "platform": platform.system(),
-    }
+    gemini_key = bool(load_gemini_key())
+    try:
+        engine = resolve_engine(cfg['engine'], gemini_key)
+    except ConfigError:
+        engine = 'gemini'  # Explicitly chosen but the key is missing; gemini_key_present reports it.
+    binaries_required = engine == 'local'
+    has_key, detected = _have_api_key()
+    chosen = cfg['whisper_backend']
+    backend = detected if chosen == 'auto' else chosen
+    local_ready = _whisperx_status(cfg, detailed)
+    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    blocked = bool(missing) and binaries_required
+    result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
+              'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
+              'gemini_model': cfg['gemini_model'], 'binaries_required': binaries_required,
+              'first_run': is_first_run(), 'setup_complete': not is_first_run(),
+              'missing_binaries': missing, 'whisper_backend': backend, 'configured_backend': chosen,
+              'has_api_key': has_key, 'backend_ready': backend_ready,
+              'whisperx_ready': local_ready, 'whisperx_bin': cfg['whisperx_bin'],
+              'whisperx_model': cfg['whisperx_model'], 'config_file': str(CONFIG_FILE),
+              'watch_detail': cfg['detail'], 'platform': platform.system()}
+    if detailed:
+        tools = {}
+        for name in REQUIRED_BINARIES:
+            path = _which(name)
+            tools[name] = {'path': path, **(_probe([path, '--version' if name == 'yt-dlp' else '-version']) if path else {'ok': False})}
+        ytdlp = _which('yt-dlp')
+        result['tools'] = tools
+        result['youtube'] = {
+            'deno': _which('deno'), 'node': _which('node'),
+            'ejs': 'unknown (inspect the owning yt-dlp installation; no network probe)',
+            'impersonation': _probe([ytdlp, '--ignore-config', '--list-impersonate-targets']) if ytdlp else None,
+            'update_hint': 'Update the owning package: brew upgrade yt-dlp; pipx upgrade yt-dlp; or winget upgrade --id yt-dlp.yt-dlp --exact. Verify the executable path above.',
+        }
+    return result
 
 
-def cmd_check() -> int:
-    """Silent-on-success preflight.
-
-    Exit 0 with no output when /watch can run. A keyless user who already
-    finished setup (SETUP_COMPLETE=true) counts as ready — Whisper is
-    encouraged, not required — so they are never nagged on follow-up calls.
-
-    On a state that blocks /watch, print one actionable line to stderr:
-      2 → binaries missing
-      3 → genuine first run with no API key (encourage one)
-      4 → both missing
-    """
-    s = _status()
-    if s["can_proceed"]:
+def cmd_check():
+    # Optional credentials and local-model readiness never block base watch.
+    status = _status()
+    if status['can_proceed']:
         return 0
-
-    parts = []
-    if s["missing_binaries"]:
-        parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"] and not s["setup_complete"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
-    installer = Path(__file__).resolve()
-    sys.stderr.write(
-        f"[watch] setup incomplete ({'; '.join(parts)}). "
-        f"Run: python3 {installer}\n"
-    )
-    sys.stderr.flush()
-
-    if s["missing_binaries"] and not s["has_api_key"]:
-        return 4
-    if s["missing_binaries"]:
-        return 2
-    return 3
+    print(f"[watch] Missing {', '.join(status['missing_binaries'])}. Run python3 \"{Path(__file__).resolve()}\".", file=sys.stderr)
+    return 2
 
 
-def cmd_json() -> int:
-    json.dump(_status(), sys.stdout, indent=2)
-    sys.stdout.write("\n")
+def cmd_json():
+    print(json.dumps(_status(detailed=True), indent=2))
     return 0
 
 
-def cmd_install() -> int:
+def cmd_install(backend=None, detail=None, engine=None):
+    if engine:
+        _scaffold_env()
+        write_settings({'WATCH_ENGINE': engine}, CONFIG_FILE)
+    if engine == 'gemini':
+        if not load_gemini_key():
+            print(f'[setup] Add GEMINI_API_KEY privately to {CONFIG_FILE} (free key: https://aistudio.google.com/apikey), '
+                  'then rerun --engine gemini. Local videos will be uploaded to Google for analysis.', file=sys.stderr)
+            return 3
+        _write_setup_complete()
+        missing = _check_binaries()
+        note = (f" Optional: install {', '.join(_brew_pkg(missing))} for non-YouTube URLs and --engine local." if missing else '')
+        print(f'[setup] Gemini engine is ready. Configuration: {CONFIG_FILE}.{note}')
+        return 0
     missing = _check_binaries()
-    installed_deps = False
     if missing:
         system = platform.system()
-        if system == "Darwin":
-            ok, msg = _install_macos(missing)
-            print(f"[setup] {msg}", file=sys.stderr)
-            if not ok:
+        if system == 'Darwin':
+            ok, message = _install_macos(missing)
+            print(f'[setup] {message}', file=sys.stderr)
+            if not ok or _check_binaries():
                 return 2
-            still_missing = _check_binaries()
-            if still_missing:
-                print(f"[setup] still missing after install: {', '.join(still_missing)}", file=sys.stderr)
-                return 2
-            installed_deps = True
-        elif system == "Linux":
-            print("[setup] dependencies missing on Linux — please install:", file=sys.stderr)
-            print("  " + _install_hint_linux(missing), file=sys.stderr)
-            return 2
-        elif system == "Windows":
-            print("[setup] dependencies missing on Windows — please install:", file=sys.stderr)
-            print("  " + _install_hint_windows(missing), file=sys.stderr)
-            return 2
         else:
-            print(f"[setup] unsupported platform ({system}) for auto-install. Install manually:", file=sys.stderr)
-            print(f"  missing: {', '.join(missing)}", file=sys.stderr)
+            print(_install_hint_windows(missing) if system == 'Windows' else _install_hint_linux(missing), file=sys.stderr)
             return 2
-
-    created = _scaffold_env()
-    if created:
-        print(f"[setup] created config: {CONFIG_FILE}")
-    else:
-        print(f"[setup] config exists: {CONFIG_FILE}")
-
-    has_key, backend = _have_api_key()
-    if has_key:
+    _scaffold_env()
+    if detail:
+        write_settings({'WATCH_DETAIL': detail}, CONFIG_FILE)
+    if backend == 'whisperx':
+        return install_whisperx()
+    if backend:
+        write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
+        if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
+            print(f'[setup] Base watch is ready. Add {backend.upper()}_API_KEY privately to {CONFIG_FILE}, then rerun --backend {backend}.', file=sys.stderr)
+            return 3
         _write_setup_complete()
-        print(f"[setup] ready. whisper backend: {backend}")
-        if installed_deps:
-            print("[setup] installed dependencies; /watch is fully set up.")
-        return 0
-
-    print("")
-    print("[setup] one step left: add a Whisper API key.")
-    print("")
-    print(f"  Edit {CONFIG_FILE} and set either:")
-    print("    GROQ_API_KEY=...    (preferred — cheaper, faster; get one at console.groq.com/keys)")
-    print("    OPENAI_API_KEY=...  (fallback; get one at platform.openai.com/api-keys)")
-    print("")
-    print("  Without a key, /watch still works but videos without captions come back frames-only.")
-    return 3
+    print(f'[setup] Base watch is ready. Configuration: {CONFIG_FILE}')
+    return 0
 
 
-def main() -> int:
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        if arg == "--check":
+def _ensure_uv():
+    name = 'uv.exe' if platform.system() == 'Windows' else 'uv'
+    installed = _which('uv')
+    fallback = Path.home() / '.local' / 'bin' / name
+    if installed or fallback.is_file():
+        return installed or str(fallback)
+    system = platform.system()
+    if system == 'Darwin':
+        if not _which('brew'):
+            raise SystemExit('WhisperX setup needs uv. Install Homebrew from https://brew.sh, then rerun setup.')
+        _install_step(['brew', 'install', 'uv'], 'Install uv')
+    elif system == 'Windows':
+        _install_step(['powershell', '-NoProfile', '-ExecutionPolicy', 'ByPass', '-c', 'irm https://astral.sh/uv/install.ps1 | iex'], 'Install uv')
+    elif system == 'Linux':
+        # Fetch first: a failed curl must not be hidden by a successful empty sh.
+        with tempfile.TemporaryDirectory(prefix='watch-uv-') as temporary:
+            script = Path(temporary) / 'install.sh'
+            _install_step(['curl', '-LsSf', 'https://astral.sh/uv/install.sh', '-o', script], 'Download uv installer')
+            _install_step(['sh', script], 'Install uv')
+    else:
+        raise SystemExit('Install uv from https://docs.astral.sh/uv/ before retrying WhisperX setup.')
+    installed = _which('uv')
+    if installed or fallback.is_file():
+        return installed or str(fallback)
+    raise SystemExit('uv installed but could not be found; reopen your terminal and rerun setup.')
+
+
+def install_whisperx():
+    from local_whisperx import settings, transcribe_audio
+    print('[setup] Local WhisperX: requires 3 GB free disk, 8 GB RAM, a 64-bit CPU, and network access for setup. '
+          'Downloads about 1 GB of packages plus the 464 MB small model. macOS Apple Silicon is verified; '
+          'Intel macOS, Linux, Windows, and CUDA installs are untested.', file=sys.stderr, flush=True)
+    if not _which('ffmpeg'):
+        raise SystemExit('Install FFmpeg first, then rerun setup.py --install-whisperx.')
+    cfg = settings()
+    # Check the existing config before downloading or modifying an environment.
+    _scaffold_env()
+    uv = _ensure_uv()
+    venv = Path.home() / '.cache' / 'watch' / 'whisperx-venv'
+    sentinel = venv / '.deps-ok'
+    windows = platform.system() == 'Windows'
+    python = venv / ('Scripts/python.exe' if windows else 'bin/python')
+    executable = venv / ('Scripts/whisperx.exe' if windows else 'bin/whisperx')
+    ready = sentinel.is_file() and python.is_file() and executable.is_file()
+    if not ready:
+        if venv.is_symlink():
+            raise SystemExit('Managed WhisperX venv is a symlink; choose a regular managed directory before installing.')
+        if venv.exists():
+            shutil.rmtree(venv)  # Only this fixed, installer-owned environment.
+        venv.parent.mkdir(parents=True, exist_ok=True)
+        _install_step([uv, 'venv', str(venv), '--python', '3.12'], 'Create WhisperX Python 3.12 environment')
+        if platform.system() in ('Linux', 'Windows'):
+            _install_step([uv, 'pip', 'install', '--python', python, 'torch==2.8.0', 'torchaudio==2.8.0',
+                           '--index-url', 'https://download.pytorch.org/whl/cpu'], 'Install CPU PyTorch wheels')
+        _install_step([uv, 'pip', 'install', '--python', python, f'whisperx=={WHISPERX_VERSION}'], 'Install WhisperX')
+    # Invalidate before warm-up: an interrupted repair is always safe to rerun.
+    sentinel.unlink(missing_ok=True)
+    cfg['whisperx_bin'] = str(executable)
+    with tempfile.TemporaryDirectory(prefix='watch-warmup-') as temporary:
+        audio = Path(temporary) / 'silence.mp3'
+        _install_step(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                       'anullsrc=r=16000:cl=mono', '-t', '2', '-acodec', 'libmp3lame', str(audio)], 'Create warm-up audio')
+        transcribe_audio(audio, cfg, require_ready=False)
+    resolved = run_text([str(uv), 'pip', 'list', '--python', str(python), '--format', 'json'], timeout=60)
+    if resolved.returncode:
+        raise SystemExit(f'Could not record the WhisperX install: {diagnostic(resolved.stderr)}')
+    packages = json.loads(resolved.stdout)
+    (venv / 'watch-install.json').write_text(json.dumps({'whisperx': WHISPERX_VERSION, 'model': cfg['whisperx_model'],
+                                                       'platform': platform.system(), 'packages': packages}, indent=2), encoding='utf-8')
+    sentinel.write_text(WHISPERX_VERSION + '\n', encoding='utf-8')
+    write_settings({'WATCH_WHISPER_BACKEND': 'whisperx', 'WATCH_WHISPERX_BIN': str(executable),
+                    'WATCH_WHISPERX_MODEL': cfg['whisperx_model'], 'SETUP_COMPLETE': 'true'}, CONFIG_FILE)
+    print('[setup] WhisperX is ready; packages and both model caches are warmed.', file=sys.stderr)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--check', action='store_true')
+    mode.add_argument('--json', action='store_true')
+    mode.add_argument('--install-whisperx', action='store_true')
+    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--detail', choices=sorted(DETAILS))
+    parser.add_argument('--engine', choices=sorted(ENGINES))
+    args = parser.parse_args()
+    try:
+        if args.check:
             return cmd_check()
-        if arg == "--json":
+        if args.json:
             return cmd_json()
-    return cmd_install()
+        return cmd_install('whisperx' if args.install_whisperx else args.backend, args.detail, args.engine)
+    except (ConfigError, OSError, ValueError) as exc:
+        print(f'[setup] {exc}', file=sys.stderr)
+        return 2
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
+    configure_stdio()
     raise SystemExit(main())

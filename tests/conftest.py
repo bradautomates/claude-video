@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,39 @@ import pytest
 # Make the bundled scripts importable (mirrors watch.py's sys.path insert).
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "skills" / "watch" / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
+
+
+@pytest.fixture(autouse=True)
+def isolated_user(monkeypatch, tmp_path):
+    """No test inherits a developer's credentials, preferences, or project .env."""
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    for key in list(os.environ):
+        if key.startswith("WATCH_") or key in {
+            "GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "SETUP_COMPLETE", "XDG_CONFIG_HOME",
+        }:
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.chdir(cwd)
+    import config
+    monkeypatch.setattr(config, "CONFIG_DIR", home / ".config" / "watch")
+    monkeypatch.setattr(config, "CONFIG_FILE", config.CONFIG_DIR / ".env")
+    if "setup" in sys.modules:
+        monkeypatch.setattr(sys.modules["setup"], "CONFIG_DIR", config.CONFIG_DIR)
+        monkeypatch.setattr(sys.modules["setup"], "CONFIG_FILE", config.CONFIG_FILE)
+        sys.modules["setup"]._PERM_WARNED.clear()
+    import whisper
+    def no_upload(*args, **kwargs):
+        raise AssertionError("Tests must mock cloud uploads")
+    monkeypatch.setattr(whisper, "urlopen", no_upload)
+    import gemini
+    def no_gemini(*args, **kwargs):
+        raise AssertionError("Tests must mock Gemini calls")
+    monkeypatch.setattr(gemini, "urlopen", no_gemini)
 
 # 14 visually distinct fills → 14 abrupt cuts → x264 emits a keyframe per cut.
 COLORS = [

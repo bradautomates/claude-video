@@ -155,3 +155,62 @@ class TestTranscribeChunks:
 
         with pytest.raises(SystemExit):
             whisper.transcribe_chunks(chunks, always_fail)
+
+
+def test_key_without_backend_rejected_before_extraction(monkeypatch, tmp_path):
+    monkeypatch.setattr(whisper, 'extract_audio', lambda *a: pytest.fail('must validate before extraction'))
+    with pytest.raises(SystemExit, match='explicit'):
+        whisper.transcribe_video('video.mp4', tmp_path / 'audio', api_key='dummy')
+
+
+@pytest.mark.parametrize('size,allowed', [(23_999_999, True), (24_000_000, True), (24_000_001, False)])
+def test_upload_budget_checks_actual_file(monkeypatch, tmp_path, size, allowed):
+    audio = tmp_path / 'audio.mp3'
+    with audio.open('wb') as f:
+        f.truncate(size)
+    calls = []
+    def multipart(*a):
+        calls.append(True)
+        raise RuntimeError('passed budget')
+    monkeypatch.setattr(whisper, '_build_multipart', multipart)
+    with pytest.raises(RuntimeError if allowed else SystemExit):
+        whisper._post_whisper('https://example.test', 'dummy', 'model', audio)
+    assert bool(calls) == allowed
+
+
+def test_multipart_size_checked_before_request(monkeypatch, tmp_path):
+    audio = tmp_path / 'a.mp3'
+    audio.write_bytes(b'a')
+    monkeypatch.setattr(whisper, 'MAX_MULTIPART_BYTES', 3)
+    monkeypatch.setattr(whisper, '_build_multipart', lambda *a: (b'1234', 'boundary'))
+    with pytest.raises(SystemExit, match='Multipart'):
+        whisper._post_whisper('https://example.test', 'dummy', 'model', audio)
+
+
+def test_unexpected_oversized_split_never_uploads(monkeypatch, tmp_path):
+    audio = tmp_path / 'a.mp3'
+    audio.write_bytes(b'123456')
+    monkeypatch.setattr(whisper, 'MAX_UPLOAD_BYTES', 5)
+    monkeypatch.setattr(whisper, 'extract_audio', lambda *a: audio)
+    monkeypatch.setattr(whisper, 'audio_duration', lambda *a: 20)
+    monkeypatch.setattr(whisper, 'plan_chunks', lambda *a: [(0, 10), (10, 10)])
+    monkeypatch.setattr(whisper, 'split_audio', lambda *a: [(audio, 0), (audio, 10)])
+    monkeypatch.setattr(whisper, '_transcribe_file', lambda *a: pytest.fail('no oversized uploads'))
+    with pytest.raises(SystemExit, match='exceeds'):
+        whisper.transcribe_video('video', audio, backend='groq', api_key='dummy')
+
+
+def test_partial_chunks_keep_gap_metadata():
+    def transcribe(path):
+        if path.name == 'b':
+            raise SystemExit('failed')
+        return [{'start': 0, 'end': 1, 'text': 'ok'}]
+    out = whisper.transcribe_chunks([(Path('a'), 0), (Path('b'), 10), (Path('c'), 20)], transcribe)
+    assert out.gaps == [{'start': 10, 'end': 20}]
+    assert out[-1]['start'] == 20
+
+
+def test_no_speech_and_malformed_response_differ():
+    assert whisper._segments_from_response({'segments': []}).no_speech
+    with pytest.raises(SystemExit, match='malformed'):
+        whisper._segments_from_response({'text': 'timestamps missing'})

@@ -22,10 +22,8 @@ V2_PLAN.md       export-ignore
 V2_CONCERNS.md   export-ignore
 .agents/         export-ignore
 
-# Dev-only build script + scanner config inside the skill tree: keep them out of
-# the claude.ai .skill bundle (built via `git archive HEAD:skills/watch`).
-skills/watch/scripts/build-skill.sh export-ignore
-skills/watch/.skillignore           export-ignore
+# Skill-local archive exclusions live in skills/watch/.gitattributes so they
+# also apply when archiving HEAD:skills/watch directly.
 
 # NOTE: hooks/ and .claude-plugin/ are NOT export-ignored because Claude Code's
 # /plugin install fetches the full-repo git archive — they must be present for

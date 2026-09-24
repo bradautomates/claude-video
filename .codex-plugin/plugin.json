@@ -1,7 +1,7 @@
 {
   "name": "watch",
-  "version": "0.2.0",
-  "description": "Let Claude watch a video. Downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls captions or falls back to Whisper, and hands frames + transcript to Claude so it can answer questions about the video.",
+  "version": "0.3.0",
+  "description": "Give an agent video evidence: timestamped frames and native captions, with optional local WhisperX or Groq/OpenAI transcription.",
   "author": {
     "name": "Bradley Bonanno"
   },
@@ -19,13 +19,14 @@
     "yt-dlp",
     "ffmpeg",
     "multimodal",
-    "frames"
+    "frames",
+    "whisperx"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "watch",
-    "shortDescription": "Give Claude a video input — paste a URL or path and ask about it.",
-    "longDescription": "watch adds a skill that lets the agent watch any video: it downloads with yt-dlp, extracts auto-scaled frames with ffmpeg, pulls a timestamped transcript from native captions (or the Whisper API as a fallback), and hands frames + transcript to the model so it can answer questions grounded in what's actually on screen and in the audio.",
+    "shortDescription": "Give your agent a video input \u2014 paste a URL or local path and ask about it.",
+    "longDescription": "watch gives an agent timestamped video frames and a transcript from native captions or an optional local WhisperX / cloud Whisper fallback. The agent views the selected frames and answers from the available visual and spoken evidence.",
     "developerName": "Bradley Bonanno",
     "category": "Productivity",
     "capabilities": [

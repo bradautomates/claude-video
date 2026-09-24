@@ -100,7 +100,7 @@ def test_thumb_frames_match_candidate_count(cut_clip: Path, tmp_path: Path):
     out = frames.extract_scene_candidates(str(cut_clip), tmp_path / "f", max_frames=None)
     thumbs = frames._thumb_frames([Path(fr["path"]) for fr in out])
     assert len(thumbs) == len(out)
-    assert all(len(t) == frames.DEDUP_THUMB * frames.DEDUP_THUMB for t in thumbs)
+    assert all(len(t) == frames.DEDUP_THUMB * frames.DEDUP_THUMB * 3 for t in thumbs)
 
 
 def test_dedupe_perceptual_collapses_static_clip(static_clip: Path, tmp_path: Path):
@@ -160,3 +160,14 @@ def test_dedup_false_disables_collapse(static_clip: Path, tmp_path: Path):
     assert meta["deduped_count"] == 0
     assert meta["selected_count"] > 1  # no collapse without dedup
     assert len(out) > 1
+
+
+def test_equal_brightness_different_colors_survive(tmp_path):
+    import subprocess
+    paths = []
+    for index, color in enumerate(['red', '0x009A00', '0x009A00']):
+        path = tmp_path / f'frame_{index:04d}.jpg'
+        subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'color=c={color}:s=64x64:d=0.1', '-frames:v', '1', str(path)], check=True)
+        paths.append({'index': index, 'timestamp_seconds': index, 'path': str(path), 'reason': 'test'})
+    out, dropped = frames.dedupe_perceptual(paths)
+    assert len(out) == 2 and dropped == 1

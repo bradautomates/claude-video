@@ -9,11 +9,15 @@ zooming in for detail).
 from __future__ import annotations
 
 import json
+import math
+from functools import lru_cache
 import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+from runtime import configure_stdio, run_text, diagnostic
 
 
 MAX_FPS = 2.0
@@ -29,14 +33,13 @@ SCENE_MIN_FRAMES = 8
 KEYFRAME_MIN = 4
 MAX_READ_DIMENSION = 1998
 # Frame-delta dedup: downscale each frame to a DEDUP_THUMB x DEDUP_THUMB
-# grayscale thumbnail and treat two frames as near-identical when their mean
-# per-pixel difference (0-255) is at or below DEDUP_THRESHOLD. Conservative on
-# purpose: only collapses frames that are visually the same shot, so a code diff
-# / scrolling terminal / slide-gaining-a-bullet survives. Unlike a within-frame
-# perceptual hash, this distinguishes flat frames (solid slides, fades) by luma.
+# RGB thumbnail and treat two frames as near-identical when their mean
+# per-channel difference (0-255) is at or below DEDUP_THRESHOLD. This catches
+# held slides, but subtle code/text changes can be missed at this thumbnail size. Unlike a within-frame
+# perceptual hash, this distinguishes flat frames (solid slides, fades) by color.
 DEDUP_THUMB = 16
 DEDUP_THRESHOLD = 2.0
-SHOWINFO_TS_RE = re.compile(r"pts_time:([0-9.]+)")
+SHOWINFO_TS_RE = re.compile(r"pts_time:([^\s]+)")
 
 
 def _scale_filter(resolution: int) -> str:
@@ -53,25 +56,21 @@ def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[fl
 
 
 def parse_time(value: str | float | int | None) -> float | None:
-    """Parse SS, MM:SS, or HH:MM:SS (with optional .ms) into seconds."""
-    if value is None:
+    """Parse a finite non-negative SS, MM:SS, or HH:MM:SS time."""
+    if value is None or str(value).strip() == "":
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    s = str(value).strip()
-    if not s:
-        return None
-    parts = s.split(":")
     try:
-        if len(parts) == 1:
-            return float(parts[0])
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + float(parts[1])
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        parts = str(value).strip().split(":")
+        if len(parts) > 3:
+            raise ValueError()
+        numbers = [float(part) for part in parts]
+        if any(not math.isfinite(n) or n < 0 for n in numbers):
+            raise ValueError()
+        if len(parts) > 1 and (any(n >= 60 for n in numbers[1:]) or any(n != int(n) for n in numbers[:-1])):
+            raise ValueError()
+        return sum(n * 60 ** i for i, n in enumerate(reversed(numbers)))
     except ValueError:
-        pass
-    raise SystemExit(f"Cannot parse time value: {value!r} (expected SS, MM:SS, or HH:MM:SS)")
+        raise SystemExit("Invalid time; expected finite non-negative SS, MM:SS, or HH:MM:SS.") from None
 
 
 def format_time(seconds: float) -> str:
@@ -84,39 +83,76 @@ def format_time(seconds: float) -> str:
 
 
 def get_metadata(video_path: str) -> dict:
-    if shutil.which("ffprobe") is None:
-        raise SystemExit("ffprobe is not installed. Install with: brew install ffmpeg")
-
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            str(Path(video_path).resolve()),
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = run_text([
+        "ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams",
+        str(Path(video_path).resolve()),
+    ], timeout=30)
     if result.returncode != 0:
-        raise SystemExit(f"ffprobe failed: {result.stderr.strip()}")
+        raise SystemExit(f"ffprobe failed: {diagnostic(result.stderr)}")
+    try:
+        data = json.loads(result.stdout)
+        streams, fmt = data["streams"], data.get("format", {})
+        if not isinstance(streams, list) or not streams:
+            raise ValueError()
+        video = next((s for s in streams if s.get("codec_type") == "video"), {})
+        audio = next((s for s in streams if s.get("codec_type") == "audio"), {})
+        # Some containers include a nonzero start PTS in format.duration.
+        # Stream durations describe elapsed source time and avoid overestimating
+        # a three-second clip whose first packet starts at seven seconds.
+        elapsed = [float(s['duration']) for s in (video, audio) if s.get('duration') not in (None, 'N/A')]
+        duration = max(elapsed) if elapsed else float(fmt.get('duration'))
+        if any(not math.isfinite(d) or d <= 0 for d in elapsed) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError()
+        return {
+            "duration_seconds": duration, "width": video.get("width"), "height": video.get("height"),
+            "codec": video.get("codec_name"), "size_bytes": int(fmt.get("size") or 0),
+            "has_audio": bool(audio), "has_video": bool(video),
+        }
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise SystemExit(f"ffprobe returned invalid metadata, streams, or duration: {diagnostic(result.stderr)}") from None
 
-    data = json.loads(result.stdout or "{}")
-    streams = data.get("streams", [])
-    fmt = data.get("format", {})
-    video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
-    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
 
-    duration = float(fmt.get("duration") or video_stream.get("duration") or 0)
-    return {
-        "duration_seconds": duration,
-        "width": video_stream.get("width"),
-        "height": video_stream.get("height"),
-        "codec": video_stream.get("codec_name"),
-        "size_bytes": int(fmt.get("size") or 0),
-        "has_audio": audio_stream is not None,
-    }
+@lru_cache(maxsize=8)
+def _sync_option(executable: str) -> tuple[str, str]:
+    result = run_text([executable, "-hide_banner", "-h", "full"], timeout=30)
+    if result.returncode == 0:
+        help_text = result.stdout + result.stderr
+        # FFmpeg 9 lists options with stream specifiers, e.g. "-fps_mode[:<stream_spec>]".
+        if re.search(r"(?m)^\s*-fps_mode\b", help_text):
+            return "-fps_mode", "vfr"
+        if re.search(r"(?m)^\s*-vsync\b", help_text):
+            return "-vsync", "vfr"
+    raise SystemExit(f"{executable} did not advertise -fps_mode or -vsync; check the FFmpeg installation. {diagnostic(result.stderr)}")
+
+
+def sync_args() -> tuple[str, str]:
+    return _sync_option(shutil.which("ffmpeg") or "ffmpeg")
+
+
+def validate_controls(resolution, max_frames, start_seconds, end_seconds, fps=None):
+    if not isinstance(resolution, int) or resolution < 2:
+        raise SystemExit("--resolution must be an integer of at least 2 pixels")
+    if max_frames is not None and (not isinstance(max_frames, int) or max_frames < 1):
+        raise SystemExit("--max-frames must be a positive integer")
+    start, end = parse_time(start_seconds) or 0.0, parse_time(end_seconds)
+    if end is not None and end <= start:
+        raise SystemExit("--end must be greater than --start")
+    if fps is not None and (not math.isfinite(fps) or fps <= 0):
+        raise SystemExit("--fps must be finite and greater than zero")
+
+
+def _emitted_frames(files, stderr, offset, reason):
+    try:
+        stamps = [float(m.group(1)) for m in SHOWINFO_TS_RE.finditer(stderr)]
+        # FFmpeg may log an extra filtered frame before an output cap stops it.
+        if len(stamps) < len(files) or any(not math.isfinite(t) for t in stamps):
+            raise ValueError()
+        if any(b < a for a, b in zip(stamps, stamps[1:])):
+            raise ValueError()
+    except ValueError:
+        raise SystemExit("ffmpeg output is missing valid frame timestamps; refusing to mislabel images.") from None
+    return [{"index": i, "timestamp_seconds": round(offset + stamps[i], 6),
+             "path": str(path), "reason": reason} for i, path in enumerate(files)]
 
 
 def auto_fps(duration_seconds: float, max_frames: int = 100) -> tuple[float, int]:
@@ -160,58 +196,36 @@ def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[floa
 
 
 def extract(
-    video_path: str,
-    out_dir: Path,
-    fps: float,
-    resolution: int = 512,
-    max_frames: int = 100,
-    start_seconds: float | None = None,
+    video_path: str, out_dir: Path, fps: float, resolution: int = 512,
+    max_frames: int = 100, start_seconds: float | None = None,
     end_seconds: float | None = None,
 ) -> list[dict]:
-    if shutil.which("ffmpeg") is None:
-        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
-
+    validate_controls(resolution, max_frames, start_seconds, end_seconds, fps)
+    duration = get_metadata(video_path)["duration_seconds"]
+    start = start_seconds or 0.0
+    end = min(duration, end_seconds) if end_seconds is not None else duration
+    if end <= start:
+        raise SystemExit("Requested range is outside the video duration")
+    rate = min(fps, MAX_FPS, max_frames / (end - start))
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
-
-    output_pattern = str(out_dir / "frame_%04d.jpg")
-    cmd: list[str] = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-y",
-    ]
-
-    # -ss before -i = fast seek (keyframe-snap, good enough for preview frames).
-    if start_seconds is not None:
-        cmd += ["-ss", f"{start_seconds:.3f}"]
-    if end_seconds is not None:
-        cmd += ["-to", f"{end_seconds:.3f}"]
-
-    cmd += [
-        "-i", str(Path(video_path).resolve()),
-        "-vf", f"fps={fps},{_scale_filter(resolution)}",
-        "-frames:v", str(max_frames),
-        "-q:v", "4",
-        output_pattern,
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Accurate input seeking resets t relative to the seek point. select keeps
+    # the first real frame in each time bucket; fps would shift the pixels.
+    vf = (f"select='isnan(prev_selected_t)+gt(floor(t*{rate:.17g}),"
+          f"floor(prev_selected_t*{rate:.17g}))',{_scale_filter(resolution)},showinfo")
+    result = run_text([
+        "ffmpeg", "-hide_banner", "-loglevel", "info", "-y",
+        "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(Path(video_path).resolve()),
+        "-vf", vf, *sync_args(), "-frames:v", str(max_frames), "-q:v", "4",
+        str(out_dir / "frame_%04d.jpg"),
+    ])
     if result.returncode != 0:
-        raise SystemExit(f"ffmpeg frame extraction failed: {result.stderr.strip()}")
-
-    offset = start_seconds or 0.0
-    frames = sorted(out_dir.glob("frame_*.jpg"))
-    return [
-        {
-            "index": i,
-            "timestamp_seconds": round(offset + (i / fps if fps > 0 else 0.0), 2),
-            "path": str(p),
-            "reason": "uniform",
-        }
-        for i, p in enumerate(frames)
-    ]
+        raise SystemExit(f"ffmpeg frame extraction failed: {diagnostic(result.stderr)}")
+    files = sorted(out_dir.glob("frame_*.jpg"))
+    if not files:
+        raise SystemExit("ffmpeg produced no video frames in the requested range")
+    return _emitted_frames(files, result.stderr, start, "uniform")
 
 
 def extract_scene_candidates(
@@ -230,6 +244,7 @@ def extract_scene_candidates(
     would only delete afterwards. ``None`` (uncapped "complete" detail) keeps
     every detected shot, as the user explicitly opted in.
     """
+    validate_controls(resolution, max_frames, start_seconds, end_seconds)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -245,15 +260,15 @@ def extract_scene_candidates(
         "-y",
     ]
     if start_seconds is not None:
-        cmd += ["-ss", f"{start_seconds:.3f}"]
+        cmd += ["-ss", f"{start_seconds:.6f}"]
     if end_seconds is not None:
-        cmd += ["-to", f"{end_seconds:.3f}"]
+        cmd += ["-to", f"{end_seconds:.6f}"]
 
     vf = f"select='eq(n\\,0)+gt(scene\\,{threshold})',{_scale_filter(resolution)},showinfo"
     cmd += [
         "-i", str(Path(video_path).resolve()),
         "-vf", vf,
-        "-vsync", "vfr",
+        *sync_args(),
     ]
     if max_frames is not None:
         cmd += ["-frames:v", str(max_frames)]
@@ -261,22 +276,13 @@ def extract_scene_candidates(
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = run_text(cmd)
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg scene extraction failed: {result.stderr.strip()}")
 
-    offset = start_seconds or 0.0
-    timestamps = [round(offset + float(match.group(1)), 2) for match in SHOWINFO_TS_RE.finditer(result.stderr)]
-    frames = sorted(out_dir.glob("frame_*.jpg"))
-    out: list[dict] = []
-    for i, path in enumerate(frames):
-        ts = timestamps[i] if i < len(timestamps) else offset
-        out.append({
-            "index": i,
-            "timestamp_seconds": ts,
-            "path": str(path),
-            "reason": "first-frame" if i == 0 else "scene-change",
-        })
+    out = _emitted_frames(sorted(out_dir.glob("frame_*.jpg")), result.stderr, start_seconds or 0.0, "scene-change")
+    if out:
+        out[0]["reason"] = "first-frame"
     return out
 
 
@@ -338,6 +344,7 @@ def extract_at_timestamps(
     clobbering the other. When more cues than ``max_frames`` survive, they are
     even-sampled (first + last kept) before extraction.
     """
+    validate_controls(resolution, max_frames, start_seconds, end_seconds)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -347,7 +354,7 @@ def extract_at_timestamps(
 
     lo = start_seconds or 0.0
     hi = end_seconds if end_seconds is not None else float("inf")
-    requested = sorted(set(round(float(t), 2) for t in timestamps))
+    requested = sorted(set(parse_time(t) for t in timestamps))
     in_window = [t for t in requested if lo <= t <= hi]
     dropped = len(requested) - len(in_window)
 
@@ -360,25 +367,22 @@ def extract_at_timestamps(
     for t in points:
         path = out_dir / f"cue_{len(out):04d}.jpg"
         cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-loglevel", "error",
-            "-y",
-            "-ss", f"{t:.3f}",
-            "-i", str(Path(video_path).resolve()),
-            "-frames:v", "1",
-            "-vf", _scale_filter(resolution),
-            "-q:v", "4",
-            str(path),
+            "ffmpeg", "-hide_banner", "-loglevel", "info", "-y",
+            "-ss", f"{t:.6f}", "-i", str(Path(video_path).resolve()),
+            "-frames:v", "1", "-vf", f"{_scale_filter(resolution)},showinfo",
+            *sync_args(), "-q:v", "4", str(path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode == 0 and path.exists():
-            out.append({
-                "index": len(out),
-                "timestamp_seconds": t,
-                "path": str(path),
-                "reason": "transcript-cue",
-            })
+        result = run_text(cmd)
+        if result.returncode != 0:
+            raise SystemExit(f"ffmpeg cue extraction failed: {diagnostic(result.stderr)}")
+        if path.exists():
+            frame = _emitted_frames([path], result.stderr, t, "transcript-cue")[0]
+            frame["requested_timestamp_seconds"] = t
+            frame["index"] = len(out)
+            if frame["timestamp_seconds"] <= hi:
+                out.append(frame)
+            else:
+                path.unlink()
 
     meta = {
         "engine": "timestamps",
@@ -413,7 +417,7 @@ def _even_sample(candidates: list[dict], n: int) -> list[dict]:
 
 
 def _frame_delta(a: bytes, b: bytes) -> float:
-    """Mean absolute per-pixel difference (0-255) between two grayscale
+    """Mean absolute per-pixel difference (0-255) between two RGB
     thumbnails. Mismatched lengths are treated as maximally different so a
     decode hiccup never collapses distinct frames."""
     if not a or len(a) != len(b):
@@ -422,11 +426,11 @@ def _frame_delta(a: bytes, b: bytes) -> float:
 
 
 def _thumb_frames(paths: list[Path]) -> list[bytes]:
-    """Decode every frame in ``paths`` to a small grayscale thumbnail via one
+    """Decode every frame in ``paths`` to a small RGB thumbnail via one
     ffmpeg pass over the JPEG sequence.
 
     ffmpeg does the pixel decode (keeps us pure-stdlib); we slice the raw
-    grayscale stream into one ``DEDUP_THUMB``-square thumbnail per frame.
+    RGB stream into one ``DEDUP_THUMB``-square thumbnail per frame.
     Fail-open: any ffmpeg error, an unrecognized name, or a byte-count mismatch
     returns ``[]`` so the caller skips dedup rather than breaking extraction.
     """
@@ -445,15 +449,18 @@ def _thumb_frames(paths: list[Path]) -> list[bytes]:
         "-loglevel", "error",
         "-start_number", str(int(digits)),
         "-i", pattern,
-        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=gray",
+        "-vf", f"scale={DEDUP_THUMB}:{DEDUP_THUMB},format=rgb24",
         "-f", "rawvideo",
         "-",
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True)
+    except OSError:
+        return []
     if result.returncode != 0:
         return []
 
-    chunk = DEDUP_THUMB * DEDUP_THUMB
+    chunk = DEDUP_THUMB * DEDUP_THUMB * 3
     data = result.stdout
     if len(data) != chunk * len(paths):
         return []
@@ -561,12 +568,13 @@ def extract_scene_or_uniform(
         start_seconds=start_seconds,
         end_seconds=end_seconds,
     )
+    uniform_count = len(frames)
     n_dropped = 0
     if dedup:
         frames, n_dropped = dedupe_perceptual(frames)
     return frames, {
         "engine": "uniform",
-        "candidate_count": scene_count,
+        "candidate_count": uniform_count,
         "deduped_count": n_dropped,
         "selected_count": len(frames),
         "fallback": True,
@@ -590,6 +598,7 @@ def extract_keyframes(
     (:func:`dedupe_perceptual`, unless ``dedup`` is False); over-cap →
     even-sample first→last; too few keyframes → uniform fallback.
     """
+    validate_controls(resolution, max_frames, start_seconds, end_seconds)
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
 
@@ -605,33 +614,24 @@ def extract_keyframes(
         "-y",
     ]
     if start_seconds is not None:
-        cmd += ["-ss", f"{start_seconds:.3f}"]
+        cmd += ["-ss", f"{start_seconds:.6f}"]
     if end_seconds is not None:
-        cmd += ["-to", f"{end_seconds:.3f}"]
+        cmd += ["-to", f"{end_seconds:.6f}"]
     cmd += [
         "-skip_frame", "nokey",
         "-i", str(Path(video_path).resolve()),
         "-vf", f"{_scale_filter(resolution)},showinfo",
-        "-vsync", "vfr",
+        *sync_args(),
         "-q:v", "4",
         output_pattern,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit(f"ffmpeg keyframe extraction failed: {result.stderr.strip()}")
-
-    offset = start_seconds or 0.0
-    timestamps = [round(offset + float(m.group(1)), 2) for m in SHOWINFO_TS_RE.finditer(result.stderr)]
+    result = run_text(cmd)
     files = sorted(out_dir.glob("frame_*.jpg"))
-    candidates: list[dict] = []
-    for i, path in enumerate(files):
-        ts = timestamps[i] if i < len(timestamps) else offset
-        candidates.append({
-            "index": i,
-            "timestamp_seconds": ts,
-            "path": str(path),
-            "reason": "keyframe",
-        })
+    if result.returncode != 0:
+        if files:
+            raise SystemExit(f"ffmpeg keyframe extraction failed after partial output: {diagnostic(result.stderr)}")
+        print(f"[watch] no keyframe candidates; trying normal decoding. {diagnostic(result.stderr, 700)}", file=sys.stderr)
+    candidates = _emitted_frames(files, result.stderr, start_seconds or 0.0, "keyframe")
 
     # Too few keyframes → uniform fallback over the same range.
     if len(candidates) < KEYFRAME_MIN:
@@ -643,7 +643,7 @@ def extract_keyframes(
         meta = get_metadata(video_path)
         full_duration = meta["duration_seconds"]
         eff_start = start_seconds or 0.0
-        eff_end = end_seconds if end_seconds is not None else full_duration
+        eff_end = min(end_seconds, full_duration) if end_seconds is not None else full_duration
         eff_duration = max(0.0, eff_end - eff_start)
         budget = max_frames if max_frames is not None else 100
         fps, _ = auto_fps(eff_duration, max_frames=budget)
@@ -656,12 +656,13 @@ def extract_keyframes(
             start_seconds=start_seconds,
             end_seconds=end_seconds,
         )
+        uniform_count = len(frames_out)
         n_dropped = 0
         if dedup:
             frames_out, n_dropped = dedupe_perceptual(frames_out)
         return frames_out, {
             "engine": "uniform",
-            "candidate_count": len(candidates),
+            "candidate_count": uniform_count,
             "deduped_count": n_dropped,
             "selected_count": len(frames_out),
             "fallback": True,
@@ -683,6 +684,7 @@ def extract_keyframes(
 
 
 if __name__ == "__main__":
+    configure_stdio()
     if len(sys.argv) < 3:
         print(
             "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
