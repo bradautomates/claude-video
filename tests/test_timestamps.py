@@ -26,6 +26,27 @@ def test_parse_timestamps_rejects_garbage():
         frames.parse_timestamps("4:bad")
 
 
+def test_parse_time_all_formats():
+    assert frames.parse_time(None) is None
+    assert frames.parse_time("") is None
+    assert frames.parse_time(90) == 90.0
+    assert frames.parse_time("90") == 90.0
+    assert frames.parse_time("1:05") == 65.0
+    assert frames.parse_time("1:12:00") == 4320.0  # README's own --start example
+
+
+def test_parse_time_rejects_garbage():
+    with pytest.raises(SystemExit):
+        frames.parse_time("not-a-time")
+
+
+def test_format_time_round_trips_with_parse_time():
+    assert frames.format_time(0) == "00:00"
+    assert frames.format_time(65) == "01:05"
+    assert frames.format_time(4320) == "1:12:00"
+    assert frames.format_time(frames.parse_time("1:02:03")) == "1:02:03"
+
+
 def test_merge_frames_sorts_and_reindexes():
     primary = [
         {"index": 0, "timestamp_seconds": 1.0, "path": "a", "reason": "scene-change"},
