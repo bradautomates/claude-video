@@ -1,14 +1,13 @@
 ---
 name: watch
-version: "0.4.0"
 description: Watch a video from a URL or local path and answer questions about its content. Use when the user shares a video and asks what is in it, wants it summarised, or asks about something shown or said on screen.
-argument-hint: "<video-url-or-path> [question]"
-allowed-tools: Bash, Read, AskUserQuestion
-homepage: https://github.com/frinsen/claude-video
-repository: https://github.com/frinsen/claude-video
-author: frinsen (fork of bradautomates/claude-video by Bradley Bonanno, MIT)
 license: MIT
-user-invocable: true
+allowed-tools: Bash Read AskUserQuestion
+metadata:
+  version: "0.4.0"
+  author: "frinsen (fork of bradautomates/claude-video by Bradley Bonanno, MIT)"
+  homepage: "https://github.com/frinsen/claude-video"
+  repository: "https://github.com/frinsen/claude-video"
 ---
 
 # /watch

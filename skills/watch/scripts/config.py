@@ -233,14 +233,26 @@ def ytdlp_cmd() -> list[str]:
 
 
 def skill_version() -> str:
-    """Version from SKILL.md's frontmatter (the single place it is bumped)."""
+    """Version from SKILL.md's frontmatter ``metadata.version`` (the single place it is bumped).
+
+    The Agent Skills spec allows only name/description/license/compatibility/
+    metadata/allowed-tools at the top level — claude.ai's skill upload rejects
+    anything else — so the version lives nested under ``metadata:``. Only the
+    frontmatter block is scanned, so a ``version:`` line in the body can't match.
+    A top-level ``version:`` (pre-0.4.1 layout) is still accepted.
+    """
     skill_md = Path(__file__).resolve().parent.parent / "SKILL.md"
     try:
-        for line in skill_md.read_text(encoding="utf-8").splitlines()[:20]:
-            if line.startswith("version:"):
-                return line.split(":", 1)[1].strip().strip('"\'')
+        lines = skill_md.read_text(encoding="utf-8").splitlines()
     except OSError:
-        pass
+        return "unknown"
+    if not lines or lines[0].strip() != "---":
+        return "unknown"
+    for line in lines[1:]:
+        if line.strip() == "---":
+            break
+        if line.strip().startswith("version:"):
+            return line.split(":", 1)[1].strip().strip('"\'')
     return "unknown"
 
 

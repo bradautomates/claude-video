@@ -20,7 +20,8 @@ Agent Skills package that gives an agent a video input. Installable across Claud
 - The product is the slash-command-invoked skill (`/watch <url-or-path> [question]`), not a CLI. `scripts/watch.py` is implementation. Features must work across every harness the skill installs into, not just Claude Code.
 - **The skill is one self-contained folder: `skills/watch/`.** SKILL.md and `scripts/` are siblings inside it. This is what lets `npx skills add` copy a working skill as a unit — do NOT move SKILL.md or `scripts/` back to the repo root, or non-Claude installers will copy SKILL.md without the scripts.
 - **Path resolution is harness-agnostic.** SKILL.md resolves `SKILL_DIR` as the directory of the SKILL.md the model just Read, then runs `${SKILL_DIR}/scripts/...`. Do NOT reintroduce `${CLAUDE_SKILL_DIR}` (Claude-Code-only) — it is unset on Codex/Cursor/agents and breaks every script call there.
-- **No `commands/` wrapper.** `/watch` is derived from SKILL.md frontmatter (`name: watch` + `user-invocable: true`). A separate command file creates a duplicate slash command.
+- **No `commands/` wrapper.** `/watch` is derived from SKILL.md's `name: watch` — Claude Code makes every skill user-invocable by default (`user-invocable` defaults to `true`), so the key is not set. A separate command file creates a duplicate slash command.
+- **Frontmatter stays inside the [Agent Skills spec](https://agentskills.io/specification):** only `name`, `description`, `license`, `compatibility`, `metadata`, `allowed-tools` at the top level. claude.ai's skill upload rejects anything else; Claude Code tolerates it, so a regression is invisible until someone uploads the bundle. Version, author and links live under `metadata:` as quoted strings; `allowed-tools` is space-separated. `tests/test_packaging.py` enforces this.
 
 ## Install surfaces
 
@@ -45,6 +46,6 @@ bash skills/watch/scripts/build-skill.sh   # → dist/watch.skill
 
 ## Rules
 
-- Keep the version in sync across `skills/watch/SKILL.md` (frontmatter), `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` when cutting a release.
+- Keep the version in sync across `skills/watch/SKILL.md` (frontmatter `metadata.version`), `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` when cutting a release.
 - Releasing: tag `vX.Y.Z` and push the tag; `.github/workflows/release.yml` builds `dist/watch.skill` and attaches it to the GitHub release.
 - Never commit real API keys or `.env` contents; keys live in `~/.config/watch/.env` at runtime (mode `0600` on macOS/Linux; inherited user-profile ACL on Windows).
