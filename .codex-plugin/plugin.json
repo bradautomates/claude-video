@@ -1,6 +1,6 @@
 {
   "name": "watch",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Give an agent video evidence: timestamped frames and native captions, with optional local WhisperX or Groq/OpenAI transcription.",
   "author": {
     "name": "Bradley Bonanno"

@@ -10,9 +10,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_frontmatter_uses_only_agent_skills_keys():
+    # claude.ai uploads reject any other top-level key.
+    text = (ROOT / 'skills/watch/SKILL.md').read_text(encoding='utf-8')
+    frontmatter = text.split('---\n')[1]
+    keys = {line.split(':')[0] for line in frontmatter.splitlines() if line and not line.startswith(' ')}
+    assert keys <= {'name', 'description', 'license', 'allowed-tools', 'metadata', 'compatibility'}
+
+
 def test_release_versions_match_canonical_skill():
     skill = ROOT / 'skills/watch/SKILL.md'
-    version = re.search(r'^version: "([^"]+)"', skill.read_text(encoding='utf-8'), re.M).group(1)
+    version = re.search(r'^  version: "([^"]+)"', skill.read_text(encoding='utf-8'), re.M).group(1)
     for relative in ('.claude-plugin/plugin.json', '.codex-plugin/plugin.json'):
         assert json.loads((ROOT / relative).read_text(encoding='utf-8'))['version'] == version
     assert json.loads((ROOT / '.codex-plugin/plugin.json').read_text(encoding='utf-8'))['skills'] == './skills/'

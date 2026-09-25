@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [0.3.1] — 2026-09-25
+
+### Fixed
+- `SKILL.md` frontmatter uses only Agent Skills keys, so `watch.skill` uploads to Claude (the upload rejected `version`, `argument-hint`, `user-invocable`, and other extra keys). The version moves to `metadata.version`.
+
 ## [0.3.0] — 2026-09-25
 
 ### Added
