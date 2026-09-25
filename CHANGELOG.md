@@ -5,6 +5,7 @@ All notable changes to `/watch` are documented here.
 ## [Unreleased]
 
 ### Fixed
+- **SessionStart hook broke when the plugin path contained a space** (from upstream `93822ce`). `hooks.json` ran `bash ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/check-setup.sh` unquoted, so a root such as `…/Application Support/…` or a username with a space split into two words and bash tried to execute the first half (`No such file or directory`). The path is now quoted. `tests/test_hook.py` runs the real command string from a spaced root, and includes a positive control proving the unquoted form fails there.
 - **JS-runtime preflight had a false negative** (review of upstream #237 by @Verohomie). yt-dlp enables only `deno` by default; a machine with `node`/`bun`/`qjs` but no `deno` passed the check and still lost formats. When `deno` is absent but another supported runtime is on PATH, every yt-dlp call now passes `--js-runtimes <runtime>` so the finding is actually used, and the preflight says which runtime is in use. Wording softened to match yt-dlp's own: a missing runtime degrades (formats missing, lower quality), it does not fail outright.
 - **Docs: `-vsync` was removed in ffmpeg 9.0, not 8.0** (also @Verohomie). Verified against the FFmpeg source: the option is present in `n8.1.2`, gone in `n9.0`; 8.x prints a deprecation notice and works. The probe-based fix was already right for both; the affected population is "ffmpeg 9", which is what Homebrew and winget ship today.
 
