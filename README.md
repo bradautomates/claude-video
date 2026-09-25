@@ -181,7 +181,7 @@ Nothing updates itself unless you tell it to; each install path has its own step
 | **claude.ai web** (`.skill` upload) | Download the new `watch.skill` from the latest release and upload it again in Settings → Capabilities → Skills; the upload replaces the old version. |
 | **Manual clone** | `git -C ~/.claude/skills/watch pull` |
 
-The installed version is in the report footer of every run and in `SKILL.md`'s frontmatter; compare it with the latest release tag.
+The installed version is in the report footer of every run and in `SKILL.md`'s frontmatter (`metadata.version`); compare it with the latest release tag.
 
 ## First run
 
