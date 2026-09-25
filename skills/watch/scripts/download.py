@@ -15,6 +15,9 @@ that means hundreds of auto-translated tracks and minutes of stalling.
 from __future__ import annotations
 
 import json
+import os
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -301,14 +304,85 @@ def _yt_dlp_version() -> str | None:
         return None
 
 
+# Directory segments that identify the package manager owning an install. Matched
+# against the RESOLVED path as whole segments: pipx and `uv tool` publish a
+# symlink in ~/.local/bin, so the PATH entry alone names neither, and a bare
+# substring test would also match an unrelated folder called "pipx-notes".
+_OWNER_SEGMENTS = (
+    (("cellar",), "brew upgrade yt-dlp"),
+    (("homebrew",), "brew upgrade yt-dlp"),
+    (("linuxbrew",), "brew upgrade yt-dlp"),
+    (("pipx", "venvs"), "pipx upgrade yt-dlp"),
+    (("uv", "tools"), "uv tool upgrade yt-dlp"),
+    (("winget",), "winget upgrade yt-dlp.yt-dlp"),
+    (("scoop",), "scoop update yt-dlp"),
+    (("chocolatey",), "choco upgrade yt-dlp"),
+)
+_UNKNOWN_OWNER = (
+    "update yt-dlp with whatever installed it (brew / pipx / uv / pip / winget), "
+    "or re-download the release binary"
+)
+
+
+def _classify_ytdlp(real_path: str, head: bytes) -> str:
+    """Update command for the yt-dlp at ``real_path`` (symlinks already resolved).
+
+    ``head`` is the first bytes of the file. Pure, so every install layout can be
+    tested without building it on disk.
+
+    Order matters. A package manager's directory wins over everything, because
+    its copy must be updated through it. `yt-dlp -U` only works on yt-dlp's own
+    release binaries: its source refuses package-manager installs ("Use that to
+    update"), so suggesting it to a pipx user names a command that cannot work.
+    """
+    segments = [seg.lower() for seg in re.split(r"[\\/]+", real_path) if seg]
+    for needle, command in _OWNER_SEGMENTS:
+        n = len(needle)
+        if any(tuple(segments[i:i + n]) == needle for i in range(len(segments) - n + 1)):
+            return command
+
+    if head.startswith(b"#!"):
+        if b"PK\x03\x04" in head:
+            # The Unix release binary is a zipapp: a shebang, then a zip archive.
+            return f"{shlex.quote(real_path)} -U"
+        shebang = head[2:].split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+        interpreter = shebang.split()[0] if shebang else ""
+        if real_path.startswith(("/usr/bin/", "/bin/")):
+            return (
+                "your system package manager (apt / dnf / pacman) — distro packages lag "
+                "behind, so `pipx install yt-dlp` is the reliable fix"
+            )
+        if "python" in os.path.basename(interpreter).lower():
+            # pip wrote this script, so the interpreter in its shebang owns it; running
+            # that interpreter's pip updates the right environment, not a random one.
+            return f"{shlex.quote(interpreter)} -m pip install -U 'yt-dlp[default]'"
+        return _UNKNOWN_OWNER
+
+    # ELF (Linux), PE "MZ" (Windows), Mach-O 64-bit and universal (macOS).
+    if head[:4] == b"\x7fELF" or head[:2] == b"MZ" or head[:4] in (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe"):
+        # A compiled release binary (yt-dlp.exe, yt-dlp_macos, yt-dlp_linux) self-updates.
+        return f"{shlex.quote(real_path)} -U"
+    return _UNKNOWN_OWNER
+
+
 def _update_hint() -> str:
-    """Upgrade command matching how yt-dlp appears to be installed."""
-    path = shutil.which("yt-dlp") or ""
-    if "pipx" in path:
-        return "pipx upgrade yt-dlp"
-    if "Cellar" in path or "homebrew" in path.lower():
-        return "brew upgrade yt-dlp"
-    return "yt-dlp -U  (or: pip install -U yt-dlp)"
+    """Update command for the package manager that owns the yt-dlp we actually run.
+
+    Follows ``ytdlp_cmd()`` (so ``WATCH_YTDLP`` is honoured — probing a different
+    copy than the one executed would name the wrong package manager) and
+    resolves symlinks before classifying.
+    """
+    cmd = ytdlp_cmd()
+    if len(cmd) >= 3 and cmd[1] == "-m" and cmd[2] in ("yt_dlp", "yt-dlp"):
+        return f"{shlex.quote(cmd[0])} -m pip install -U 'yt-dlp[default]'"
+    located = shutil.which(cmd[0]) or cmd[0]
+    try:
+        real = os.path.realpath(located)
+        with open(real, "rb") as fh:
+            head = fh.read(4096)
+    except OSError:
+        return _UNKNOWN_OWNER
+    return _classify_ytdlp(real, head)
 
 
 def _download_failure_message(
@@ -325,7 +399,9 @@ def _download_failure_message(
     about what those mean.
     """
     base = f"yt-dlp did not produce a video file in {out_dir} (exit {returncode})"
-    if "403" not in output and "Forbidden" not in output:
+    # Whole word: a bare substring test fires on any "403" in the log — a video
+    # id, a byte count — and would blame yt-dlp for an unrelated failure.
+    if not re.search(r"\b403\b", output) and "forbidden" not in output.lower():
         return base
     version = _yt_dlp_version()
     version_note = f" (yt-dlp {version})" if version else ""
@@ -335,7 +411,7 @@ def _download_failure_message(
         "fallen behind YouTube's latest signature/client rotation, or one built without "
         "browser impersonation (curl_cffi) / no JavaScript runtime for the player "
         "challenge -- not a video that's actually blocked or region-locked.",
-        f"Update and retry: {_update_hint()}",
+        f"Update and retry once, using the package manager that installed yt-dlp: {_update_hint()}",
         "If it persists: pipx install --force 'yt-dlp[default,curl-cffi]' and install deno "
         "(brew install deno / winget install DenoLand.Deno). Run setup.py --check to see "
         "which of these applies.",
