@@ -27,4 +27,4 @@ Pull requests are welcome — this fork exists because a queue of good ones had 
 
 ## Releasing (maintainers)
 
-Bump `version` in `skills/watch/SKILL.md`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` — Claude Code keys plugin updates on that string — move *Unreleased* to a dated section, tag `vX.Y.Z`. The release workflow attaches `watch.skill`.
+Bump `metadata.version` in `skills/watch/SKILL.md`, `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` — Claude Code keys plugin updates on that string — move *Unreleased* to a dated section, tag `vX.Y.Z`. The release workflow attaches `watch.skill`.
