@@ -16,6 +16,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from config import WHISPER_BACKENDS, force_utf8_output, frame_cap, get_config, skill_version  # noqa: E402
+from boundaries import POST_FADE_OFFSET, detect_boundaries, format_timeline, post_fade_timestamps  # noqa: E402
 from download import download, fetch_captions, is_url  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
@@ -77,6 +78,20 @@ def main() -> int:
         action="store_true",
         help="Ignore native captions and transcribe with Whisper anyway. Use when the "
              "source's auto-captions are machine-translated or otherwise poor.",
+    )
+    ap.add_argument(
+        "--boundaries",
+        dest="boundaries",
+        action="store_true",
+        default=None,
+        help="Force the structural boundaries pass (fades, freezes, silence) on. Default: on for "
+             "balanced/token-burner, off for efficient (which sells speed) and transcript (no video).",
+    )
+    ap.add_argument(
+        "--no-boundaries",
+        dest="boundaries",
+        action="store_false",
+        help="Skip the boundaries pass. Saves one low-resolution decode.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -228,6 +243,8 @@ def main() -> int:
     frame_meta: dict = {"engine": "none", "candidate_count": 0, "selected_count": 0, "fallback": False}
     cue_frames: list[dict] = []
     cue_meta: dict = {}
+    fade_frames: list[dict] = []
+    boundaries: dict = {}
 
     # Transcript cues are pinned: extracted first and counted against the cap so
     # the detail engine never evicts the moments the user explicitly asked for.
@@ -248,7 +265,50 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    detail_budget = max_frames if max_frames is None else max(0, max_frames - len(cue_frames))
+    # Structural boundaries. blackdetect/freezedetect/silencedetect report
+    # *intervals*, which is how they see the two things a per-frame scene score
+    # structurally cannot: a fade (change spread too thin to cross any
+    # threshold) and a held card (no change at all). Default on where fidelity
+    # is the point, off for `efficient`, whose whole promise is speed.
+    want_boundaries = args.boundaries
+    if want_boundaries is None:
+        want_boundaries = detail in ("balanced", "token-burner")
+    if want_boundaries and video_path and detail != "transcript" and meta.get("width"):
+        print("[watch] scanning for fades / freezes / silence…", file=sys.stderr)
+        boundaries = detect_boundaries(
+            video_path,
+            start_seconds=start_sec,
+            end_seconds=end_sec,
+            has_audio=bool(meta.get("has_audio")),
+        )
+        if boundaries.get("error"):
+            print(f"[watch] boundaries pass failed (continuing): {boundaries['error']}", file=sys.stderr)
+
+        # Pin the frame just after each fade-up — the incoming shot, where title
+        # and loader cards live. Capped at a third of the budget so a
+        # fade-heavy edit cannot crowd out the detail engine entirely.
+        pin_cap = None if max_frames is None else max(1, (max_frames - len(cue_frames)) // 3)
+        fade_points = post_fade_timestamps(boundaries, limit=pin_cap, duration=effective_end)
+        if fade_points:
+            fade_frames, _ = extract_at_timestamps(
+                video_path,
+                work / "frames",
+                fade_points,
+                resolution=args.resolution,
+                max_frames=pin_cap,
+                start_seconds=start_sec,
+                end_seconds=end_sec,
+                reason="post-fade",
+                prefix="fade",
+            )
+            print(
+                f"[watch] pinned {len(fade_frames)} post-fade frame(s) "
+                f"({POST_FADE_OFFSET:g}s after a fade-up)",
+                file=sys.stderr,
+            )
+
+    pinned_count = len(cue_frames) + len(fade_frames)
+    detail_budget = max_frames if max_frames is None else max(0, max_frames - pinned_count)
     # An audio-only file (a TikTok slideshow's soundtrack, a podcast feed, an
     # audio-only fetch that wasn't meant to be) has no video stream. Handing it
     # to ffmpeg's frame filters just crashes ("Input #0, mp3"), so skip frames
@@ -287,8 +347,8 @@ def main() -> int:
                 dedup=not args.no_dedup,
             )
 
-    if cue_frames:
-        frames = merge_frames(frames, cue_frames)
+    if cue_frames or fade_frames:
+        frames = merge_frames(frames, cue_frames + fade_frames)
 
     if not transcript_segments and dl.get("subtitle_path") and not args.force_whisper:
         try:
@@ -374,16 +434,34 @@ def main() -> int:
                 f"too few {detector} candidates" if short is None
                 else f"only {short} {detector} candidate{'' if short == 1 else 's'}"
             )
-            if frame_meta.get("fallback_reason") == "coverage":
-                fallback = f" after {short} {detector} candidates bunched into part of the range"
-            else:
-                fallback = f" after {count}"
+            fallback = f" after {count}"
+        elif frame_meta.get("hybrid"):
+            # Not a fallback: the cuts were kept AND filled around.
+            fallback = (
+                f" — {frame_meta.get('pinned_count', 0)} scene cuts pinned, "
+                f"{frame_meta.get('fill_count', 0)} uniform fill, because the cuts "
+                "bunched into part of the range"
+            )
         deduped = frame_meta.get("deduped_count", 0)
         dedup_note = f", {deduped} near-duplicate{'s' if deduped != 1 else ''} dropped" if deduped else ""
         print(
             f"- **Frames:** {detail_count} selected from {frame_meta.get('candidate_count', detail_count)} "
             f"candidates ({engine}{fallback}{dedup_note}, {range_mode} range, budget {target}, cap {cap_label})"
         )
+        # A rejected detector still measured something real. When its frames were
+        # discarded (the sparse fallback), where the cuts WERE is the only trace
+        # left of the edit — so print the times rather than let them die with the
+        # JPEGs. "No frame there" is not "nothing happened there".
+        cut_times = frame_meta.get("scene_times") or []
+        if cut_times and frame_meta.get("fallback"):
+            shown = ", ".join(format_time(t) for t in cut_times[:30])
+            more = f" …and {len(cut_times) - 30} more" if len(cut_times) > 30 else ""
+            detector = frame_meta.get("fallback_from", "scene")
+            print(
+                f"- **Detected {detector} cuts (not sampled):** {shown}{more}. "
+                f"These are real cuts the fallback did not keep frames for — treat them as "
+                f"boundary evidence, not as moments you have seen."
+            )
     elif not cue_frames:
         print("- **Frames:** skipped (transcript detail)")
     if cue_frames:
@@ -392,6 +470,11 @@ def main() -> int:
         print(
             f"- **Cue frames:** {len(cue_frames)} at transcript-flagged timestamps "
             f"(transcript-cue{drop_note})"
+        )
+    if fade_frames:
+        print(
+            f"- **Post-fade frames:** {len(fade_frames)} pinned {POST_FADE_OFFSET:g}s after a "
+            f"fade-up out of black (post-fade)"
         )
     if frames:
         print(f"- **Frame size:** max {args.resolution}px wide, max 1998px tall")
@@ -439,6 +522,20 @@ def main() -> int:
             "re-run with `--start HH:MM:SS --end HH:MM:SS` to zoom into a section, or use "
             "`--detail token-burner` to keep every scene-change frame across the whole video."
         )
+
+    timeline = format_timeline(boundaries) if boundaries and not boundaries.get("error") else []
+    if timeline:
+        print()
+        print("## Timeline")
+        print()
+        print(
+            "Structural boundaries measured directly (to ~0.1s), not inferred from the sampled "
+            "frames. Use these for *when* things happen — they are far more precise than the "
+            "frame interval, and they cover moments no frame was taken at."
+        )
+        print()
+        for line in timeline:
+            print(line)
 
     print()
     print("## Frames")

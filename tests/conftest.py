@@ -104,6 +104,74 @@ def build_static_clip(
     ])
 
 
+def build_clustered_clip(
+    path: Path,
+    n_cards: float = 12,
+    card: float = 0.7,
+    tail: float = 25.0,
+    size: str = "320x180",
+    fps: int = 15,
+    with_audio: bool = True,
+) -> None:
+    """The shape a scene detector gets wrong: hard cuts bunched at the head,
+    then a long body whose only boundary is a *fade* through black.
+
+    This is the SBC-2025 booth loop in miniature — card, card, card, then
+    minutes of gameplay that fades between segments. The cards clear
+    SCENE_MIN_FRAMES but fail the coverage check, so it is the exact input that
+    used to make the uniform fallback delete every cut; and the fade in the
+    middle is invisible to `select=gt(scene,…)` but plain to `blackdetect`.
+    """
+    n = int(n_cards)
+    # Cards must be BRIGHT, not merely non-black: blackdetect's pix_th=0.10
+    # counts any pixel under 10% luma, and navy (0,0,128) is ~5.7% — so a navy
+    # card reads as a fade and the fixture would assert its own confusion.
+    card_colors = ["red", "green", "white", "yellow", "cyan", "magenta",
+                   "orange", "gray", "lime", "aqua", "pink", "silver"]
+    inputs: list[str] = []
+    for i in range(n):
+        inputs += ["-f", "lavfi", "-t", str(card), "-i", f"color=c={card_colors[i % len(card_colors)]}:s={size}:r={fps}"]
+    half = tail / 2
+    inputs += ["-f", "lavfi", "-t", str(half), "-i", f"testsrc=s={size}:r={fps}"]
+    inputs += ["-f", "lavfi", "-t", "1.0", "-i", f"color=c=black:s={size}:r={fps}"]
+    inputs += ["-f", "lavfi", "-t", str(half), "-i", f"smptebars=s={size}:r={fps}"]
+    total = n * card + tail + 1.0
+    if with_audio:
+        inputs += ["-f", "lavfi", "-t", str(total), "-i", f"sine=frequency=440:duration={total}"]
+
+    a, blk, b = n, n + 1, n + 2
+    cards = "".join(f"[{i}:v]" for i in range(n))
+    filt = (
+        f"[{a}:v]fade=t=out:st={half - 0.7:.2f}:d=0.7[fa];"
+        f"[{b}:v]fade=t=in:st=0:d=0.7[fb];"
+        f"{cards}[fa][{blk}:v][fb]concat=n={n + 3}:v=1:a=0[out]"
+    )
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        *inputs, "-filter_complex", filt, "-map", "[out]",
+    ]
+    if with_audio:
+        cmd += ["-map", f"{n + 3}:a", "-shortest"]
+    cmd += ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", str(path)]
+    _run(cmd)
+
+
+@pytest.fixture(scope="session")
+def clustered_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Cuts bunched at the head + a mid-clip fade. Triggers the hybrid engine."""
+    path = tmp_path_factory.mktemp("clips") / "clustered.mp4"
+    build_clustered_clip(path)
+    return path
+
+
+@pytest.fixture(scope="session")
+def clustered_clip_silent(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Same shape with no audio stream — silencedetect must be skipped, not fail."""
+    path = tmp_path_factory.mktemp("clips") / "clustered_silent.mp4"
+    build_clustered_clip(path, with_audio=False)
+    return path
+
+
 @pytest.fixture(scope="session")
 def cut_clip(tmp_path_factory: pytest.TempPathFactory) -> Path:
     path = tmp_path_factory.mktemp("clips") / "cuts.mp4"

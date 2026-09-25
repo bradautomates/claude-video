@@ -148,6 +148,7 @@ Optional flags:
 - `--out-dir DIR` — keep working files somewhere specific (default: an auto-generated tmp dir)
 - `--whisper groq|openai` — force a specific Whisper backend (default: prefer Groq if both keys exist)
 - `--no-whisper` — disable the Whisper fallback entirely (frames-only if no captions)
+- `--boundaries` / `--no-boundaries` — the structural boundaries pass (fades, freezes, silence). On by default for `balanced` / `token-burner`, off for `efficient` (whose promise is speed) and `transcript` (no video). See "Structural boundaries" below.
 - `--no-dedup` — keep near-duplicate frames. By default a frame-delta pass drops frames that are visually near-identical to the previous kept one (held slides, static screen recordings, paused video) so the frame budget goes to distinct content; the report's **Frames** line notes how many were dropped. Pass this only if the user needs every sampled frame (e.g. judging subtle frame-to-frame motion).
 
 ### Focusing on a section (higher frame rate)
@@ -181,9 +182,12 @@ python3 "${SKILL_DIR}/scripts/watch.py" "$URL" --start 1:12:00
 
 **Step 3 — Read every frame path the script lists.** The Read tool renders JPEGs directly as images for you. Read all frames in a single message (parallel tool calls) so you see them together. The frames are in chronological order with a `t=MM:SS` timestamp so you can align them to the transcript.
 
-**Step 4 — answer the user.** You now have two streams of evidence:
+**Step 4 — answer the user.** You now have three streams of evidence:
 - **Frames** — what's on screen at each timestamp
 - **Transcript** — what's said at each timestamp. The report's header shows the source (`captions` = yt-dlp pulled native subs; `whisper (groq)` or `whisper (openai)` = transcribed by API).
+- **Timeline** (when present) — *when* the structure changes, measured to ~0.1s: fades to black, held/frozen pictures, stretches of silence. This is far more precise than the frame interval, so prefer it for any timing claim.
+
+**Timing claims: state the uncertainty, and never read absence as absence.** Your frames are samples. The gap between them is your timing error, so a boundary you know only from frames is `±` half that gap — say so rather than implying a precision you do not have. Use the **Timeline** and the **Detected scene cuts** line for exact times instead wherever they cover the moment. And when something is shorter than the sampling interval — a 3-second title card between 7-second samples — the honest answer is **"not observed"**, never "absent": you cannot prove a gap empty by not having looked into it.
 
 **Proper nouns in a transcript are unverified.** Captions and Whisper both transcribe phonetically, so names come back wrong or invented — "Diogo Almeida" as "Dooo Almeida", "Vercel" as "Verscell", ChatGPT as "chatbt". Frames are the corrective: title cards, slides and on-screen UI usually spell a name correctly, so check it against a frame before stating it. Where no frame confirms it — including every `transcript`-detail run, which has no frames at all — give the name as-heard and say it is from the transcript and unverified. This applies to people, companies, products, model names, URLs, prices and figures: anything the user might repeat, quote or act on.
 
@@ -204,6 +208,24 @@ At `transcript` detail, captions are enough to return a report without downloadi
 At `efficient` detail, the script downloads the video and extracts **keyframes only** (`ffmpeg -skip_frame nokey`) — a near-instant pass that lands frames on scene cuts. If a clip has fewer than 4 keyframes it falls back to uniform sampling.
 
 At `balanced` / `token-burner` detail, the script extracts **scene-aware** frames: ffmpeg scene-change selection first, falling back to uniform sampling only when the video is effectively static. `balanced` caps at 100 frames; `token-burner` is uncapped. Frame report lines include both timestamp and selection reason. Extracted images are clamped to a maximum 1998px height for Claude Read compatibility.
+
+Three outcomes are possible, and the **Frames** line names which one you got:
+
+- `scene` — the cuts spanned the range; they are your frames.
+- `scene+uniform` — the cuts were real but **bunched into part of the range** (a montage cuts hard between its cards and only *fades* between its long segments). The cuts are kept and pinned, uniform sampling fills the rest. Reported as "*N* scene cuts pinned, *M* uniform fill".
+- `uniform` — too few cuts to be worth keeping; pure uniform sampling. The report then prints a **Detected scene cuts (not sampled)** line giving the times anyway: those are real boundaries with no frame on them. Treat them as evidence of *when* something changed, never as moments you have seen.
+
+## Structural boundaries
+
+A scene score measures the *rate* of pixel change per frame, which makes it blind to two things by construction: a **fade** spreads its change over 20-30 frames so no frame crosses the threshold, and a **held card** changes nothing at all. Meanwhile a spinning reel or a panning camera clears the threshold constantly. This is why a montage's real section breaks are exactly what scene detection misses.
+
+So `balanced` / `token-burner` also run one cheap low-resolution pass with ffmpeg's *interval* detectors — `blackdetect`, `freezedetect`, `silencedetect` — and the report gains a **## Timeline** section:
+
+- **Fades / cuts to black** — section boundaries, to ~0.1s. A frame is automatically pinned 0.5s after each fade-up (`reason=post-fade`): that is the incoming shot, where title and loader cards live.
+- **Held / frozen picture** — title cards, paused playback, a slide left up.
+- **Silence** — stretches below the speech floor. A transcript with content over a silent stretch is suspect. "No audio stream" and "no silence detected" are reported as different things, because they are.
+
+Use the Timeline for every timing question; use frames for what is actually on screen. `--no-boundaries` skips the pass, `--boundaries` forces it on for `efficient`.
 
 ## Transcript-cue frames
 
@@ -264,6 +286,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 **What this skill does:**
 - Runs `yt-dlp` locally to download the video and pull native captions when the source supports them (public data; the request goes directly to whatever host the URL points at)
 - Runs `ffmpeg` / `ffprobe` locally to extract frames as JPEGs and, when Whisper is needed, a mono 16 kHz audio clip
+- Runs one extra local `ffmpeg` analysis pass (`blackdetect` / `freezedetect` / `silencedetect`) that writes no files and produces only timings
 - Sends the extracted audio clip to Groq's Whisper API (`api.groq.com/openai/v1/audio/transcriptions`) when `GROQ_API_KEY` is set (preferred — cheaper, faster)
 - Sends the extracted audio clip to OpenAI's audio transcription API (`api.openai.com/v1/audio/transcriptions`) when `OPENAI_API_KEY` is set and Groq is not, or when `--whisper openai` is forced
 - Writes the downloaded video, frames, audio, and an intermediate transcript to a working directory under the system temp dir (or `--out-dir` if specified) so Claude can `Read` them
@@ -276,6 +299,6 @@ If you already watched a video this session and the user asks a follow-up, do **
 - Does not log, cache, or write API keys to stdout, stderr, or output files
 - Does not persist anything outside the working directory and `~/.config/watch/.env` — clean up the working directory when you're done (Step 5)
 
-**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
+**Bundled scripts:** `scripts/watch.py` (entry point), `scripts/download.py` (yt-dlp wrapper), `scripts/frames.py` (ffmpeg frame extraction), `scripts/boundaries.py` (fade / freeze / silence detection), `scripts/transcribe.py` (caption selection + Whisper orchestration), `scripts/whisper.py` (Groq / OpenAI clients), `scripts/setup.py` (preflight + installer)
 
 Review scripts before first use to verify behavior.
