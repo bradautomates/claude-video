@@ -14,6 +14,18 @@ import tempfile
 from pathlib import Path
 
 
+# Windows consoles default to cp1252, which cannot encode characters that
+# routinely appear in yt-dlp metadata (emoji in uploader names, non-Latin
+# titles, etc.). Force UTF-8 on stdout/stderr so print() of `info["uploader"]`
+# or `info["title"]` doesn't crash with UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    reconfigure = getattr(_stream, "reconfigure", None)
+    if reconfigure is not None:
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
