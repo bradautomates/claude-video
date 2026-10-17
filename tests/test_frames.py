@@ -140,3 +140,19 @@ def test_single_frame_cap_keeps_first_real_frame(static_clip, tmp_path):
 def test_uniform_candidate_count_includes_deduplicated_frames(static_clip, tmp_path):
     out, meta = frames.extract_scene_or_uniform(str(static_clip), tmp_path / 'f', fps=2, target_frames=6)
     assert meta['candidate_count'] == len(out) + meta['deduped_count']
+
+
+@pytest.mark.parametrize("engine", ["keyframe", "scene_or_uniform"])
+@pytest.mark.parametrize("clip", ["cut_clip", "static_clip"])
+def test_percent_in_output_dir_is_literal(engine, clip, tmp_path, request):
+    # A folder named after a video like "Get Ahead of 95% in 11 Minutes" must not be
+    # read as part of ffmpeg's frame_%04d.jpg sequence pattern.
+    out_dir = tmp_path / "Ahead of 95% in 11 Minutes" / "f"
+    source = str(request.getfixturevalue(clip))
+    if engine == "keyframe":
+        out, _ = frames.extract_keyframes(source, out_dir, max_frames=5)
+    else:
+        out, _ = frames.extract_scene_or_uniform(source, out_dir, fps=2.0, target_frames=5, max_frames=5)
+    files = sorted(out_dir.glob("frame_*.jpg"))
+    assert out and len(files) == len(out)
+    assert not (out_dir / "frame_%04d.jpg").exists()

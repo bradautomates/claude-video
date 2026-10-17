@@ -22,6 +22,12 @@ from runtime import configure_stdio, run_text, diagnostic
 
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
+
+
+def _frame_pattern(out_dir: Path) -> str:
+    """ffmpeg's image2 muxer treats every '%' in the path as a pattern token, so a
+    literal '%' in the directory (e.g. a video titled "95%") must be '%%'."""
+    return str(out_dir.resolve()).replace("%", "%%") + "/frame_%04d.jpg"
 # Keep scene-detection results once we have at least this many distinct shots.
 # Below this the video is effectively static (screen recording, talking head),
 # so we fall back to uniform sampling. Matching the reference fork's behaviour,
@@ -218,7 +224,7 @@ def extract(
         "ffmpeg", "-hide_banner", "-loglevel", "info", "-y",
         "-ss", f"{start:.6f}", "-to", f"{end:.6f}", "-i", str(Path(video_path).resolve()),
         "-vf", vf, *sync_args(), "-frames:v", str(max_frames), "-q:v", "4",
-        str(out_dir / "frame_%04d.jpg"),
+        _frame_pattern(out_dir),
     ])
     if result.returncode != 0:
         raise SystemExit(f"ffmpeg frame extraction failed: {diagnostic(result.stderr)}")
@@ -252,7 +258,7 @@ def extract_scene_candidates(
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
 
-    output_pattern = str(out_dir / "frame_%04d.jpg")
+    output_pattern = _frame_pattern(out_dir)
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
@@ -606,7 +612,7 @@ def extract_keyframes(
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
 
-    output_pattern = str(out_dir / "frame_%04d.jpg")
+    output_pattern = _frame_pattern(out_dir)
     cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
