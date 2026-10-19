@@ -115,8 +115,16 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
         if keys:
             key = keys[0]
             # Auto mode must prefer original ASR to translated/dubbed metadata.
+            # With several originals (e.g. ar-orig and en-orig), take the one matching the
+            # metadata language, else English-first; never just the alphabetically first.
             if kind == 'automatic' and language == 'auto' and originals:
-                key = originals[0]
+                preferred = [k for k in originals if matches(k)] if target else []
+                if preferred:
+                    key = min(preferred, key=english_first)
+                elif len(originals) == 1:
+                    key = originals[0]
+                elif not target:
+                    key = min(originals, key=english_first)
             base = key.removesuffix('-orig')
             provenance = 'original' if original and base.split('-')[0] == original.split('-')[0] else 'unknown'
             if language != 'auto' and original and base.split('-')[0] != original.split('-')[0]:
