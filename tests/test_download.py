@@ -155,3 +155,15 @@ def test_actual_ytdlp_exact_track_with_inherited_all(monkeypatch, tmp_path, stat
 def test_explicit_regional_language_is_not_silently_replaced():
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en-GB') is None
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en')['key'] == 'en-US'
+
+
+def test_multiple_originals_follow_metadata_language():
+    # Seen on youtu.be/yf2OwchM9nw: an en-US video whose automatic captions list both
+    # ar-orig and en-orig. Alphabetical order must not pick the Arabic track.
+    info = {'extractor_key': 'Youtube', 'language': 'en-US',
+            'automatic_captions': _tracks('ar', 'ar-orig', 'en', 'en-orig', 'fr')}
+    assert download.select_caption(info)['key'] == 'en-orig'
+    info['language'] = None
+    assert download.select_caption(info)['key'] == 'en-orig'  # unknown language: English first
+    info['language'] = 'ar'
+    assert download.select_caption(info)['key'] == 'ar-orig'
