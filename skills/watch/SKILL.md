@@ -65,9 +65,10 @@ If the detail question is skipped, retain `balanced`.
 Then ask: **For videos without captions, how should watch transcribe?** Present:
 
 1. `whisperx` (recommended): local transcription, no API key; audio stays on the machine. One-time download of about 1.5 GB. Requires 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU. Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
-2. `groq`: fast cloud transcription, needs a Groq key.
-3. `openai`: cloud transcription, needs an OpenAI key.
-4. `none`: captions only; no speech fallback.
+2. `apple` (macOS 26+ only): on-device Apple SpeechAnalyzer; no package download, audio stays on the machine. Locale follows the system; `WATCH_APPLE_LOCALE=hi-IN` (for example) overrides.
+3. `groq`: fast cloud transcription, needs a Groq key.
+4. `openai`: cloud transcription, needs an OpenAI key.
+5. `none`: captions only; no speech fallback.
 
 Use an existing explicit backend choice without asking again. Do not treat silence as permission to install local models or upload audio; the no-key/no-install path remains available.
 
@@ -114,7 +115,7 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--resolution W` | Frame width, default 512; raise to 1024 for text when needed |
 | `--fps F` | Positive uniform rate override, at most 2 fps and reduced to fit the remaining cap |
 | `--no-dedup` | Preserve near-identical selected frames |
-| `--whisper groq|openai|whisperx` | Select this run's fallback; captions still come first |
+| `--whisper groq|openai|whisperx|apple` | Select this run's fallback; captions still come first |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |

@@ -14,6 +14,7 @@ import io
 import json
 import math
 import mimetypes
+import os
 import shutil
 import ssl
 import sys
@@ -362,6 +363,18 @@ def transcribe_video(
         from local_whisperx import transcribe_audio
         segments = transcribe_audio(extract_audio(video_path, audio_out))
         return segments, "whisperx"
+    if backend == "apple":
+        script = Path(__file__).resolve().parent / "apple_speech.swift"
+        locale = [os.environ["WATCH_APPLE_LOCALE"]] if os.environ.get("WATCH_APPLE_LOCALE") else []
+        print("[watch] on-device Apple Speech transcription…", file=sys.stderr)
+        result = run_text(["swift", str(script), str(extract_audio(video_path, audio_out)), *locale])
+        if result.returncode != 0:
+            raise SystemExit(f"Apple Speech failed: {result.stderr.strip()[-400:]}")
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise SystemExit("Apple Speech returned non-JSON output") from None
+        return _segments_from_response(data), f"apple ({data.get('language', '?')})"
     if backend not in (None, "groq", "openai"):
         raise SystemExit("Unknown transcription backend.")
     if backend is None or api_key is None:
@@ -416,7 +429,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe local media with the selected Whisper backend.")
     parser.add_argument("video")
     parser.add_argument("audio_out", nargs="?", default="audio.mp3", type=Path)
-    parser.add_argument("--backend", choices=["groq", "openai", "whisperx"])
+    parser.add_argument("--backend", choices=["groq", "openai", "whisperx", "apple"])
     args = parser.parse_args()
     try:
         segments, backend = transcribe_video(args.video, Path(args.audio_out), backend=args.backend)
