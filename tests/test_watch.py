@@ -85,6 +85,22 @@ def test_no_dedup_preserves_static_frames(static_clip: Path):
     assert _frame_lines(out) > 1
 
 
+def test_every_frame_samples_native_rate_no_dedup(static_clip: Path):
+    # static_clip is 3s at 10fps. Auto-mode would clamp to ~6 frames (2fps) and
+    # dedup the identical blue frames to one; --every-frame must sample every
+    # native frame (~30) with dedup off and report the every-frame engine.
+    out = _run(static_clip, "--every-frame", "--max-frames", "120")
+    assert "**Detail:** every-frame (high-density)" in out
+    assert "(every-frame," in out
+    assert "near-duplicate" not in out  # dedup bypassed
+    assert _frame_lines(out) >= 20  # native ~30, not the 2fps-clamped ~6
+
+
+def test_every_frame_respects_max_frames_cap(static_clip: Path):
+    out = _run(static_clip, "--every-frame", "--max-frames", "8")
+    assert _frame_lines(out) == 8
+
+
 import pytest
 import watch
 from transcribe import Segments
@@ -284,3 +300,31 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+def test_every_frame_errors_when_native_fps_unknown(monkeypatch, static_clip, tmp_path):
+    """Issue 2 regression: --every-frame must fail loudly (and ask for --fps)
+    instead of silently dropping to the 2 fps auto-mode ceiling and still
+    labeling the run high-density."""
+    meta = {'duration_seconds': 3.0, 'width': 320, 'height': 240, 'codec': 'h264',
+            'size_bytes': 1000, 'fps': 0.0, 'has_audio': False, 'has_video': True}
+    monkeypatch.setattr(watch, 'get_metadata', lambda *a, **kw: meta)
+    monkeypatch.setattr(sys, 'argv',
+                        ['watch', str(static_clip), '--no-whisper', '--every-frame',
+                         '--out-dir', str(tmp_path / 'a')])
+    with pytest.raises(SystemExit) as exc:
+        watch.main()
+    assert 'native frame rate' in str(exc.value) and '--fps' in str(exc.value)
+
+
+def test_every_frame_uses_explicit_fps_when_native_unknown(monkeypatch, static_clip, tmp_path, capsys):
+    """The --fps escape hatch lets --every-frame proceed on a rate-less source."""
+    meta = {'duration_seconds': 3.0, 'width': 320, 'height': 240, 'codec': 'h264',
+            'size_bytes': 1000, 'fps': 0.0, 'has_audio': False, 'has_video': True}
+    monkeypatch.setattr(watch, 'get_metadata', lambda *a, **kw: meta)
+    monkeypatch.setattr(sys, 'argv',
+                        ['watch', str(static_clip), '--no-whisper', '--every-frame',
+                         '--fps', '10', '--max-frames', '120', '--out-dir', str(tmp_path / 'b')])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert '**Detail:** every-frame (high-density)' in out

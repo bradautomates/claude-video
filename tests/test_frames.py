@@ -140,3 +140,72 @@ def test_single_frame_cap_keeps_first_real_frame(static_clip, tmp_path):
 def test_uniform_candidate_count_includes_deduplicated_frames(static_clip, tmp_path):
     out, meta = frames.extract_scene_or_uniform(str(static_clip), tmp_path / 'f', fps=2, target_frames=6)
     assert meta['candidate_count'] == len(out) + meta['deduped_count']
+
+
+def test_parse_frame_rate_handles_ratio_plain_and_garbage():
+    assert abs(frames.parse_frame_rate("30000/1001") - 29.97) < 0.01
+    assert frames.parse_frame_rate("25") == 25.0
+    assert frames.parse_frame_rate("30/0") == 0.0  # guard against div-by-zero
+    assert frames.parse_frame_rate(None) == 0.0
+    assert frames.parse_frame_rate("not-a-rate") == 0.0
+
+
+def test_get_metadata_reports_native_fps(tmp_path):
+    from conftest import build_static_clip
+    clip = tmp_path / "native.mp4"
+    build_static_clip(clip, duration=2, fps=10)
+    assert abs(frames.get_metadata(str(clip))["fps"] - 10.0) < 0.1
+
+
+def test_every_frame_samples_native_rate_uncapped(tmp_path):
+    """--every-frame's contract: sample at native fps with no skipped frames.
+
+    Regression guard. When extract() unconditionally clamped the rate to
+    MAX_FPS (2 fps), a 3s/10fps clip yielded only ~6 frames; cap_fps=False must
+    sample all ~30. The max_frames budget is still the hard cap.
+    """
+    from conftest import build_static_clip
+    clip = tmp_path / "dense.mp4"
+    build_static_clip(clip, duration=3, fps=10)  # 30 source frames
+
+    native = frames.extract(str(clip), tmp_path / "n", fps=10, max_frames=120, cap_fps=False)
+    assert len(native) >= 28  # ~30 at native rate, no 2 fps clamp
+    assert native[-1]["timestamp_seconds"] >= 2.5  # coverage spans the window
+
+    clamped = frames.extract(str(clip), tmp_path / "c", fps=10, max_frames=120)
+    assert len(clamped) <= 8  # auto-mode default still ceilinged at 2 fps
+
+    budgeted = frames.extract(str(clip), tmp_path / "b", fps=10, max_frames=10, cap_fps=False)
+    assert len(budgeted) == 10  # --max-frames remains the hard cap
+
+
+def test_get_metadata_prefers_first_parsable_frame_rate(monkeypatch):
+    """Issue 1 regression: ffprobe's truthy '0/0'/'N/A' sentinels must not win
+    the native-fps selection over a usable r_frame_rate."""
+    import json as _json
+    import types
+    payload = {
+        "streams": [{
+            "codec_type": "video", "width": 320, "height": 240, "codec_name": "h264",
+            "avg_frame_rate": "0/0", "r_frame_rate": "30/1", "duration": "3.0",
+        }],
+        "format": {"duration": "3.0", "size": "1000"},
+    }
+    monkeypatch.setattr(frames, "run_text", lambda *a, **kw: types.SimpleNamespace(
+        returncode=0, stdout=_json.dumps(payload), stderr=""))
+    assert frames.get_metadata("ignored.mp4")["fps"] == 30.0
+
+
+def test_get_metadata_fps_zero_when_no_rate_parses(monkeypatch):
+    import json as _json
+    import types
+    payload = {
+        "streams": [{
+            "codec_type": "video", "width": 320, "height": 240, "codec_name": "h264",
+            "avg_frame_rate": "0/0", "r_frame_rate": "N/A", "duration": "3.0",
+        }],
+        "format": {"duration": "3.0", "size": "1000"},
+    }
+    monkeypatch.setattr(frames, "run_text", lambda *a, **kw: types.SimpleNamespace(
+        returncode=0, stdout=_json.dumps(payload), stderr=""))
+    assert frames.get_metadata("ignored.mp4")["fps"] == 0.0

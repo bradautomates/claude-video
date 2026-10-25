@@ -262,7 +262,18 @@ Use `WATCH_DETAIL` for the saved preference or `--detail` for one run. The `/wat
 /watch video.mp4 --detail transcript --timestamps 1:05,2:30
 ```
 
-Uniform sampling selects actual source frames across the range, reducing its rate to fit the remaining cap (at most 2 fps). Scene/keyframe selection detects candidates across the range, then samples to the cap. The last selected candidate need not be the last video frame; scene changes do not capture every event. Frame timestamps are source-relative, including focused and fractional seeks.
+Uniform sampling selects actual source frames across the range, reducing its rate to fit the remaining cap (at most 2 fps in auto-mode). Scene/keyframe selection detects candidates across the range, then samples to the cap. The last selected candidate need not be the last video frame; scene changes do not capture every event. Frame timestamps are source-relative, including focused and fractional seeks.
+
+### High-density mode — every transition frame
+
+Auto-mode tops out at 2 fps, so a cut, fade, or wipe shorter than ~500ms can fall between frames. For frame-by-frame work, `--every-frame` samples at the source's native fps with no gaps — it bypasses the detail engines and perceptual dedup (its contract is "no skipped frames"), while transcript cue frames still merge on top. `--fps F` is honored verbatim (the 2 fps ceiling is auto-mode only), and `--max-frames` is capped at 1000 (`HARD_MAX_FRAMES`) as a runaway backstop — a higher request (previously unbounded, e.g. under `token-burner`) is clamped with a warning. If the native rate can't be read (a VFR or rate-less source), `--every-frame` errors and asks for an explicit `--fps` instead of silently sampling slower.
+
+```text
+/watch video.mp4 --start 0:45 --end 0:48 --every-frame --max-frames 120
+/watch video.mp4 --start 0:45 --end 0:48 --fps 30 --max-frames 120
+```
+
+Always pair high-density with a narrow `--start`/`--end`: native-fps over a whole video blows the context budget, and `--max-frames` silently truncates to the first N frames (a 4s window at 30fps needs `--max-frames 120`). The script warns above ~150 frames; shorten the window or use `--fps 15` to halve the rate while still catching most transitions.
 
 A 16×16 **RGB** thumbnail pass removes near-duplicates using mean channel difference. Use `--no-dedup` for subtle visual changes; tiny thumbnails cannot preserve every code edit. Default images are up to 512px wide and 1998px tall; `--resolution 1024` helps with on-screen text. Image cost depends on the host/model and frame dimensions.
 

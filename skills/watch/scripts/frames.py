@@ -20,6 +20,9 @@ from pathlib import Path
 from runtime import configure_stdio, run_text, diagnostic
 
 
+# Auto-mode fps ceiling. Keeps default scans cheap. Explicit --fps and
+# --every-frame deliberately bypass this (see watch.py) so you can sample at the
+# source's native rate when you need to see every transition frame.
 MAX_FPS = 2.0
 SCENE_THRESHOLD = 0.20
 # Keep scene-detection results once we have at least this many distinct shots.
@@ -48,11 +51,34 @@ def _scale_filter(resolution: int) -> str:
         "force_original_aspect_ratio=decrease:force_divisible_by=2"
     )
 
+# Safety backstop on frame count once high-density mode lifts the budget. This is
+# a runaway guard, not a recommendation — reading more than ~150-300 frames is
+# context-heavy, so keep dense runs to short --start/--end windows.
+HARD_MAX_FRAMES = 1000
+
 
 def _clamp_fps(fps: float, duration_seconds: float, max_frames: int) -> tuple[float, int]:
     fps = min(fps, MAX_FPS)
     target = min(max_frames, max(1, int(round(fps * duration_seconds))))
     return fps, target
+
+
+def parse_frame_rate(value: str | float | int | None) -> float:
+    """Parse an ffprobe frame-rate string (e.g. '30000/1001') into fps."""
+    if not value:
+        return 0.0
+    s = str(value).strip()
+    if "/" in s:
+        num, _, den = s.partition("/")
+        try:
+            den_f = float(den)
+            return float(num) / den_f if den_f else 0.0
+        except ValueError:
+            return 0.0
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
 
 
 def parse_time(value: str | float | int | None) -> float | None:
@@ -103,9 +129,21 @@ def get_metadata(video_path: str) -> dict:
         duration = max(elapsed) if elapsed else float(fmt.get('duration'))
         if any(not math.isfinite(d) or d <= 0 for d in elapsed) or not math.isfinite(duration) or duration <= 0:
             raise ValueError()
+        # Pick the first rate that *parses to a positive fps*, not the first
+        # truthy string: ffprobe routinely reports avg_frame_rate "0/0" or "N/A"
+        # (VFR captures, fragmented MP4 from yt-dlp) alongside a usable
+        # r_frame_rate, and those sentinels are truthy — an `or` would keep them.
+        native_fps = next(
+            (rate for rate in (
+                parse_frame_rate(video.get("avg_frame_rate")),
+                parse_frame_rate(video.get("r_frame_rate")),
+            ) if rate > 0),
+            0.0,
+        )
         return {
             "duration_seconds": duration, "width": video.get("width"), "height": video.get("height"),
             "codec": video.get("codec_name"), "size_bytes": int(fmt.get("size") or 0),
+            "fps": native_fps,
             "has_audio": bool(audio), "has_video": bool(video),
         }
     except (ValueError, TypeError, KeyError, AttributeError):
@@ -198,7 +236,7 @@ def auto_fps_focus(duration_seconds: float, max_frames: int = 100) -> tuple[floa
 def extract(
     video_path: str, out_dir: Path, fps: float, resolution: int = 512,
     max_frames: int = 100, start_seconds: float | None = None,
-    end_seconds: float | None = None,
+    end_seconds: float | None = None, cap_fps: bool = True,
 ) -> list[dict]:
     validate_controls(resolution, max_frames, start_seconds, end_seconds, fps)
     duration = get_metadata(video_path)["duration_seconds"]
@@ -206,7 +244,12 @@ def extract(
     end = min(duration, end_seconds) if end_seconds is not None else duration
     if end <= start:
         raise SystemExit("Requested range is outside the video duration")
-    rate = min(fps, MAX_FPS, max_frames / (end - start))
+    # The MAX_FPS ceiling is auto-mode only. High-density callers (--every-frame
+    # and explicit --fps) pass cap_fps=False to sample at the requested rate —
+    # the max_frames budget is still enforced as the hard cap.
+    rate = min(fps, max_frames / (end - start))
+    if cap_fps:
+        rate = min(rate, MAX_FPS)
     out_dir.mkdir(parents=True, exist_ok=True)
     for existing in out_dir.glob("frame_*.jpg"):
         existing.unlink()
@@ -524,6 +567,7 @@ def extract_scene_or_uniform(
     start_seconds: float | None = None,
     end_seconds: float | None = None,
     dedup: bool = True,
+    cap_fps: bool = True,
 ) -> tuple[list[dict], dict]:
     """Prefer scene selection, falling back to uniform only when the video is
     effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots).
@@ -567,6 +611,7 @@ def extract_scene_or_uniform(
         max_frames=fallback_cap,
         start_seconds=start_seconds,
         end_seconds=end_seconds,
+        cap_fps=cap_fps,
     )
     uniform_count = len(frames)
     n_dropped = 0
@@ -687,8 +732,8 @@ if __name__ == "__main__":
     configure_stdio()
     if len(sys.argv) < 3:
         print(
-            "usage: frames.py <video-path> <out-dir> [--fps F] [--resolution W] "
-            "[--max-frames N] [--start T] [--end T] [--no-dedup]",
+            "usage: frames.py <video-path> <out-dir> [--fps F] [--every-frame] "
+            "[--resolution W] [--max-frames N] [--start T] [--end T] [--no-dedup]",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -698,6 +743,7 @@ if __name__ == "__main__":
     args = sys.argv[3:]
 
     fps_override = None
+    every_frame = False
     resolution = 512
     max_frames = 100
     start_arg = None
@@ -707,6 +753,8 @@ if __name__ == "__main__":
     while i < len(args):
         if args[i] == "--fps":
             fps_override = float(args[i + 1]); i += 2
+        elif args[i] == "--every-frame":
+            every_frame = True; i += 1
         elif args[i] == "--resolution":
             resolution = int(args[i + 1]); i += 2
         elif args[i] == "--max-frames":
@@ -720,23 +768,51 @@ if __name__ == "__main__":
         else:
             i += 1
 
+    if max_frames > HARD_MAX_FRAMES:
+        print(
+            f"[frames] --max-frames {max_frames} exceeds the hard ceiling; "
+            f"clamping to {HARD_MAX_FRAMES}.",
+            file=sys.stderr,
+        )
+        max_frames = HARD_MAX_FRAMES
+    # --every-frame promises no skipped frames, so perceptual dedup stays off.
+    if every_frame:
+        dedup = False
+
     meta = get_metadata(video)
     start_sec = parse_time(start_arg)
     end_sec = parse_time(end_arg)
     full_duration = meta["duration_seconds"]
+    native_fps = meta.get("fps") or 0.0
 
     effective_start = start_sec if start_sec is not None else 0.0
     effective_end = end_sec if end_sec is not None else full_duration
     effective_duration = max(0.0, effective_end - effective_start)
 
     focused = start_sec is not None or end_sec is not None
-    if focused:
+    if every_frame:
+        # Sample at native rate — every decoded frame, no gaps. max_frames caps it.
+        # Refuse to silently fall back to the 2 fps auto-mode ceiling when the
+        # native rate is unknown; require an explicit --fps instead.
+        if native_fps > 0:
+            fps = native_fps
+        elif fps_override is not None:
+            fps = fps_override
+        else:
+            raise SystemExit(
+                "--every-frame could not determine the source's native frame rate; "
+                "pass an explicit --fps N (for example --fps 30)."
+            )
+        target = min(max_frames, max(1, int(round(fps * effective_duration))))
+    elif focused:
         fps, target = auto_fps_focus(effective_duration, max_frames=max_frames)
     else:
         fps, target = auto_fps(effective_duration, max_frames=max_frames)
+    # Explicit --fps is honored verbatim (NOT clamped to MAX_FPS) so you can ask
+    # for native-rate sampling to catch fast transitions.
     if fps_override is not None:
         fps = fps_override
-        target = max(1, int(round(fps * effective_duration)))
+        target = min(max_frames, max(1, int(round(fps * effective_duration))))
 
     frames = extract(
         video, out,
@@ -745,6 +821,7 @@ if __name__ == "__main__":
         max_frames=max_frames,
         start_seconds=start_sec,
         end_seconds=end_sec,
+        cap_fps=not (every_frame or fps_override is not None),
     )
     deduped_count = 0
     if dedup:

@@ -2,6 +2,17 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Added
+- **High-density mode for frame-by-frame / transition analysis.** New `--every-frame` flag samples at the video's native fps (no skipped frames), capped by `--max-frames`. It bypasses the detail engines and perceptual dedup so no frame is ever dropped. Best paired with a tight `--start`/`--end` window.
+
+### Changed
+- `--fps` is now honored verbatim instead of being silently clamped to 2 fps, so callers can request native-rate sampling to catch fast cuts/fades. The 2 fps ceiling now applies to auto-mode only.
+- `--max-frames` now has a hard ceiling of 1000 (`HARD_MAX_FRAMES`) as a runaway guard. An explicit `--max-frames` was previously unbounded (notably under `--detail token-burner`), so a request above 1000 is now clamped — with a warning on stderr rather than a silent reduction. Per-detail default caps (≤100) are unaffected, so default scans cost the same.
+- `get_metadata` now reports the source's native `fps`, taking the first of `avg_frame_rate`/`r_frame_rate` that parses to a positive rate (ffprobe's `0/0`/`N/A` sentinels are skipped).
+- `watch.py` prints a token-cost warning above ~150 frames and a hint when high-density mode runs over a full long video (where `--max-frames` would truncate).
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed

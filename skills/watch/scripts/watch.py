@@ -20,7 +20,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_engine  # noqa: E402
 import gemini  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
+from frames import HARD_MAX_FRAMES, MAX_FPS, auto_fps, auto_fps_focus, extract, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
@@ -97,9 +97,15 @@ def main() -> int:
         description="Download a video, extract auto-scaled frames, and surface the transcript.",
     )
     ap.add_argument("source", help="Video URL or local file path")
-    ap.add_argument("--max-frames", type=int, default=None, help="Override frame cap")
+    ap.add_argument("--max-frames", type=int, default=None, help=f"Override frame cap (hard max {HARD_MAX_FRAMES})")
     ap.add_argument("--resolution", type=int, default=512, help="Frame width in pixels (default 512)")
-    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps")
+    ap.add_argument("--fps", type=float, default=None, help="Override auto-fps. Honored verbatim — NOT clamped to 2 fps — so you can sample fast transitions.")
+    ap.add_argument(
+        "--every-frame",
+        action="store_true",
+        help="High-density mode: sample at the video's native fps (every frame, no gaps), "
+             "capped by --max-frames. Pair with a tight --start/--end window — token cost is high.",
+    )
     ap.add_argument(
         "--detail",
         choices=["transcript", "efficient", "balanced", "token-burner"],
@@ -151,6 +157,17 @@ def main() -> int:
     config = get_config(backend_override="none" if args.no_whisper else args.whisper)
     detail = args.detail or config["detail"]
     max_frames = args.max_frames if args.max_frames is not None else frame_cap(detail)
+    # HARD_MAX_FRAMES is a runaway guard. It can *reduce* an explicit --max-frames
+    # (including token-burner's otherwise-unbounded override), so warn rather than
+    # clamp silently. The per-detail default caps are all well under it.
+    if max_frames is not None and max_frames > HARD_MAX_FRAMES:
+        if args.max_frames is not None:
+            print(
+                f"[watch] --max-frames {max_frames} exceeds the hard ceiling; "
+                f"clamping to {HARD_MAX_FRAMES}.",
+                file=sys.stderr,
+            )
+        max_frames = HARD_MAX_FRAMES
     budget_cap = max_frames if max_frames is not None else 100
     start_sec, end_sec = parse_time(args.start), parse_time(args.end)
     validate_controls(args.resolution, max_frames, start_sec, end_sec, args.fps)
@@ -194,7 +211,7 @@ def main() -> int:
             except (OSError, ValueError) as exc:
                 errors.append(f"Caption parsing failed: {exc}")
 
-    audio_only = detail == "transcript" and not cue_timestamps
+    audio_only = detail == "transcript" and not cue_timestamps and not args.every_frame
     # Captions are assessed before range filtering: a quiet interval is not a missing track.
     need_media = not (audio_only and (track_available or backend_choice == "none") and url_source)
     if need_media:
@@ -229,32 +246,89 @@ def main() -> int:
     effective_end = min(end_sec, full_duration) if end_sec is not None and full_duration > 0 else end_sec or full_duration
     effective_duration = max(0.0, effective_end - effective_start)
     focused = start_sec is not None or end_sec is not None
-    if focused:
+
+    native_fps = meta.get("fps") or 0.0
+    every_frame_cap = max_frames if max_frames is not None else HARD_MAX_FRAMES
+
+    if args.every_frame:
+        # High-density: sample at native rate so no transition frame is skipped.
+        # --max-frames caps the count (and ffmpeg enforces it during extraction).
+        # If the native rate is unknown we refuse to silently drop to the 2 fps
+        # auto-mode ceiling and mislabel the run high-density — require --fps.
+        if native_fps > 0:
+            fps = native_fps
+        elif args.fps is not None:
+            fps = args.fps
+        else:
+            raise SystemExit(
+                "--every-frame could not determine the source's native frame rate "
+                "(ffprobe reported none — e.g. a variable-frame-rate or rate-less "
+                "stream). Re-run with an explicit --fps N, for example --fps 30."
+            )
+        target = min(every_frame_cap, max(1, int(round(fps * effective_duration))))
+    elif focused:
         fps, target = auto_fps_focus(effective_duration, max_frames=budget_cap)
     else:
         fps, target = auto_fps(effective_duration, max_frames=budget_cap)
+    # Explicit --fps wins and is honored verbatim — deliberately NOT clamped to
+    # MAX_FPS — so a caller can request native-rate sampling for fast cuts/fades.
     if args.fps is not None:
-        fps = min(args.fps, MAX_FPS)
-        target = max(1, int(round(fps * effective_duration)))
+        fps = args.fps
+        target = min(budget_cap, max(1, int(round(fps * effective_duration))))
 
     frames, cue_frames = [], []
     frame_meta = {"engine": "none", "candidate_count": 0, "selected_count": 0, "fallback": False}
     cue_meta = {}
     detail_budget = max_frames
+
     if video_path and meta.get("has_video", bool(meta.get("width"))):
+        # Warn only when there is actually video to sample — an audio-only source
+        # captures zero frames, so the "only the first N captured" note would lie.
+        if (args.every_frame or (args.fps is not None and args.fps > MAX_FPS)) and not focused and full_duration > 60:
+            print(
+                "[watch] high-density over a full long video — only the first "
+                f"{every_frame_cap if args.every_frame else budget_cap} frames are captured. "
+                "Add --start/--end to target the moment you care about.",
+                file=sys.stderr,
+            )
         try:
             if cue_timestamps:
                 cue_frames, cue_meta = extract_at_timestamps(
                     video_path, work / "frames", cue_timestamps, resolution=args.resolution,
                     max_frames=max_frames, start_seconds=start_sec, end_seconds=effective_end or end_sec)
             detail_budget = None if max_frames is None else max_frames - len(cue_frames)
-            if detail != "transcript" and detail_budget != 0:
+            if args.every_frame and detail_budget != 0:
+                # High-density mode bypasses the detail engines: uniform native-rate
+                # extraction, no dedup, so no transition frame is ever skipped. Cue
+                # frames still merge on top below.
+                uniform_cap = detail_budget if detail_budget is not None else HARD_MAX_FRAMES
+                if target > 150:
+                    print(
+                        f"[watch] high-density: ~{target} frames ≈ {int(target * 0.7)}k-{target}k image tokens. "
+                        "Narrow --start/--end if this is heavier than you intended.",
+                        file=sys.stderr,
+                    )
+                frames = extract(
+                    video_path, work / "frames", fps=fps, resolution=args.resolution,
+                    max_frames=uniform_cap, start_seconds=start_sec, end_seconds=effective_end or end_sec,
+                    cap_fps=False)
+                frame_meta = {
+                    "engine": "every-frame",
+                    "candidate_count": len(frames),
+                    "selected_count": len(frames),
+                    "fallback": False,
+                }
+            elif detail != "transcript" and detail_budget != 0:
                 kwargs = dict(resolution=args.resolution, max_frames=detail_budget,
                               start_seconds=start_sec, end_seconds=effective_end or end_sec, dedup=not args.no_dedup)
                 if detail == "efficient":
                     frames, frame_meta = extract_keyframes(video_path, work / "frames", **kwargs)
                 else:
-                    frames, frame_meta = extract_scene_or_uniform(video_path, work / "frames", fps=fps, target_frames=target, **kwargs)
+                    # Explicit --fps is honored verbatim (the 2 fps ceiling is auto-mode
+                    # only), so the uniform fallback must not re-clamp it.
+                    frames, frame_meta = extract_scene_or_uniform(
+                        video_path, work / "frames", fps=fps, target_frames=target,
+                        cap_fps=args.fps is None, **kwargs)
         except SystemExit as exc:
             visual_error = f"Visual extraction unavailable: {exc}"
             errors.append(visual_error)
@@ -319,9 +393,9 @@ def main() -> int:
     if meta.get("width") and meta.get("height"):
         print(f"- **Resolution:** {meta['width']}x{meta['height']} ({meta.get('codec') or 'unknown codec'})")
     range_mode = "focused" if focused else "full"
-    print(f"- **Detail:** {detail}")
+    print(f"- **Detail:** {'every-frame (high-density)' if args.every_frame else detail}")
     detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
+    if args.every_frame or detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
         fallback = " fallback" if frame_meta.get("fallback") else ""
