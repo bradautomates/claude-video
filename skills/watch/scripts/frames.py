@@ -514,6 +514,112 @@ def _dedupe_by_deltas(
     return kept, len(dropped)
 
 
+# Gap filling. Once scene detection is trusted (>= SCENE_MIN_FRAMES cuts) the
+# engine used to return only the cuts, so a clip whose visuals change by
+# scrolling, zooming or animated overlays (scores far below SCENE_THRESHOLD)
+# left most of its duration-scaled budget unused and gaps of 8-10 s between
+# frames. Now gaps between cuts wider than the budget's natural spacing are
+# filled with evenly spaced frames in one extra decode pass. Fills are bounded
+# by the budget, so a cut-heavy clip adds none.
+MIN_FILL_SPACING = 1.0 / MAX_FPS
+
+
+def _gap_fill_times(anchors: list[float], start: float, end: float, budget: int) -> list[float]:
+    """Times for up to ``budget`` extra frames, placed evenly inside the gaps
+    between ``anchors`` (and after the last anchor, up to ``end``) that are
+    wider than the natural spacing ``(end - start) / (len(anchors) + budget)``.
+
+    Pure arithmetic, no ffmpeg. Never denser than ``MAX_FPS``. Returns a
+    sorted list; empty when nothing needs filling.
+    """
+    if budget <= 0 or end <= start:
+        return []
+    pts = sorted({float(a) for a in anchors if start <= a < end}) or [start]
+    spacing = max(MIN_FILL_SPACING, (end - start) / (len(pts) + budget))
+    bounds = list(zip(pts, [*pts[1:], end]))
+    wanted = [max(0, int(round((b - a) / spacing)) - 1) for a, b in bounds]
+    total = sum(wanted)
+    if total > budget:
+        scaled = [w * budget / total for w in wanted]
+        wanted = [int(s) for s in scaled]
+        by_fraction = sorted(range(len(scaled)), key=lambda i: scaled[i] - int(scaled[i]), reverse=True)
+        for i in by_fraction[: budget - sum(wanted)]:
+            wanted[i] += 1
+    out: list[float] = []
+    for (a, b), k in zip(bounds, wanted):
+        step = (b - a) / (k + 1)
+        out.extend(a + step * j for j in range(1, k + 1))
+    return sorted(out)
+
+
+def extract_fill_frames(
+    video_path: str,
+    out_dir: Path,
+    times: list[float],
+    resolution: int = 512,
+    start_seconds: float | None = None,
+    end_seconds: float | None = None,
+) -> list[dict]:
+    """Grab the first decoded frame at or after each absolute time in ``times``
+    in a single decode pass (one ffmpeg ``select`` expression rather than one
+    seek per time). Files use a ``fill_*.jpg`` prefix so they never clobber
+    the detail engine's ``frame_*.jpg``; the caller renumbers the merged set.
+    """
+    if not times:
+        return []
+    validate_controls(resolution, None, start_seconds, end_seconds)
+    if shutil.which("ffmpeg") is None:
+        raise SystemExit("ffmpeg is not installed. Install with: brew install ffmpeg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for existing in out_dir.glob("fill_*.jpg"):
+        existing.unlink()
+
+    offset = start_seconds or 0.0
+    rel = sorted({max(0.0, float(t) - offset) for t in times})
+    # Accurate input seeking resets t to the seek point, like extract().
+    terms = "+".join(
+        f"gte(t\\,{r:.6f})*(isnan(prev_selected_t)+lt(prev_selected_t\\,{r:.6f}))" for r in rel
+    )
+    vf = f"select='{terms}',{_scale_filter(resolution)},showinfo"
+    cmd: list[str] = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-y"]
+    if start_seconds is not None:
+        cmd += ["-ss", f"{start_seconds:.6f}"]
+    if end_seconds is not None:
+        cmd += ["-to", f"{end_seconds:.6f}"]
+    cmd += [
+        "-i", str(Path(video_path).resolve()),
+        "-vf", vf, *sync_args(),
+        "-frames:v", str(len(rel)), "-q:v", "4",
+        str(out_dir / "fill_%04d.jpg"),
+    ]
+    result = run_text(cmd)
+    if result.returncode != 0:
+        raise SystemExit(f"ffmpeg gap-fill extraction failed: {diagnostic(result.stderr)}")
+    files = sorted(out_dir.glob("fill_*.jpg"))
+    return _emitted_frames(files, result.stderr, offset, "gap-fill")
+
+
+def _renumber_sequence(frames: list[dict], out_dir: Path, prefix: str = "frame_") -> list[dict]:
+    """Rename a chronological frame list to one contiguous ``prefix%04d.jpg``
+    sequence (two-phase, so renames never collide) and reindex 0..n-1. The
+    dedup thumbnailer reads a single numbered pattern, so mixed ``frame_``
+    and ``fill_`` names would otherwise make it skip dedup entirely.
+    """
+    frames = sorted(frames, key=lambda f: f["timestamp_seconds"])
+    staged: list[Path] = []
+    for i, frame in enumerate(frames):
+        src = Path(frame["path"])
+        tmp = out_dir / f".renum_{i:04d}{src.suffix}"
+        src.rename(tmp)
+        staged.append(tmp)
+    for i, (frame, tmp) in enumerate(zip(frames, staged)):
+        dst = out_dir / f"{prefix}{i + 1:04d}{tmp.suffix}"
+        tmp.rename(dst)
+        frame["path"] = str(dst)
+        frame["index"] = i
+    return frames
+
+
 def extract_scene_or_uniform(
     video_path: str,
     out_dir: Path,
@@ -527,6 +633,11 @@ def extract_scene_or_uniform(
 ) -> tuple[list[dict], dict]:
     """Prefer scene selection, falling back to uniform only when the video is
     effectively static (fewer than ``SCENE_MIN_FRAMES`` detected shots).
+
+    Detected cuts are anchors, not the whole answer: when there are fewer cuts
+    than the duration budget (``target_frames``, capped by ``max_frames``), the
+    gaps between them are filled with evenly spaced frames (``reason``
+    ``gap-fill``) so scrolls, zooms and animated overlays are covered too.
 
     Scene cuts are detected across the *whole* range (uncapped), near-identical
     frames are dropped (:func:`dedupe_perceptual`, unless ``dedup`` is False),
@@ -547,13 +658,26 @@ def extract_scene_or_uniform(
     )
     scene_count = len(scene_frames)
     if scene_count >= SCENE_MIN_FRAMES:
-        deduped, n_dropped = dedupe_perceptual(scene_frames) if dedup else (scene_frames, 0)
+        fill_target = target_frames if max_frames is None else min(target_frames, max_frames)
+        fill_frames: list[dict] = []
+        if scene_count < fill_target:
+            lo = start_seconds or 0.0
+            hi = end_seconds if end_seconds is not None else get_metadata(video_path)["duration_seconds"]
+            fill_times = _gap_fill_times(
+                [f["timestamp_seconds"] for f in scene_frames], lo, hi, fill_target - scene_count)
+            if fill_times:
+                fill_frames = extract_fill_frames(
+                    video_path, out_dir, fill_times, resolution=resolution,
+                    start_seconds=start_seconds, end_seconds=end_seconds)
+        candidates = _renumber_sequence([*scene_frames, *fill_frames], out_dir) if fill_frames else scene_frames
+        deduped, n_dropped = dedupe_perceptual(candidates) if dedup else (candidates, 0)
         cap = len(deduped) if max_frames is None else max_frames
         selected = _even_sample(deduped, cap)
         return selected, {
             "engine": "scene",
-            "candidate_count": scene_count,
+            "candidate_count": len(candidates),
             "deduped_count": n_dropped,
+            "fill_count": len(fill_frames),
             "selected_count": len(selected),
             "fallback": False,
         }

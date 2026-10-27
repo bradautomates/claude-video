@@ -140,3 +140,124 @@ def test_single_frame_cap_keeps_first_real_frame(static_clip, tmp_path):
 def test_uniform_candidate_count_includes_deduplicated_frames(static_clip, tmp_path):
     out, meta = frames.extract_scene_or_uniform(str(static_clip), tmp_path / 'f', fps=2, target_frames=6)
     assert meta['candidate_count'] == len(out) + meta['deduped_count']
+
+
+# --- Gap fill: cuts are anchors, gaps between them are filled to the budget ---
+
+def _build_sparse_cut_clip(path: Path, cuts: int = 9, seg: float = 0.4, tail: float = 8.0, fps: int = 10) -> float:
+    """``cuts`` hard colour cuts in the first ``cuts*seg`` seconds, then a long
+    ``testsrc`` tail that changes continuously (moving pattern and counter)
+    but never hard-cuts. Returns the total duration."""
+    import subprocess
+    from conftest import COLORS
+    inputs: list[str] = []
+    for i in range(cuts):
+        inputs += ["-f", "lavfi", "-t", str(seg), "-i", f"color=c={COLORS[i % len(COLORS)]}:s=320x240:r={fps}"]
+    inputs += ["-f", "lavfi", "-t", str(tail), "-i", f"testsrc=s=320x240:r={fps}"]
+    n = cuts + 1
+    streams = "".join(f"[{i}:v]" for i in range(n))
+    subprocess.run([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *inputs,
+        "-filter_complex", f"{streams}concat=n={n}:v=1:a=0[out]", "-map", "[out]",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-force_key_frames", f"expr:gte(t,n_forced*{seg})",
+        str(path),
+    ], check=True, capture_output=True)
+    return cuts * seg + tail
+
+
+def test_gap_fill_times_spend_budget_in_wide_gaps_only():
+    # Two anchors, one wide gap after the second: fills land only there.
+    fills = frames._gap_fill_times([0.0, 3.0], 0.0, 42.0, budget=10)
+    assert fills == sorted(fills) and 0 < len(fills) <= 10
+    assert all(3.0 < t < 42.0 for t in fills)
+    spacing = 42.0 / 12
+    assert all(b - a > spacing * 0.5 for a, b in zip([3.0, *fills], fills))
+    # No budget, or nothing to fill, yields nothing.
+    assert frames._gap_fill_times([0.0, 3.0], 0.0, 42.0, budget=0) == []
+    assert frames._gap_fill_times([0.0], 0.0, 0.0, budget=5) == []
+    # Never denser than MAX_FPS: anchors every 0.5s leave no room.
+    dense = [i * 0.5 for i in range(10)]
+    assert frames._gap_fill_times(dense, 0.0, 5.0, budget=100) == []
+    # Over-subscribed gaps are scaled down to the budget, never above it.
+    assert len(frames._gap_fill_times([0.0], 0.0, 600.0, budget=7)) == 7
+
+
+def test_scene_gap_fill_covers_slow_changes(tmp_path: Path):
+    """A clip with a burst of cuts then a long cut-free stretch used to return
+    only the cuts (9-10 s holes). Gap fill spends the budget in the stretch."""
+    clip = tmp_path / "sparse.mp4"
+    duration = _build_sparse_cut_clip(clip)
+    out, meta = frames.extract_scene_or_uniform(
+        str(clip), tmp_path / "f", fps=2.0, target_frames=30, max_frames=100,
+    )
+    assert meta["engine"] == "scene" and meta["fallback"] is False
+    assert meta["fill_count"] > 0
+    assert meta["candidate_count"] == len(out) + meta["deduped_count"]
+    ts = [fr["timestamp_seconds"] for fr in out]
+    assert ts == sorted(ts) and len(out) <= 100
+    tail = [t for t in ts if t > 4.0]
+    assert len(tail) >= 6, f"tail not covered: {ts}"
+    assert max(b - a for a, b in zip(ts, ts[1:])) <= 1.5
+    assert {fr["reason"] for fr in out} >= {"scene-change", "gap-fill"}
+    # One contiguous frame_*.jpg sequence, no stray fill_*.jpg, indices 0..n-1.
+    assert sorted(Path(fr["path"]) for fr in out) == sorted((tmp_path / "f").glob("frame_*.jpg"))
+    assert not list((tmp_path / "f").glob("fill_*.jpg"))
+    assert [fr["index"] for fr in out] == list(range(len(out)))
+    assert all(Path(fr["path"]).exists() for fr in out)
+
+
+def test_scene_gap_fill_respects_cap_and_focus_window(tmp_path: Path):
+    clip = tmp_path / "sparse.mp4"
+    _build_sparse_cut_clip(clip)
+    # Window keeps 8 cuts (0.8 s .. 3.6 s) so scene detection is trusted, then
+    # a 5.4 s cut-free tail that only gap fill can cover; cap 12 bounds it all.
+    out, meta = frames.extract_scene_or_uniform(
+        str(clip), tmp_path / "f", fps=2.0, target_frames=30, max_frames=12,
+        start_seconds=0.5, end_seconds=9.0,
+    )
+    assert meta["engine"] == "scene" and meta["fallback"] is False
+    assert len(out) == 12 and meta["fill_count"] > 0
+    assert all(0.5 <= fr["timestamp_seconds"] <= 9.0 for fr in out)
+    assert any(fr["timestamp_seconds"] > 5.0 for fr in out)  # tail covered
+
+
+def test_scene_no_fill_when_cuts_meet_target(cut_clip: Path, tmp_path: Path):
+    out, meta = frames.extract_scene_or_uniform(
+        str(cut_clip), tmp_path / "f", fps=2.0, target_frames=5, max_frames=100,
+    )
+    assert meta["fill_count"] == 0
+    assert "gap-fill" not in {fr["reason"] for fr in out}
+
+
+def test_fill_frames_single_pass_labels_actual_times(tmp_path: Path):
+    import subprocess
+    from conftest import build_cut_clip
+    clip = tmp_path / "clock.mp4"
+    build_cut_clip(clip, n=12, seg=1, fps=10)
+    out = frames.extract_fill_frames(str(clip), tmp_path / "f", [2.5, 5.5, 9.0])
+    assert [fr["timestamp_seconds"] for fr in out] == [2.5, 5.5, 9.0]
+    assert all(fr["reason"] == "gap-fill" for fr in out)
+    assert [Path(fr["path"]).name for fr in out] == ["fill_0001.jpg", "fill_0002.jpg", "fill_0003.jpg"]
+    truth = frames.extract_at_timestamps(str(clip), tmp_path / "truth", [2.5, 5.5, 9.0])[0]
+    def pixels(path):
+        return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-vf", "scale=1:1", "-f", "rawvideo",
+                               "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    assert all(frames._frame_delta(pixels(a["path"]), pixels(b["path"])) < 2 for a, b in zip(out, truth))
+    assert frames.extract_fill_frames(str(clip), tmp_path / "f", []) == []
+
+
+def test_renumber_sequence_merges_prefixes_in_time_order(tmp_path: Path):
+    d = tmp_path / "f"
+    d.mkdir()
+    for name in ("frame_0001.jpg", "frame_0002.jpg", "fill_0001.jpg"):
+        (d / name).write_bytes(name.encode())
+    merged = frames._renumber_sequence([
+        {"path": str(d / "frame_0001.jpg"), "timestamp_seconds": 0.0, "index": 0, "reason": "first-frame"},
+        {"path": str(d / "frame_0002.jpg"), "timestamp_seconds": 4.0, "index": 1, "reason": "scene-change"},
+        {"path": str(d / "fill_0001.jpg"), "timestamp_seconds": 2.0, "index": 0, "reason": "gap-fill"},
+    ], d)
+    assert [Path(m["path"]).name for m in merged] == ["frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg"]
+    assert [m["timestamp_seconds"] for m in merged] == [0.0, 2.0, 4.0]
+    assert [m["index"] for m in merged] == [0, 1, 2]
+    assert (d / "frame_0002.jpg").read_bytes() == b"fill_0001.jpg"  # content followed the rename
+    assert sorted(p.name for p in d.iterdir()) == ["frame_0001.jpg", "frame_0002.jpg", "frame_0003.jpg"]

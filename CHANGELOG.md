@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- `balanced` and `token-burner` no longer leave multi-second holes on clips whose visuals change by scrolling, zooming, or animated overlays. Detected scene cuts are kept as anchors and gaps between them wider than the duration budget's spacing are filled with evenly spaced frames (`reason=gap-fill`) in one extra ffmpeg pass, bounded by the existing budget so cut-heavy clips are unchanged. Fill frames are renumbered into the single `frame_*.jpg` sequence so near-duplicate removal still runs. The report line notes `N gap-fill`.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
