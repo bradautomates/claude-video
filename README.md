@@ -262,7 +262,7 @@ Use `WATCH_DETAIL` for the saved preference or `--detail` for one run. The `/wat
 /watch video.mp4 --detail transcript --timestamps 1:05,2:30
 ```
 
-Uniform sampling selects actual source frames across the range, reducing its rate to fit the remaining cap (at most 2 fps). Scene/keyframe selection detects candidates across the range, then samples to the cap. The last selected candidate need not be the last video frame; scene changes do not capture every event. Frame timestamps are source-relative, including focused and fractional seeks.
+Uniform sampling selects actual source frames across the range, reducing its rate to fit the remaining cap (at most 2 fps, unless an explicit `--fps` targets a clip or range of 5 seconds or less). Scene/keyframe selection detects candidates across the range, then samples to the cap. The last selected candidate need not be the last video frame; scene changes do not capture every event. Frame timestamps are source-relative, including focused and fractional seeks.
 
 A 16×16 **RGB** thumbnail pass removes near-duplicates using mean channel difference. Use `--no-dedup` for subtle visual changes; tiny thumbnails cannot preserve every code edit. Default images are up to 512px wide and 1998px tall; `--resolution 1024` helps with on-screen text. Image cost depends on the host/model and frame dimensions.
 
