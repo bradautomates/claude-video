@@ -203,12 +203,15 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 
 | Backend | Requirements and behavior |
 |---|---|
-| `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
+| `local` | On-device [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) (`whisper-cli` + a `ggml-*.bin` model) or `mlx_whisper`/`whisper` on `PATH`. No API key, no upload, no size limit; Metal-accelerated on Apple Silicon. **Auto-detected** and preferred when present — it is not a `setup.py --backend` choice; just install it (or force one run with `--whisper local`). `brew install whisper-cpp` installs the binary but not a model — download one, e.g. `curl -fL -o /opt/homebrew/share/whisper-cpp/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin` (~547 MB). |
+| `whisperx` | Recommended managed local transcription. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
 | `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |
 
-Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
+When no backend is pinned, auto-detection prefers an on-device whisper.cpp/mlx install over the cloud keys (then Groq, then OpenAI); set `WATCH_DISABLE_LOCAL_WHISPER=1` to skip it. `--accurate` swaps the fast default local model (`large-v3-turbo`) for `large-v3`; `--model turbo|large-v3|medium|…|<path>` picks a specific whisper.cpp model (cloud backends ignore both).
+
+Existing 0.2.0 users retain `auto`: Groq key first, then OpenAI. No automatic migration to local inference. Explicit `--whisper local|groq|openai|whisperx` overrides this run's fallback, while `--no-whisper` disables all fallbacks and still permits native captions. Those two flags conflict.
 
 Settings live in `~/.config/watch/.env`. Enter keys privately there or in the process environment; do not commit them or paste them into public issues. Cloud-key lookup is provider preference first, then environment → user file → cwd `.env` for each provider. Explicit providers never borrow another provider's key. Config files support UTF-8, UTF-8 BOM, and BOM-marked UTF-16; quotes, comments, and literal Windows paths work without shell expansion. Last assignment wins.
 

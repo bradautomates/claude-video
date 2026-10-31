@@ -51,7 +51,44 @@ def _check_file_permissions(path: Path) -> None:
         pass
 
 
+# Local whisper.cpp ggml models, checked before requiring any cloud API key.
+LOCAL_MODEL_DIRS = (
+    "/opt/homebrew/share/whisper-cpp",
+    "/usr/local/share/whisper-cpp",
+    str(Path.home() / ".cache" / "whisper"),
+)
+LOCAL_MODEL_NAMES = (
+    "ggml-large-v3-turbo-q5_0.bin",
+    "ggml-large-v3-turbo.bin",
+    "ggml-large-v3-q5_0.bin",
+    "ggml-large-v3.bin",
+    "ggml-medium.bin",
+    "ggml-small.bin",
+    "ggml-base.bin",
+)
+
+
+def _have_local_whisper() -> bool:
+    """True if a local engine is usable: whisper.cpp (binary + model) or mlx/openai-whisper."""
+    if os.environ.get("WATCH_DISABLE_LOCAL_WHISPER"):
+        return False
+    override = os.environ.get("WHISPER_MODEL")
+    # Reuse whisper.py's resolver so readiness agrees with runtime detection and
+    # a generic `main` on PATH isn't counted as whisper.cpp unless it really is.
+    import whisper
+    has_cpp_bin = whisper._resolve_whisper_cpp_bin() is not None
+    has_model = (override and Path(override).expanduser().exists()) or any(
+        (Path(d) / n).exists() for d in LOCAL_MODEL_DIRS for n in LOCAL_MODEL_NAMES
+    )
+    if has_cpp_bin and has_model:
+        return True
+    return bool(_which("mlx_whisper") or _which("whisper"))
+
+
 def _have_api_key():
+    # On-device whisper.cpp/mlx needs no key, so it satisfies the fallback first.
+    if _have_local_whisper():
+        return True, 'local'
     backend, key = load_api_key()
     return bool(key), backend
 
@@ -155,7 +192,15 @@ def _status(detailed=False):
     chosen = cfg['whisper_backend']
     backend = detected if chosen == 'auto' else chosen
     local_ready = _whisperx_status(cfg, detailed)
-    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    if chosen == 'whisperx':
+        backend_ready = local_ready
+    elif backend in ('groq', 'openai'):
+        backend_ready = bool(load_api_key(backend)[1])
+    elif backend == 'local':
+        # On-device whisper.cpp/mlx, auto-detected; needs no key or managed install.
+        backend_ready = _have_local_whisper()
+    else:
+        backend_ready = chosen == 'none'
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,

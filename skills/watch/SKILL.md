@@ -82,6 +82,8 @@ For WhisperX, relay progress while the installer provisions uv, Python 3.12, pin
 
 For cloud, get the matching key the same way as the Gemini key (pasted in chat, or the user adds it after offering to open the config file), then rerun `setup.py --backend groq` or `--backend openai`. Preserve existing keys and comments; do not print keys or include them in a shell command. The script marks setup complete after that backend is ready. `--backend none` needs no key and completes immediately.
 
+An already-installed on-device **whisper.cpp** (`whisper-cli` binary plus a `ggml-*.bin` model in `/opt/homebrew/share/whisper-cpp/`, `~/.cache/whisper/`, or `$WHISPER_MODEL`) or **mlx_whisper**/**whisper** on `PATH` is auto-detected and preferred over the cloud backends with no key and no upload — nothing to configure. To add it: `brew install whisper-cpp`, then download a model (the binary does not include one), e.g. `curl -fL -o /opt/homebrew/share/whisper-cpp/ggml-large-v3-turbo-q5_0.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin` (~547 MB). Set `WATCH_DISABLE_LOCAL_WHISPER=1` to force the cloud backends instead.
+
 `setup.py --check` is a fast, silent base preflight: exit 0 when binaries exist (or the Gemini engine is active), 2 for missing dependencies/config errors. It never starts Torch or queries network services. `--json` adds `engine` (resolved: `gemini` or `local`), `configured_engine`, `gemini_key_present` (boolean only), `gemini_model`, `binaries_required`, executable paths/versions, offline yt-dlp capability diagnostics, and `whisperx_ready`, `whisperx_bin`, `whisperx_model`, and `backend_ready`. Local readiness in detailed mode checks the sentinel and executable help. Optional fallback failure does not block base watch.
 
 ## Watch and answer
@@ -114,7 +116,9 @@ python3 "${SKILL_DIR}/scripts/watch.py" "<URL-or-local-path>" --question "<the u
 | `--resolution W` | Frame width, default 512; raise to 1024 for text when needed |
 | `--fps F` | Positive uniform rate override, at most 2 fps and reduced to fit the remaining cap |
 | `--no-dedup` | Preserve near-identical selected frames |
-| `--whisper groq|openai|whisperx` | Select this run's fallback; captions still come first |
+| `--whisper local|groq|openai|whisperx` | Select this run's fallback; captions still come first. `local` = on-device whisper.cpp/mlx |
+| `--accurate` | Use the max-accuracy local model (`large-v3`) instead of the fast default (`large-v3-turbo`); local whisper.cpp only |
+| `--model turbo|large-v3|medium|...|<path>` | Pick the local whisper.cpp model by alias or ggml `.bin` path (overrides `--accurate`); cloud backends ignore it |
 | `--no-whisper` | Disable every speech fallback, including local; conflicts with `--whisper` |
 | `--sub-lang CODE` | Select one exact caption language; default `auto` prefers original-language evidence |
 | `--cookies FILE` | Explicit cookie jar; yt-dlp may update it |
@@ -143,7 +147,7 @@ For a presenter saying “look here,” “notice this,” or similar:
 
 Full-track caption availability is checked before focus filtering. A silent focus interval does not trigger another transcription request. Reports distinguish no speech, disabled fallback, failed modalities, and missing cloud-chunk intervals.
 
-`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
+`WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, an on-device **whisper.cpp**/**mlx_whisper** install is detected first (free, no network, no key, no upload-size limit; Metal-accelerated on Apple Silicon), then each cloud provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. `--whisper local` forces the on-device engine; `WATCH_DISABLE_LOCAL_WHISPER=1` suppresses detection so the cloud backends are used instead. Explicit provider choices never borrow another provider's key.
 
 WhisperX defaults: `WATCH_WHISPERX_MODEL=small`, `WATCH_WHISPERX_DEVICE=cpu`, `WATCH_WHISPERX_COMPUTE_TYPE=int8`, `WATCH_WHISPERX_BATCH_SIZE=8`. No alignment or diarization is run. `WATCH_WHISPERX_LANGUAGE=es` (for example) gives a spoken-language hint; never infer it from `--sub-lang`, which may request a translation. Without a hint, auto-detection is used but reported as unverified because WhisperX 3.8.6 mislabels its JSON language when alignment is disabled.
 

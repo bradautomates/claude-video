@@ -28,6 +28,9 @@ def isolated_user(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    # A real whisper.cpp/mlx install on the developer's machine would otherwise win
+    # auto backend detection and shadow the cloud-key paths these tests assert.
+    monkeypatch.setenv("WATCH_DISABLE_LOCAL_WHISPER", "1")
     monkeypatch.chdir(cwd)
     import config
     monkeypatch.setattr(config, "CONFIG_DIR", home / ".config" / "watch")

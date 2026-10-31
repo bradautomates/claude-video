@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import shutil
 import sys
 import tempfile
@@ -22,7 +23,7 @@ import gemini  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
-from whisper import load_api_key, transcribe_video  # noqa: E402
+from whisper import load_api_key, resolve_model_alias, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
 
 
@@ -125,9 +126,21 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "whisperx"],
+        choices=["local", "groq", "openai", "whisperx"],
         default=None,
-        help="Select the fallback backend for this run; native captions still come first.",
+        help="Force a specific Whisper backend for this run; native captions still come first. "
+             "Default priority: local (whisper.cpp/mlx) → Groq → OpenAI (whisperx only when explicitly selected).",
+    )
+    ap.add_argument(
+        "--accurate",
+        action="store_true",
+        help="Use the max-accuracy local model (large-v3) instead of the fast default (turbo). Slower.",
+    )
+    ap.add_argument(
+        "--model",
+        default=None,
+        help="Local whisper.cpp model: an alias (turbo, large-v3, medium, small, base) or a path to a ggml .bin. "
+             "Overrides the auto-pick (and --accurate). Cloud backends ignore this.",
     )
     ap.add_argument(
         "--no-dedup",
@@ -148,7 +161,16 @@ def main() -> int:
     if args.no_whisper and args.whisper:
         ap.error("--no-whisper conflicts with --whisper")
 
-    config = get_config(backend_override="none" if args.no_whisper else args.whisper)
+    # Translate the friendly --model / --accurate into WHISPER_MODEL, which the
+    # local whisper.cpp backend honors. (Cloud backends have fixed models.)
+    chosen_model = args.model or ("large-v3" if args.accurate else None)
+    if chosen_model:
+        os.environ["WHISPER_MODEL"] = resolve_model_alias(chosen_model)
+
+    # "local" is a whisper.py backend, not a config WATCH_WHISPER_BACKEND value;
+    # keep it out of get_config's backend validation and resolve it below.
+    backend_override = "none" if args.no_whisper else (None if args.whisper == "local" else args.whisper)
+    config = get_config(backend_override=backend_override)
     detail = args.detail or config["detail"]
     max_frames = args.max_frames if args.max_frames is not None else frame_cap(detail)
     budget_cap = max_frames if max_frames is not None else 100
@@ -281,7 +303,11 @@ def main() -> int:
                 transcript_state = "failed"
                 errors.append(f"Transcription failed: {exc}")
         else:
-            transcript_state = f"unavailable: no matching API key for {backend_choice}"
+            transcript_state = (
+                "unavailable: no local whisper.cpp/mlx and no API key"
+                if backend_choice in ("auto", "local")
+                else f"unavailable: no matching API key for {backend_choice}"
+            )
     elif not track_available and backend_choice == "none":
         transcript_state = "fallback disabled; no captions available"
     elif not track_available and video_path and not meta.get("has_audio"):
