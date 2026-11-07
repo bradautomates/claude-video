@@ -23,6 +23,20 @@ def test_original_track_overrides_dubbed_metadata(language):
     assert download.select_caption(info)['key'] == f'{language}-orig'
 
 
+def test_many_original_tracks_follow_metadata_then_english():
+    # Videos with dubbed audio list one "-orig" ASR track per audio language. Picking the
+    # alphabetically first one returned ar-orig for an English video (CvT_EPyWcdo, 2026-11-07).
+    origs = ('ar-orig', 'bn-orig', 'de-orig', 'en-orig', 'fr-orig')
+    info = {'extractor_key': 'Youtube', 'language': 'en-US', 'automatic_captions': _tracks(*origs, 'ar', 'en')}
+    assert download.select_caption(info)['key'] == 'en-orig'
+    info['language'] = 'de'
+    assert download.select_caption(info)['key'] == 'de-orig'
+    del info['language']
+    assert download.select_caption(info)['key'] == 'en-orig'
+    info['language'] = 'ja'  # no matching original: fall back to English, never Arabic
+    assert download.select_caption(info)['key'] == 'en-orig'
+
+
 def test_unknown_language_prefers_english():
     # "Me at the zoo" reports no language and has manual de + en tracks.
     picked = download.select_caption({'extractor_key': 'Youtube', 'subtitles': _tracks('de', 'en')})

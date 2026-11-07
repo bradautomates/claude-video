@@ -106,17 +106,28 @@ def select_caption(info: dict, language: str = 'auto') -> dict | None:
         if language != 'auto':
             return key == target or base == target or ('-' not in language and base.split('-')[0] == target)
         return target and (base == target or base.split('-')[0] == str(target).split('-')[0])
-    def english_first(key):  # Unknown source language: prefer English over alphabetical order.
-        return key.removesuffix('-orig').split('-')[0] != 'en', key
+    def english_first(key):  # Unknown source language: prefer English (original ASR first) over alphabetical order.
+        return key.removesuffix('-orig').split('-')[0] != 'en', not key.endswith('-orig'), key
     for kind, tracks in (('manual', manual), ('automatic', automatic)):
         keys = sorted(tracks, key=english_first)
         if target:
             keys = sorted((k for k in keys if matches(k)), key=lambda k: (k != target, k != f'{target}-orig', k))
         if keys:
             key = keys[0]
-            # Auto mode must prefer original ASR to translated/dubbed metadata.
+            # Auto mode must prefer original ASR to translated/dubbed metadata. With one
+            # original track it is the source language. Dubbed videos list one original per
+            # audio language, so then prefer the metadata language, then English, never the
+            # alphabetically first (which picked Arabic for English videos).
             if kind == 'automatic' and language == 'auto' and originals:
-                key = originals[0]
+                if len(originals) == 1:
+                    key = originals[0]
+                else:
+                    wanted = [str(target).split('-')[0]] if target else []
+                    for lang in [*wanted, 'en']:
+                        hit = next((o for o in originals if o[:-5].split('-')[0] == lang), None)
+                        if hit:
+                            key = hit
+                            break
             base = key.removesuffix('-orig')
             provenance = 'original' if original and base.split('-')[0] == original.split('-')[0] else 'unknown'
             if language != 'auto' and original and base.split('-')[0] != original.split('-')[0]:
