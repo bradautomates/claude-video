@@ -15,6 +15,8 @@ DETAILS = {'transcript', 'efficient', 'balanced', 'token-burner'}
 BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
 ENGINES = {'auto', 'gemini', 'local'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
+# Asked in order when the default is overloaded (503) or out of quota (429); empty disables.
+DEFAULT_GEMINI_FALLBACKS = 'gemini-3.5-flash,gemini-2.5-flash'
 
 
 class ConfigError(ValueError):
@@ -147,6 +149,10 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'engine': engine,
         'gemini_model': setting('WATCH_GEMINI_MODEL', DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL,
         'gemini_timeout': positive_number(setting('WATCH_GEMINI_TIMEOUT', '600'), 'WATCH_GEMINI_TIMEOUT'),
+        'gemini_fallback_models': [model.strip() for model in
+                                   setting('WATCH_GEMINI_FALLBACK_MODELS', DEFAULT_GEMINI_FALLBACKS).split(',')
+                                   if model.strip()],
+        'gemini_retries': retry_count(setting('WATCH_GEMINI_RETRIES', '2'), 'WATCH_GEMINI_RETRIES'),
         'sub_lang': setting('WATCH_SUB_LANG', 'auto'),
         'cookies_file': setting('WATCH_COOKIES_FILE'),
         'cookies_from_browser': setting('WATCH_COOKIES_FROM_BROWSER'),
@@ -158,6 +164,16 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'whisperx_language': setting('WATCH_WHISPERX_LANGUAGE'),
         'whisperx_timeout': setting('WATCH_WHISPERX_TIMEOUT'),
     }
+
+
+def retry_count(value, name: str) -> int:
+    try:
+        number = int(value)
+        if not 0 <= number <= 10:
+            raise ValueError()
+        return number
+    except (TypeError, ValueError):
+        raise ConfigError(f'{name} must be a whole number from 0 to 10.') from None
 
 
 def positive_number(value, name: str) -> float:

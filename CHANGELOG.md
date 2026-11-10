@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- Gemini engine recovers from overload instead of failing on the first HTTP 503 (#250). A server error is retried on the same upload or URL with backoff (5s, then 15s; `WATCH_GEMINI_RETRIES`, default 2), each attempt logged. When a model stays overloaded or is out of quota (429), the models in `WATCH_GEMINI_FALLBACK_MODELS` (default `gemini-3.5-flash,gemini-2.5-flash`; empty disables) are asked in order. The report's Engine line names the model that answered, and a Model fallback line lists the ones that failed. Auth, rejected and network errors still stop at once, and the engine never falls back to local.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed

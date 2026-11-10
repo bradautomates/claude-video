@@ -45,10 +45,18 @@ def build_prompt(question: str | None) -> str:
     return ((question or '').strip() or DEFAULT_QUESTION) + PROMPT_SUFFIX
 
 
-def _fail(category: str, detail: str, key: str) -> SystemExit:
+class GeminiError(SystemExit):
+    """A categorized Gemini failure. Still a SystemExit, so existing callers report it unchanged."""
+    def __init__(self, message: str, category: str):
+        super().__init__(message)
+        self.category = category
+
+
+def _fail(category: str, detail: str, key: str) -> GeminiError:
     detail = diagnostic(detail, 600).replace(key, '[redacted]') if key else diagnostic(detail, 600)
-    return SystemExit(f'Gemini {category}: {_HINTS[category]}. Detail: {detail or "none"}. '
-                      'No local fallback was attempted; rerun with --engine local to use frames + transcript.')
+    return GeminiError(f'Gemini {category}: {_HINTS[category]}. Detail: {detail or "none"}. '
+                       'No local fallback was attempted; rerun with --engine local to use frames + transcript.',
+                       category)
 
 
 def _error_message(body: bytes) -> str:
@@ -114,6 +122,49 @@ def ask(video: dict, question: str | None, *, model: str, key: str, clip=None, t
         raise _fail('response', f'no answer text (status {data.get("status")})', key)
     return {'text': '\n'.join(parts).strip(), 'model': model, 'processing': label,
             'total_tokens': tokens if isinstance(tokens, int) else None}
+
+
+RETRY_DELAYS = (5.0, 15.0)
+
+
+def _status(exc: GeminiError) -> str:
+    found = re.search(r'HTTP \d+', str(exc))
+    return found.group(0) if found else exc.category
+
+
+def ask_with_recovery(video: dict, question: str | None, *, models, key: str, clip=None, timeout: float = 600.0,
+                      retries: int = 2, delays=RETRY_DELAYS, sleep=None, log=lambda message: None) -> dict:
+    """Ask each model in turn, reusing the same video reference (no re-upload).
+
+    A server error (5xx) is retried on the same model with backoff; once a model's retries are spent,
+    or it is out of quota (429), the next model is asked. Any other failure stops at once.
+    The result records every model that failed, so a model change is never silent.
+    """
+    failed, last = [], None
+    models = list(dict.fromkeys(model for model in models if model))
+    for index, model in enumerate(models):
+        attempts = retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                result = ask(video, question, model=model, key=key, clip=clip, timeout=timeout)
+            except GeminiError as exc:
+                if exc.category not in ('service', 'quota'):
+                    raise
+                last = exc
+                if exc.category == 'service' and attempt < attempts:
+                    delay = delays[min(attempt - 1, len(delays) - 1)]
+                    log(f'[watch] {model}: {_status(exc)} (attempt {attempt}/{attempts}); retrying in {delay:g}s…')
+                    (sleep or time.sleep)(delay)
+                    continue
+                failed.append(f'{model} ({_status(exc)}, {attempt} attempt{"" if attempt == 1 else "s"})')
+                if index + 1 < len(models):
+                    log(f'[watch] {model}: {_status(exc)}; asking {models[index + 1]} instead…')
+                break
+            else:
+                return {**result, 'failed_models': failed}
+    if last is None:
+        raise _fail('response', 'no Gemini model configured', key)
+    raise GeminiError(f'{last} Models tried: {"; ".join(failed)}.', last.category)
 
 
 def upload_file(path: Path, key: str, *, poll_seconds: float = 2.0, max_wait: float = 900.0, sleep=time.sleep) -> dict:

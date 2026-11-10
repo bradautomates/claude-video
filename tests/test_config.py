@@ -1,6 +1,8 @@
 """WATCH_DETAIL resolution and frame_cap mapping."""
 from __future__ import annotations
 
+import pytest
+
 import config
 
 
@@ -81,6 +83,8 @@ def test_engine_defaults_to_auto_and_local_without_key():
     assert cfg['engine'] == 'auto'
     assert cfg['gemini_model'] == 'gemini-3.7-flash'
     assert cfg['gemini_timeout'] == 600.0
+    assert cfg['gemini_fallback_models'] == ['gemini-3.5-flash', 'gemini-2.5-flash']
+    assert cfg['gemini_retries'] == 2
     assert config.load_gemini_key() is None
     assert config.resolve_engine('auto', has_key=False) == 'local'
 
@@ -116,4 +120,18 @@ def test_invalid_engine_and_timeout_rejected(monkeypatch):
     monkeypatch.setenv('WATCH_ENGINE', 'auto')
     monkeypatch.setenv('WATCH_GEMINI_TIMEOUT', '-5')
     with pytest.raises(config.ConfigError, match='WATCH_GEMINI_TIMEOUT'):
+        config.get_config()
+
+
+def test_gemini_fallbacks_can_be_set_or_disabled(monkeypatch):
+    monkeypatch.setenv('WATCH_GEMINI_FALLBACK_MODELS', ' gemini-a , ,gemini-b ')
+    assert config.get_config()['gemini_fallback_models'] == ['gemini-a', 'gemini-b']
+    monkeypatch.setenv('WATCH_GEMINI_FALLBACK_MODELS', '')
+    assert config.get_config()['gemini_fallback_models'] == []
+
+
+@pytest.mark.parametrize('value', ['-1', '11', 'two'])
+def test_gemini_retries_must_be_a_small_whole_number(monkeypatch, value):
+    monkeypatch.setenv('WATCH_GEMINI_RETRIES', value)
+    with pytest.raises(config.ConfigError, match='WATCH_GEMINI_RETRIES'):
         config.get_config()

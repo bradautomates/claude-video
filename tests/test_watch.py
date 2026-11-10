@@ -284,3 +284,24 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+def test_report_names_the_fallback_model_that_answered(monkeypatch, capsys):
+    import gemini
+    monkeypatch.setenv('GEMINI_API_KEY', 'unit-key')
+    monkeypatch.setenv('WATCH_GEMINI_FALLBACK_MODELS', 'gemini-backup')
+    seen = []
+    def fake_ask(video, question, **kw):
+        seen.append(kw['model'])
+        if kw['model'] == 'gemini-3.7-flash':
+            raise gemini._fail('service', 'HTTP 503: gemini-3.7-flash is currently experiencing high demand', 'unit-key')
+        return {'text': 'At 00:10 it turns blue.', 'model': kw['model'], 'processing': 'agentic', 'total_tokens': 1}
+    monkeypatch.setattr(gemini, 'ask', fake_ask)
+    monkeypatch.setattr(gemini.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://youtu.be/abc'])
+    assert watch.main() == 0
+    captured = capsys.readouterr()
+    assert seen == ['gemini-3.7-flash'] * 3 + ['gemini-backup']
+    assert '**Engine:** gemini-backup (agentic)' in captured.out
+    assert '**Model fallback:** answered by gemini-backup after gemini-3.7-flash (HTTP 503, 3 attempts) failed' in captured.out
+    assert 'retrying in 5s' in captured.err
