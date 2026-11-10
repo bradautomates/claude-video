@@ -31,7 +31,7 @@ LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "
 
 
 def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
-    """Google watches the video. No captions, frames, or Whisper; no fallback on failure."""
+    """Google watches the video. No captions, frames, or Whisper; never falls back to the local engine."""
     ignored = [flag for flag, name in LOCAL_ONLY_FLAGS if getattr(args, name) is not None]
     ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup)) if on]
     clip = (start_sec, end_sec) if start_sec is not None or end_sec is not None else None
@@ -53,8 +53,10 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
             video = {"uri": uploaded["uri"], "mime_type": uploaded["mime_type"]}
             sent = "video uploaded to Google, deleted after the answer"
         print(f"[watch] asking {config['gemini_model']}…", file=sys.stderr)
-        result = gemini.ask(video, args.question, model=config["gemini_model"], key=key,
-                            clip=clip, timeout=config["gemini_timeout"])
+        result = gemini.ask_with_recovery(
+            video, args.question, models=[config["gemini_model"], *config["gemini_fallback_models"]], key=key,
+            clip=clip, timeout=config["gemini_timeout"], retries=config["gemini_retries"],
+            log=lambda message: print(message, file=sys.stderr))
     except SystemExit as exc:
         error = str(exc)
     finally:
@@ -67,7 +69,11 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
     print("# watch: video report")
     print()
     print(f"- **Source:** {args.source} ({sent})")
-    print(f"- **Engine:** {config['gemini_model']} ({result['processing'] if result else 'failed'})")
+    print(f"- **Engine:** {result['model'] if result else config['gemini_model']} "
+          f"({result['processing'] if result else 'failed'})")
+    if result and result.get("failed_models"):
+        print(f"- **Model fallback:** answered by {result['model']} after "
+              f"{'; '.join(result['failed_models'])} failed")
     if clip:
         print(f"- **Focus range:** {format_time(start_sec or 0)} → {format_time(end_sec) if end_sec is not None else 'end'}")
     if ignored:

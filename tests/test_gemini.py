@@ -217,3 +217,69 @@ def test_invalid_key_reported_as_http_400_is_still_auth(calls):
     calls.replies = [http_error(400, b'{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}')]
     with pytest.raises(SystemExit, match='^Gemini auth:'):
         gemini.ask({'uri': 'https://youtu.be/abc'}, None, model='m', key=KEY)
+
+
+# --- Recovery: retry 5xx on the same model, then fall back (issue #250) ---
+
+def overloaded(model='m'):
+    return http_error(503, json.dumps({'error': {'message': f'{model} is currently experiencing high demand'}}).encode())
+
+
+def recover(calls, *, models, retries=2):
+    slept, logged = [], []
+    result = gemini.ask_with_recovery({'uri': 'https://g/files/abc', 'mime_type': 'video/mp4'}, 'q', models=models,
+                                      key=KEY, retries=retries, sleep=slept.append, log=logged.append)
+    return result, slept, logged
+
+
+def test_server_error_is_retried_on_the_same_upload_with_backoff(calls):
+    calls.replies = [overloaded(), overloaded(), FakeResponse(answer('Recovered.'))]
+    result, slept, logged = recover(calls, models=['primary'])
+    assert result['text'] == 'Recovered.' and result['model'] == 'primary' and result['failed_models'] == []
+    assert slept == [5.0, 15.0]
+    assert [json.loads(r.data)['input'][0]['uri'] for r in calls] == ['https://g/files/abc'] * 3
+    assert 'attempt 1/3' in logged[0] and 'retrying in 5s' in logged[0]
+
+
+def test_exhausted_retries_fall_back_to_the_next_model_and_say_so(calls):
+    calls.replies = [overloaded('primary')] * 3 + [FakeResponse(answer('From the fallback.'))]
+    result, slept, logged = recover(calls, models=['primary', 'backup'])
+    assert [json.loads(r.data)['model'] for r in calls] == ['primary'] * 3 + ['backup']
+    assert result['model'] == 'backup' and result['failed_models'] == ['primary (HTTP 503, 3 attempts)']
+    assert any('asking backup instead' in line for line in logged)
+
+
+def test_quota_moves_to_the_next_model_without_retrying(calls):
+    calls.replies = [http_error(429, b'{"error":{"message":"Quota exceeded"}}'), FakeResponse(answer('ok'))]
+    result, slept, _ = recover(calls, models=['primary', 'backup'])
+    assert slept == [] and result['model'] == 'backup'
+    assert result['failed_models'] == ['primary (HTTP 429, 1 attempt)']
+
+
+@pytest.mark.parametrize('reply,category', [
+    (http_error(400, b'{"error":{"message":"Invalid input"}}'), 'rejected'),
+    (http_error(401, b'{"error":{"message":"bad credentials"}}'), 'auth'),
+    (URLError('no route'), 'network'),
+])
+def test_other_failures_stop_at_once(calls, reply, category):
+    calls.replies = [reply]
+    with pytest.raises(SystemExit, match=f'Gemini {category}'):
+        recover(calls, models=['primary', 'backup'])
+    assert len(calls) == 1
+
+
+def test_every_model_failing_reports_each_one_and_keeps_the_key_out(calls):
+    calls.replies = [overloaded('primary')] * 2 + [overloaded('backup')] * 2
+    with pytest.raises(SystemExit) as caught:
+        recover(calls, models=['primary', 'backup'], retries=1)
+    message = str(caught.value)
+    assert message.startswith('Gemini service:')
+    assert 'Models tried: primary (HTTP 503, 2 attempts); backup (HTTP 503, 2 attempts).' in message
+    assert KEY not in message and '--engine local' in message
+
+
+def test_duplicate_and_empty_models_are_asked_once(calls):
+    calls.replies = [overloaded()]
+    with pytest.raises(SystemExit):
+        recover(calls, models=['primary', '', 'primary'], retries=0)
+    assert len(calls) == 1
