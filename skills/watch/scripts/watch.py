@@ -20,7 +20,7 @@ sys.path.insert(0, str(SCRIPT_DIR))
 from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_engine  # noqa: E402
 import gemini  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
-from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
+from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, extract_slides, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
 from transcribe import filter_range, format_transcript, parse_vtt  # noqa: E402
 from whisper import load_api_key, transcribe_video  # noqa: E402
 from runtime import configure_stdio  # noqa: E402
@@ -207,6 +207,10 @@ def main() -> int:
         except SystemExit as exc:
             visual_error = f"Media unavailable: {exc}"
             errors.append(visual_error)
+    # Image slideshow: frames come from the slides, video_path is only the soundtrack.
+    slides = dl.get("image_paths") or []
+    if slides:
+        start_sec = end_sec = None  # no timeline to focus on
 
     try:
         duration = float((dl.get("info") or {}).get("duration") or 0)
@@ -241,7 +245,16 @@ def main() -> int:
     frame_meta = {"engine": "none", "candidate_count": 0, "selected_count": 0, "fallback": False}
     cue_meta = {}
     detail_budget = max_frames
-    if video_path and meta.get("has_video", bool(meta.get("width"))):
+    if slides:
+        if detail != "transcript":
+            print(f"[watch] image slideshow: converting {len(slides)} slides…", file=sys.stderr)
+            try:
+                frames, frame_meta = extract_slides(slides, work / "frames", resolution=args.resolution,
+                                                    max_frames=max_frames)
+            except SystemExit as exc:
+                visual_error = f"Slide conversion unavailable: {exc}"
+                errors.append(visual_error)
+    elif video_path and meta.get("has_video", bool(meta.get("width"))):
         try:
             if cue_timestamps:
                 cue_frames, cue_meta = extract_at_timestamps(
@@ -321,7 +334,12 @@ def main() -> int:
     range_mode = "focused" if focused else "full"
     print(f"- **Detail:** {detail}")
     detail_count = frame_meta.get("selected_count", 0)
-    if detail != "transcript":
+    if detail != "transcript" and slides:
+        print(
+            f"- **Frames:** {detail_count} of {len(slides)} slides (image slideshow: no timeline, "
+            "the caption and on-slide text carry the content)"
+        )
+    elif detail != "transcript":
         cap_label = "unlimited" if detail_budget is None else str(detail_budget)
         engine = frame_meta.get("engine", "scene")
         fallback = " fallback" if frame_meta.get("fallback") else ""
@@ -385,6 +403,9 @@ def main() -> int:
         )
         print()
         for frame in frames:
+            if "slide" in frame:
+                print(f"- `{frame['path']}` (slide {frame['slide']})")
+                continue
             print(
                 f"- `{frame['path']}` "
                 f"(t={format_time(frame['timestamp_seconds'])}, reason={frame.get('reason', 'selected')})"

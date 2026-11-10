@@ -173,6 +173,8 @@ Tell me which tools are missing and help me install them here.
 
 Reopen the terminal and agent after installation so they can find the new tools. On Windows, verify Python with `python --version` or `py -3 --version`. Watch supports the **latest yt-dlp release** only, because sites routinely break older ones; it uses the executable available in the active environment.
 
+**TikTok photo slideshows (optional):** put [`gallery-dl`](https://github.com/mikf/gallery-dl) on PATH (`brew install gallery-dl` or `pipx install gallery-dl`). The local engine uses it only when yt-dlp returns no video, and reports each slide as a frame.
+
 ## Chat, Cowork, and browser apps
 
 **Watch works in Claude Code:** a **Code** session in [Claude Desktop](#claude-desktop--code), or Claude Code installed with the plugin commands in [VS Code](#claude-code-in-vs-code) or [a terminal](#claude-code-in-a-terminal). Codex and other [local agents](#other-local-agents) work too.

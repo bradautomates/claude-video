@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -12,6 +13,8 @@ from urllib.parse import urlparse
 from runtime import configure_stdio, diagnostic, run_text
 
 VIDEO_EXTS = {'.mp4', '.mkv', '.webm', '.mov', '.m4v', '.avi', '.flv', '.wmv'}
+AUDIO_EXTS = {'.m4a', '.mp3', '.opus', '.aac'}
+IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp'}
 
 
 def is_url(source: str) -> bool:
@@ -162,6 +165,43 @@ def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', cookies_file=Non
     return result
 
 
+def download_gallery(url: str, out_dir: Path) -> dict | None:
+    """Optional gallery-dl fallback for posts yt-dlp can't turn into a video.
+
+    Returns slide images + soundtrack for image posts, or the video file when
+    gallery-dl fetched one yt-dlp couldn't. None when gallery-dl is not on PATH
+    or produced nothing usable.
+    """
+    if shutil.which('gallery-dl') is None:
+        print('[watch] yt-dlp returned no video; install gallery-dl to handle image slideshows', file=sys.stderr)
+        return None
+    print('[watch] yt-dlp returned no video, trying gallery-dl…', file=sys.stderr)
+    result = run_text(['gallery-dl', '-D', str(out_dir), '-f', '{num:>03}.{extension}',
+                       '-o', 'tiktok.audio=true', '--write-info-json', '--', url])
+    if result.returncode != 0:
+        print(f'[watch] gallery-dl failed (exit {result.returncode}): {diagnostic(result.stderr)}', file=sys.stderr)
+    files = sorted(out_dir.glob('[0-9][0-9][0-9].*'))
+    images = [p for p in files if p.suffix.lower() in IMAGE_EXTS]
+    videos = [p for p in files if p.suffix.lower() in VIDEO_EXTS]
+    audio = [p for p in files if p.suffix.lower() in AUDIO_EXTS]
+    if not images and not videos:
+        return None
+    info = {'url': url}
+    try:
+        raw = json.loads((out_dir / 'info.json').read_text(encoding='utf-8'))
+        author = raw.get('author') if isinstance(raw.get('author'), dict) else {}
+        info.update({'title': raw.get('desc') or raw.get('description'),
+                     'uploader': author.get('uniqueId') or author.get('nickname')})
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, AttributeError) as exc:
+        print(f'[watch] gallery-dl info.json unreadable: {type(exc).__name__}', file=sys.stderr)
+    media = videos or audio
+    return {'video_path': str(media[0].resolve()) if media else None,
+            'image_paths': None if videos else [str(p.resolve()) for p in images],
+            'info': info, 'downloaded': True}
+
+
 def download_url(url: str, out_dir: Path, audio_only: bool = False, *, context=None,
                  cookies_file=None, cookies_from_browser=None) -> dict:
     auth = auth_args(cookies_file, cookies_from_browser)
@@ -177,6 +217,26 @@ def download_url(url: str, out_dir: Path, audio_only: bool = False, *, context=N
         cmd += ['--load-info-json', context['info_path']]
     else:
         cmd += ['--', url]
+    try:
+        video = _completed_media(cmd, record, run)
+    except SystemExit as exc:
+        video, failure = None, exc
+    # TikTok photo slideshows: yt-dlp rejects /photo/ URLs and returns only the
+    # soundtrack for /video/ ones, so ask gallery-dl for the slides.
+    if video is None or (not audio_only and video.suffix.lower() in AUDIO_EXTS):
+        gallery = download_gallery(url, run / 'gallery')
+        if gallery:
+            info = {**(context.get('info') or {}), **{k: v for k, v in gallery['info'].items() if v}}
+            return {**context, **gallery, 'subtitle_path': context.get('subtitle_path'),
+                    'info': info, 'run_dir': str(run)}
+    if video is None:
+        raise failure
+    info = context.get('info') or _summary(_read_metadata(run / 'video.info.json'), url)
+    return {**context, 'video_path': str(video), 'subtitle_path': context.get('subtitle_path'),
+            'info': info, 'downloaded': True, 'run_dir': str(run)}
+
+
+def _completed_media(cmd: list[str], record: Path, run: Path) -> Path:
     _run(cmd)
     try:
         lines = record.read_text(encoding='utf-8').splitlines()
@@ -191,9 +251,7 @@ def download_url(url: str, out_dir: Path, audio_only: bool = False, *, context=N
             raise ValueError()
     except (OSError, ValueError, TypeError):
         raise SystemExit('yt-dlp did not report one completed, nonempty media file inside this run directory.') from None
-    info = context.get('info') or _summary(_read_metadata(run / 'video.info.json'), url)
-    return {**context, 'video_path': str(video), 'subtitle_path': context.get('subtitle_path'),
-            'info': info, 'downloaded': True, 'run_dir': str(run)}
+    return video
 
 
 def download(source: str, out_dir: Path, audio_only: bool = False, **kwargs) -> dict:

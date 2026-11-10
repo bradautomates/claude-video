@@ -46,7 +46,8 @@ def test_cookie_modes_and_conflict():
         download.auth_args('jar', 'browser')
 
 
-def _fake_stages(monkeypatch, *, fail_media=False, media_path=None):
+def _fake_stages(monkeypatch, *, fail_media=False, media_path=None, gallery_files=None, gallery_info=None):
+    """gallery_files=None means gallery-dl is not installed."""
     calls = []
     def run(cmd):
         calls.append(cmd)
@@ -66,6 +67,20 @@ def _fake_stages(monkeypatch, *, fail_media=False, media_path=None):
             record.write_text(json.dumps(str(path)) + '\n')
         return subprocess.CompletedProcess(cmd, 0, '', '')
     monkeypatch.setattr(download, '_run', run)
+    def gallery(cmd, **kwargs):
+        calls.append(cmd)
+        out = Path(cmd[cmd.index('-D') + 1])
+        out.mkdir(parents=True, exist_ok=True)
+        for name in gallery_files:
+            (out / name).write_bytes(b'x')
+        if gallery_info is not None:
+            (out / 'info.json').write_text(json.dumps(gallery_info), encoding='utf-8')
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(download, 'run_text', gallery)
+    real_which = download.shutil.which
+    monkeypatch.setattr(download.shutil, 'which',
+                        lambda name, *a, **kw: (None if gallery_files is None else '/usr/bin/gallery-dl')
+                        if name == 'gallery-dl' else real_which(name, *a, **kw))
     return calls
 
 
@@ -155,3 +170,53 @@ def test_actual_ytdlp_exact_track_with_inherited_all(monkeypatch, tmp_path, stat
 def test_explicit_regional_language_is_not_silently_replaced():
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en-GB') is None
     assert download.select_caption({'subtitles': _tracks('en-US')}, 'en')['key'] == 'en-US'
+
+
+# --- gallery-dl fallback (image slideshows) ---------------------------------
+
+TIKTOK = 'https://www.tiktok.com/@iloveeestrayyykidsss/photo/7463596003225013536'
+
+
+def test_audio_only_ytdlp_result_falls_back_to_slides(monkeypatch, tmp_path):
+    # yt-dlp on a slideshow /video/ URL returns just the soundtrack.
+    run = tmp_path / 'run'
+    run.mkdir()
+    _fake_stages(monkeypatch, media_path=run / 'video.mp3', gallery_files=['000.mp3', '001.jpg', '002.jpg', '003.jpg'],
+                 gallery_info={'desc': 'slide caption', 'author': {'uniqueId': 'kev'}})
+    result = download.download_url(TIKTOK, tmp_path, context={'run_dir': str(run), 'info': {'title': 'TikTok #1', 'duration': 9}})
+    assert [Path(p).name for p in result['image_paths']] == ['001.jpg', '002.jpg', '003.jpg']
+    assert Path(result['video_path']).name == '000.mp3'
+    assert result['info'] == {'title': 'slide caption', 'uploader': 'kev', 'duration': 9, 'url': TIKTOK}
+
+
+def test_unsupported_url_falls_back_to_gallery_video(monkeypatch, tmp_path):
+    calls = _fake_stages(monkeypatch, fail_media=True, gallery_files=['000.mp4'])
+    result = download.download_url(TIKTOK, tmp_path)
+    assert Path(result['video_path']).name == '000.mp4'
+    assert result['image_paths'] is None
+    assert calls[-1][0] == 'gallery-dl' and calls[-1][-2:] == ['--', TIKTOK]
+
+
+def test_transcript_mode_keeps_ytdlp_audio_without_gallery(monkeypatch, tmp_path):
+    run = tmp_path / 'run'
+    run.mkdir()
+    calls = _fake_stages(monkeypatch, media_path=run / 'video.m4a', gallery_files=['001.jpg'])
+    result = download.download_url(URL, tmp_path, audio_only=True, context={'run_dir': str(run), 'info': {'title': 'clip'}})
+    assert Path(result['video_path']).name == 'video.m4a'
+    assert not any(c[0] == 'gallery-dl' for c in calls)
+
+
+def test_missing_gallery_dl_keeps_original_failure(monkeypatch, tmp_path):
+    _fake_stages(monkeypatch, fail_media=True)
+    with pytest.raises(SystemExit, match='network'):
+        download.download_url(TIKTOK, tmp_path)
+
+
+def test_gallery_with_nothing_usable_keeps_ytdlp_audio(monkeypatch, tmp_path):
+    # Not a slideshow (e.g. a podcast page): gallery-dl finds nothing, audio stays.
+    run = tmp_path / 'run'
+    run.mkdir()
+    _fake_stages(monkeypatch, media_path=run / 'video.mp3', gallery_files=[])
+    result = download.download_url(URL, tmp_path, context={'run_dir': str(run), 'info': {'title': 'pod'}})
+    assert Path(result['video_path']).name == 'video.mp3'
+    assert 'image_paths' not in result
