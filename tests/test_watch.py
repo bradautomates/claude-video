@@ -284,3 +284,44 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+TIKTOK = "https://www.tiktok.com/@iloveeestrayyykidsss/photo/7463596003225013536"
+
+
+def _media(path: Path, *ffmpeg_args: str) -> Path:
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *ffmpeg_args, str(path)], check=True)
+    return path
+
+
+def _run_slideshow(monkeypatch, capsys, dl: dict, *args: str) -> str:
+    monkeypatch.delenv("WATCH_DETAIL", raising=False)
+    monkeypatch.setattr(watch, "fetch_captions", lambda *a, **kw: {"subtitle_path": None, "info": {}})
+    monkeypatch.setattr(watch, "download", lambda *a, **kw: dl)
+    monkeypatch.setattr(sys, "argv", ["watch", TIKTOK, "--no-whisper", "--engine", "local", *args])
+    assert watch.main() == 0
+    return capsys.readouterr().out
+
+
+def test_slideshow_report_lists_every_slide(monkeypatch, capsys, tmp_path: Path):
+    slides = [
+        str(_media(tmp_path / f"{i:03d}.jpg", "-f", "lavfi", "-i", f"color=c={c}:s=540x720", "-frames:v", "1"))
+        for i, c in enumerate(["red", "green", "blue"], 1)
+    ]
+    audio = _media(tmp_path / "000.m4a", "-f", "lavfi", "-t", "2", "-i", "sine=f=440", "-c:a", "aac")
+    dl = {"video_path": str(audio), "image_paths": slides, "subtitle_path": None,
+          "info": {"title": "caption text", "uploader": "kev"}, "downloaded": True}
+    out = _run_slideshow(monkeypatch, capsys, dl, "--detail", "balanced", "--start", "5")
+    assert "**Frames:** 3 of 3 slides" in out
+    slide_lines = [line for line in out.splitlines() if "(slide " in line]
+    assert len(slide_lines) == 3 and slide_lines[-1].endswith("(slide 3)")
+    assert "Focus range" not in out  # --start is meaningless without a timeline
+    assert "**Title:** caption text" in out
+    assert "Visual status" not in out
+
+
+def test_audio_only_download_does_not_crash_frame_engine(monkeypatch, capsys, tmp_path: Path):
+    audio = _media(tmp_path / "video.mp3", "-f", "lavfi", "-t", "2", "-i", "sine=f=440", "-c:a", "aac", "-f", "adts")
+    dl = {"video_path": str(audio), "subtitle_path": None, "info": {}, "downloaded": True}
+    out = _run_slideshow(monkeypatch, capsys, dl, "--detail", "balanced")
+    assert "_No frames extracted._" in out
