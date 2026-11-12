@@ -138,7 +138,10 @@ def fetch_captions(url: str, out_dir: Path, *, sub_lang='auto', cookies_file=Non
     result = {'video_path': None, 'subtitle_path': None, 'info': {'url': url}, 'downloaded': False,
               'run_dir': str(run), 'info_path': None, 'caption_track': None, 'errors': []}
     try:
-        _run([*_common(run, auth), '--skip-download', '--write-info-json', '--no-write-subs', '--no-write-auto-subs', '--', url])
+        # Lazy extractors (TikTok, etc.) leave subtitles empty unless write flags
+        # are on. --sub-langs -all still writes no files; it only fills metadata.
+        _run([*_common(run, auth), '--skip-download', '--write-info-json',
+              '--write-subs', '--write-auto-subs', '--sub-langs', '-all', '--', url])
         info = _read_metadata(info_path)
         result.update(info=_summary(info, url), info_path=str(info_path))
         track = select_caption(info, sub_lang)

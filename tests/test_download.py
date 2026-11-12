@@ -74,7 +74,9 @@ def test_fetch_captions_requests_one_exact_track(monkeypatch, tmp_path):
     result = download.fetch_captions(URL, tmp_path / '100% 한 글', cookies_from_browser='firefox:profile')
     download.download_url(URL, tmp_path, context=result, cookies_from_browser='firefox:profile')
     metadata, captions, media = calls
-    assert '--no-write-subs' in metadata and '--no-write-auto-subs' in metadata
+    assert '--write-subs' in metadata and '--write-auto-subs' in metadata
+    assert metadata[metadata.index('--sub-langs') + 1] == '-all'
+    assert '--no-write-subs' not in metadata and '--no-write-auto-subs' not in metadata
     assert metadata[-2:] == ['--', URL]
     assert captions[captions.index('--sub-langs') + 1] == '-all,^ko$'
     assert '--load-info-json' in captions and URL not in captions
