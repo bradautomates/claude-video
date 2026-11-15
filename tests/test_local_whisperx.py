@@ -186,6 +186,7 @@ def test_cpu_installer_recipe_keeps_torch_out_of_cuda_index(monkeypatch, system)
     assert setup.install_whisperx() == 0
     torch = next(cmd for cmd in commands if 'torch==2.8.0' in cmd)
     assert 'torchaudio==2.8.0' in torch and 'https://download.pytorch.org/whl/cpu' in torch
+    assert 'torchvision==0.23.0' in torch
     assert any('whisperx==3.8.6' in cmd for cmd in commands)
 
 
