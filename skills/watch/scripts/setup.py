@@ -288,7 +288,7 @@ def install_whisperx():
         venv.parent.mkdir(parents=True, exist_ok=True)
         _install_step([uv, 'venv', str(venv), '--python', '3.12'], 'Create WhisperX Python 3.12 environment')
         if platform.system() in ('Linux', 'Windows'):
-            _install_step([uv, 'pip', 'install', '--python', python, 'torch==2.8.0', 'torchaudio==2.8.0',
+            _install_step([uv, 'pip', 'install', '--python', python, 'torch==2.8.0', 'torchaudio==2.8.0', 'torchvision==0.23.0',
                            '--index-url', 'https://download.pytorch.org/whl/cpu'], 'Install CPU PyTorch wheels')
         _install_step([uv, 'pip', 'install', '--python', python, f'whisperx=={WHISPERX_VERSION}'], 'Install WhisperX')
     # Invalidate before warm-up: an interrupted repair is always safe to rerun.
