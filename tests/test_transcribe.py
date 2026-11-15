@@ -38,3 +38,23 @@ def test_overlapping_separate_display_regions_are_not_merged(tmp_path):
     out = parse(tmp_path, 'WEBVTT\n\n00:00.000 --> 00:02.000 line:10%\nHello\n\n00:01.000 --> 00:03.000 line:90%\nHello\n')
     assert len(out) == 2
     assert all(set(s) == {'start', 'end', 'text'} for s in out)
+
+
+
+def test_overlapping_cues_from_different_voices_are_not_merged(tmp_path):
+    out = parse(tmp_path, (
+        'WEBVTT\n\n00:00.000 --> 00:02.000\n<v Esme>Yes\n\n'
+        '00:01.000 --> 00:03.000\n<v.loud Mary>Yes\n'
+    ))
+    assert out == [
+        {'start': 0, 'end': 2, 'text': 'Yes'},
+        {'start': 1, 'end': 3, 'text': 'Yes'},
+    ]
+
+
+def test_rolling_cues_from_the_same_voice_still_merge(tmp_path):
+    out = parse(tmp_path, (
+        'WEBVTT\n\n00:00.000 --> 00:02.000\n<v Mary>Yes\n\n'
+        '00:01.000 --> 00:03.000\n<v.loud Mary>Yes please</v>\n'
+    ))
+    assert out == [{'start': 0, 'end': 3, 'text': 'Yes please'}]

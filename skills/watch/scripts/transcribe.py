@@ -13,6 +13,7 @@ from runtime import configure_stdio
 TIME = r'(?:[0-9]{2,}:)?[0-5][0-9]:[0-5][0-9][.,][0-9]{3}'
 TIMING_RE = re.compile(rf'^\s*({TIME})\s+-->\s+({TIME})(?:\s+.*)?$')
 TAG_RE = re.compile(r'<[^>]*>')
+VOICE_RE = re.compile(r'<v(?:\.[^.\s<>&]+)*\s+([^<>]+)>')
 
 
 class Segments(list):
@@ -76,7 +77,8 @@ def parse_vtt(path: str) -> list[dict]:
             i += 1
         text = ' '.join(html.unescape(TAG_RE.sub('', part)).strip() for part in payload).strip()
         if text and end >= start:
-            segments.append({'start': start, 'end': end, 'text': text, '_display': display})
+            voices = tuple(html.unescape(label).strip() for label in VOICE_RE.findall('\n'.join(payload)))
+            segments.append({'start': start, 'end': end, 'text': text, '_display': (display, voices)})
     return [{k: s[k] for k in ('start', 'end', 'text')} for s in _dedupe(segments)]
 
 
