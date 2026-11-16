@@ -160,3 +160,25 @@ def test_filter_range_keeps_overlapping_segments():
     ]
     kept = [seg["text"] for seg in transcribe.filter_range(segments, 6.0, 9.0)]
     assert kept == ["b"]
+
+
+# --- timestamp forms ---------------------------------------------------------
+
+def test_cues_without_an_hour_field_are_kept(tmp_path: Path):
+    # WebVTT makes the hour optional; these cues used to vanish silently.
+    path = _write(tmp_path, "short.vtt",
+                  "WEBVTT\n\n00:05.000 --> 00:07.500\nshort form cue\n\n"
+                  "01:00:01.000 --> 01:00:02.000\nlong form\n")
+    segs = transcribe.parse_vtt(path)
+    assert [s["text"] for s in segs] == ["short form cue", "long form"]
+    assert segs[0]["start"] == 5.0 and segs[0]["end"] == 7.5
+    assert segs[1]["start"] == 3601.0
+
+
+def test_hours_past_99_parse(tmp_path: Path):
+    path = _write(tmp_path, "long.vtt", "WEBVTT\n\n100:00:00.000 --> 100:00:01.000\nlate\n")
+    assert transcribe.parse_vtt(path)[0]["start"] == 360000.0
+
+
+def test_hourless_inline_word_tags_mark_rolling_format():
+    assert transcribe.CUE_TAG_RE.search("<00:05.120><c> word</c>")

@@ -23,13 +23,15 @@ import sys
 from pathlib import Path
 
 
+# WebVTT makes the hour optional (``05.000 --> 07.500`` is ``MM:SS.mmm``), and
+# long recordings can run past 99 hours, so the hour group is ``(?:\d+:)?``.
 TS_RE = re.compile(
-    r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
+    r"(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})\s+-->\s+(?:(\d+):)?(\d{2}):(\d{2})[.,](\d{3})"
 )
 TAG_RE = re.compile(r"<[^>]+>")
 # Inline per-word timing tag. Its presence marks the rolling auto-sub format,
 # and marks which line inside a cue is new rather than carried over.
-CUE_TAG_RE = re.compile(r"<\d{2}:\d{2}:\d{2}[.,]\d{3}>")
+CUE_TAG_RE = re.compile(r"<(?:\d+:)?\d{2}:\d{2}[.,]\d{3}>")
 
 # A repeated run this long is a rolling duplicate, not a phrase the speaker
 # happened to repeat across a cue boundary. Below it we keep the words: a stray
@@ -40,8 +42,8 @@ MIN_OVERLAP_WORDS = 3
 MAX_OVERLAP_WINDOW = 40
 
 
-def _to_seconds(h: str, m: str, s: str, ms: str) -> float:
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
+def _to_seconds(h: str | None, m: str, s: str, ms: str) -> float:
+    return int(h or 0) * 3600 + int(m) * 60 + int(s) + int(ms) / 1000.0
 
 
 def _clean(line: str) -> str:

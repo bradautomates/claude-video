@@ -313,13 +313,36 @@ def _restrict_config_file() -> None:
         pass
 
 
+def _write_config_atomic(text: str) -> None:
+    """Replace the config file in one step, so an interrupted run cannot truncate it.
+
+    The temp file sits in the same directory (``os.replace`` is only atomic on
+    one filesystem) and gets the restricted mode before the content lands, so
+    the keys are never briefly world-readable.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_FILE.with_name(f"{CONFIG_FILE.name}.{os.getpid()}.tmp")
+    try:
+        if not _IS_WINDOWS:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+        else:
+            tmp.write_bytes(text.encode("utf-8"))
+        os.replace(tmp, CONFIG_FILE)
+    finally:
+        tmp.unlink(missing_ok=True)
+    _restrict_config_file()
+
+
 def _scaffold_env() -> bool:
     """Create ~/.config/watch/.env with placeholders if missing."""
     if CONFIG_FILE.exists():
         return False
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(ENV_TEMPLATE, encoding="utf-8")
-    _restrict_config_file()
+    _write_config_atomic(ENV_TEMPLATE)
     return True
 
 
@@ -338,10 +361,9 @@ def _write_setup_complete() -> None:
                 return
         if existing and not existing.endswith("\n"):
             existing += "\n"
-        CONFIG_FILE.write_text(existing + "SETUP_COMPLETE=true\n", encoding="utf-8")
+        _write_config_atomic(existing + "SETUP_COMPLETE=true\n")
     else:
-        CONFIG_FILE.write_text(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n", encoding="utf-8")
-    _restrict_config_file()
+        _write_config_atomic(ENV_TEMPLATE + "\nSETUP_COMPLETE=true\n")
 
 
 def _brew_pkg(missing: list[str]) -> list[str]:

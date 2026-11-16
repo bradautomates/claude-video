@@ -92,3 +92,34 @@ def test_key_present_is_ready(tmp_path):
     assert js["status"] == "ready"
     assert js["can_proceed"] is True
     assert js["whisper_backend"] == "groq"
+
+
+def test_config_write_is_atomic_and_private(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("watch_setup_atomic", SETUP)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SETUP.parent))
+    spec.loader.exec_module(mod)
+    cfg = tmp_path / ".config" / "watch"
+    monkeypatch.setattr(mod, "CONFIG_DIR", cfg)
+    monkeypatch.setattr(mod, "CONFIG_FILE", cfg / ".env")
+    (cfg).mkdir(parents=True)
+    (cfg / ".env").write_text("GROQ_API_KEY=keep\n", encoding="utf-8")
+
+    real_replace = mod.os.replace
+    def boom(*a, **k):
+        raise OSError("disk gone")
+    monkeypatch.setattr(mod.os, "replace", boom)
+    try:
+        mod._write_setup_complete()
+    except OSError:
+        pass
+    # An interrupted write leaves the old file intact and no temp file behind.
+    assert (cfg / ".env").read_text(encoding="utf-8") == "GROQ_API_KEY=keep\n"
+    assert [p.name for p in cfg.iterdir()] == [".env"]
+
+    monkeypatch.setattr(mod.os, "replace", real_replace)
+    mod._write_setup_complete()
+    assert (cfg / ".env").read_text(encoding="utf-8").endswith("SETUP_COMPLETE=true\n")
+    if os.name != "nt":
+        assert (cfg / ".env").stat().st_mode & 0o777 == 0o600
