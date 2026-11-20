@@ -38,3 +38,34 @@ def test_overlapping_separate_display_regions_are_not_merged(tmp_path):
     out = parse(tmp_path, 'WEBVTT\n\n00:00.000 --> 00:02.000 line:10%\nHello\n\n00:01.000 --> 00:03.000 line:90%\nHello\n')
     assert len(out) == 2
     assert all(set(s) == {'start', 'end', 'text'} for s in out)
+
+
+# YouTube auto-captions: each cue shows the line before and adds a timed line; a
+# short cue in between repeats the finished line on its own.
+ROLLING = (
+    'WEBVTT\nKind: captions\nLanguage: en\n\n'
+    '00:00:04.280 --> 00:00:06.830 align:start position:0%\n \n'
+    'This<00:00:04.760><c> is</c><00:00:04.960><c> a</c><00:00:05.000><c> three</c>\n\n'
+    '00:00:06.830 --> 00:00:06.840 align:start position:0%\nThis is a three\n \n\n'
+    '00:00:06.840 --> 00:00:08.350 align:start position:0%\nThis is a three\n'
+    'and<00:00:07.040><c> rendered</c><00:00:07.360><c> at</c><00:00:07.480><c> low</c>\n\n'
+    '00:00:08.350 --> 00:00:08.360 align:start position:0%\nand rendered at low\n \n\n'
+    '00:00:08.360 --> 00:00:11.230 align:start position:0%\nand rendered at low\n'
+    'and<00:00:09.000><c> rendered</c><00:00:09.400><c> at</c><00:00:09.900><c> low</c>\n\n'
+    '00:00:11.230 --> 00:00:11.240 align:start position:0%\nand rendered at low\n \n\n'
+    '00:00:11.240 --> 00:00:13.000 align:start position:0%\nand rendered at low\n[Music]\n'
+)
+
+
+def test_rolling_auto_captions_emit_each_line_once(tmp_path):
+    out = parse(tmp_path, ROLLING)
+    # The third line repeats the second on purpose: repeated speech stays.
+    assert [s['text'] for s in out] == ['This is a three', 'and rendered at low', 'and rendered at low', '[Music]']
+    assert [s['start'] for s in out] == [4.28, 6.84, 8.36, 11.24]
+    assert out[0]['end'] == 6.84 and out[2]['end'] == 11.24
+
+
+def test_manual_captions_keep_a_repeated_first_line(tmp_path):
+    out = parse(tmp_path, 'WEBVTT\n\n00:01.000 --> 00:02.000\nLa la la\n\n00:02.000 --> 00:04.000\nLa la la\nla la la la\n')
+    assert [s['text'] for s in out] == ['La la la', 'La la la la la la la']
+
