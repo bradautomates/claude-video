@@ -13,6 +13,8 @@ from runtime import configure_stdio
 TIME = r'(?:[0-9]{2,}:)?[0-5][0-9]:[0-5][0-9][.,][0-9]{3}'
 TIMING_RE = re.compile(rf'^\s*({TIME})\s+-->\s+({TIME})(?:\s+.*)?$')
 TAG_RE = re.compile(r'<[^>]*>')
+# Per-word timing tags appear only in auto-generated captions.
+WORD_TIME_RE = re.compile(rf'<{TIME}>')
 
 
 class Segments(list):
@@ -52,6 +54,9 @@ def _seconds(stamp: str) -> float:
 def parse_vtt(path: str) -> list[dict]:
     lines = Path(path).read_text(encoding='utf-8-sig').splitlines()
     segments = []
+    # Auto-captions show two lines per cue: the line before, then the new one.
+    rolling = any(WORD_TIME_RE.search(line) for line in lines)
+    rolled = None  # Last line of the cue before, which the next cue carries over.
     i = 0
     while i < len(lines):
         line = lines[i]
@@ -74,9 +79,16 @@ def parse_vtt(path: str) -> list[dict]:
                 break
             payload.append(lines[i])
             i += 1
-        text = ' '.join(html.unescape(TAG_RE.sub('', part)).strip() for part in payload).strip()
+        parts = [html.unescape(TAG_RE.sub('', part)).strip() for part in payload]
+        if rolling and len(parts) > 1 and parts[0] and parts[0] == rolled:
+            if not any(parts[1:]):
+                segments[-1]['end'] = max(segments[-1]['end'], end)
+                continue  # The cue only holds the carried-over line.
+            parts[0] = ''  # A line said twice still arrives as the second line.
+        text = ' '.join(parts).strip()
         if text and end >= start:
             segments.append({'start': start, 'end': end, 'text': text, '_display': display})
+            rolled = next(part for part in reversed(parts) if part)
     return [{k: s[k] for k in ('start', 'end', 'text')} for s in _dedupe(segments)]
 
 
