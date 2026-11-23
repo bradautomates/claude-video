@@ -51,6 +51,12 @@ HAS_GROQ="$(read_key GROQ_API_KEY)"
 HAS_OPENAI="$(read_key OPENAI_API_KEY)"
 SETUP_COMPLETE="$(read_key SETUP_COMPLETE)"
 
+# parakeet/cli run on-device and a local server needs no key, so either one
+# configured counts as a transcription backend, same as setup.py.
+HAS_KEYLESS=""
+case "$(read_key WATCH_WHISPER_BACKEND)" in parakeet|cli) HAS_KEYLESS="yes" ;; esac
+if [[ -n "$(read_key WATCH_WHISPER_BASE_URL)" ]]; then HAS_KEYLESS="yes"; fi
+
 # Fully configured → silent (Claude can surface status on demand via --check).
 if [[ "$SETUP_COMPLETE" == "true" && -n "$HAS_FFMPEG" && -n "$HAS_YTDLP" ]]; then
   exit 0
@@ -59,7 +65,7 @@ fi
 # First-run / partially-configured → one-line hint.
 if [[ -z "$HAS_FFMPEG" || -z "$HAS_YTDLP" ]]; then
   echo "/watch: needs ffmpeg + yt-dlp. Run \`python3 \$CLAUDE_PLUGIN_ROOT/skills/watch/scripts/setup.py\` once to install and scaffold config."
-elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" ]]; then
+elif [[ -z "$HAS_GROQ" && -z "$HAS_OPENAI" && -z "$HAS_KEYLESS" ]]; then
   echo "/watch: ready for videos with native captions. Add GROQ_API_KEY (preferred) or OPENAI_API_KEY to ~/.config/watch/.env to unlock Whisper fallback."
 else
   echo "/watch: ready."

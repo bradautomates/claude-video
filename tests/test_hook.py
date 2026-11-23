@@ -60,3 +60,42 @@ def test_unquoted_command_would_have_failed(tmp_path: Path):
 
 def test_hook_command_quotes_the_plugin_root():
     assert '"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/check-setup.sh"' in _hook_command()
+
+
+# ---------------------------------------------------------------------------
+# A keyless transcription backend counts as configured, as in setup.py: a
+# configured parakeet was told to add a Groq/OpenAI key on every session start.
+# ---------------------------------------------------------------------------
+
+
+def _run_hook(home: Path, fake_bin_dir: Path, env_body: str) -> subprocess.CompletedProcess:
+    cfg = home / ".config" / "watch"
+    cfg.mkdir(parents=True)
+    (cfg / ".env").write_text(env_body, encoding="utf-8")
+    (cfg / ".env").chmod(0o600)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE",
+                        "WATCH_WHISPER_BACKEND", "WATCH_WHISPER_BASE_URL")}
+    env.update(HOME=str(home), PATH=f"{fake_bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return subprocess.run(
+        [shutil.which("bash") or "bash", str(HOOK)],
+        env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+
+
+@pytest.mark.parametrize("body", [
+    "WATCH_WHISPER_BACKEND=parakeet\n",
+    "WATCH_WHISPER_BACKEND=cli\n",
+    "WATCH_WHISPER_BASE_URL=http://localhost:8080\n",
+])
+def test_keyless_backend_is_not_told_to_add_a_key(tmp_path: Path, fake_bin_dir: Path, body: str):
+    result = _run_hook(tmp_path, fake_bin_dir, "GROQ_API_KEY=\nOPENAI_API_KEY=\n" + body)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "/watch: ready."
+
+
+def test_no_backend_still_gets_the_key_hint(tmp_path: Path, fake_bin_dir: Path):
+    """Positive control: the hint itself is unchanged when nothing is configured."""
+    result = _run_hook(tmp_path, fake_bin_dir, "GROQ_API_KEY=\nOPENAI_API_KEY=\n")
+    assert result.returncode == 0, result.stderr
+    assert "Add GROQ_API_KEY" in result.stdout

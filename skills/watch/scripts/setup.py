@@ -290,6 +290,29 @@ def _have_api_key() -> tuple[bool, str | None]:
     return False, None
 
 
+def _transcriber() -> tuple[bool, str | None, str]:
+    """(ready, backend, hint) for the backend watch.py would transcribe with.
+
+    Mirrors watch.py: WATCH_WHISPER_BACKEND picks the backend. parakeet/cli and
+    a WATCH_WHISPER_BASE_URL server need no key, so they count as ready on their
+    own — a key-only check reported `needs_key` for a configured parakeet. The
+    on-device binary is checked here because load_api_key does not. `hint` says
+    what is missing when a keyless backend is configured but cannot run.
+    """
+    from whisper import CLI_BACKENDS, cli_backend_available, local_endpoint
+
+    preferred = get_config()["whisper_backend"]
+    if preferred in CLI_BACKENDS:
+        ok, hint = cli_backend_available(preferred)
+        return ok, preferred, hint
+    if preferred in (None, "local") and local_endpoint() is not None:
+        return True, "local", ""
+    if preferred == "local":
+        return False, "local", "WATCH_WHISPER_BACKEND=local needs WATCH_WHISPER_BASE_URL"
+    has_key, backend = _have_api_key()
+    return has_key, backend, ""
+
+
 def is_first_run() -> bool:
     """True if the installer hasn't completed successfully yet."""
     return _read_env_key("SETUP_COMPLETE") != "true"
@@ -425,26 +448,30 @@ def _status() -> dict:
     the agent's cue to encourage adding one.
 
     `can_proceed` is the operational gate: /watch can run as long as the
-    binaries are present AND the user has either set a key or already finished
-    setup (consciously opting out of Whisper). A keyless user who completed
-    setup is NOT nagged on every call.
+    binaries are present AND the user has either a working transcription
+    backend or already finished setup (consciously opting out of Whisper). A
+    keyless user who completed setup is NOT nagged on every call.
+
+    `has_transcriber` counts a configured on-device or local-server backend as
+    well as a key; `has_api_key` stays the literal Groq/OpenAI key check.
     """
     missing = _check_binaries()
-    has_key, backend = _have_api_key()
+    has_key, _ = _have_api_key()
+    has_transcriber, backend, _ = _transcriber()
     setup_complete = not is_first_run()
     yt_dlp_stale_days = _yt_dlp_staleness(missing)
     yt_dlp_notes = _ytdlp_capability_notes(missing)
 
-    if not missing and has_key:
+    if not missing and has_transcriber:
         status = "ready"
-    elif missing and not has_key:
+    elif missing and not has_transcriber:
         status = "needs_install_and_key"
     elif missing:
         status = "needs_install"
     else:
         status = "needs_key"
 
-    can_proceed = (not missing) and (has_key or setup_complete)
+    can_proceed = (not missing) and (has_transcriber or setup_complete)
 
     cfg = get_config()
     return {
@@ -454,6 +481,7 @@ def _status() -> dict:
         "setup_complete": setup_complete,
         "missing_binaries": missing,
         "whisper_backend": backend,
+        "has_transcriber": has_transcriber,
         "has_api_key": has_key,
         "yt_dlp_stale_days": yt_dlp_stale_days,
         "yt_dlp_notes": yt_dlp_notes,
@@ -472,7 +500,7 @@ def cmd_check() -> int:
 
     On a state that blocks /watch, print one actionable line to stderr:
       2 → binaries missing
-      3 → genuine first run with no API key (encourage one)
+      3 → genuine first run with no transcription backend (encourage a key)
       4 → both missing
     A stale yt-dlp never changes the exit code -- it's a warning, printed
     even when otherwise ready (still exit 0) and folded into the failure
@@ -498,8 +526,9 @@ def cmd_check() -> int:
     parts = []
     if s["missing_binaries"]:
         parts.append(f"missing binaries: {', '.join(s['missing_binaries'])}")
-    if not s["has_api_key"] and not s["setup_complete"]:
-        parts.append("no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
+    if not s["has_transcriber"] and not s["setup_complete"]:
+        hint = _transcriber()[2]
+        parts.append(hint or "no Whisper API key (GROQ_API_KEY or OPENAI_API_KEY)")
     if stale_days is not None:
         parts.append(_stale_note(stale_days))
     installer = Path(__file__).resolve()
@@ -509,7 +538,7 @@ def cmd_check() -> int:
     )
     sys.stderr.flush()
 
-    if s["missing_binaries"] and not s["has_api_key"]:
+    if s["missing_binaries"] and not s["has_transcriber"]:
         return 4
     if s["missing_binaries"]:
         return 2
@@ -556,13 +585,18 @@ def cmd_install() -> int:
     else:
         print(f"[setup] config exists: {CONFIG_FILE}")
 
-    has_key, backend = _have_api_key()
-    if has_key:
+    ready, backend, hint = _transcriber()
+    if ready:
         _write_setup_complete()
         print(f"[setup] ready. whisper backend: {backend}")
         if installed_deps:
             print("[setup] installed dependencies; /watch is fully set up.")
         return 0
+
+    if hint:
+        # A keyless backend is configured but cannot run: fix that, not a key.
+        print(f"[setup] one step left: {hint}")
+        return 3
 
     print("")
     print("[setup] one step left: add a Whisper API key.")

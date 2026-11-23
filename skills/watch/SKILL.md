@@ -54,7 +54,7 @@ Branch on two fields:
   3. Encourage a Whisper API key and ask the watch-preference questions below, then write the selected values into `~/.config/watch/.env` and set `SETUP_COMPLETE=true`.
 - **`can_proceed: false` and `first_run: false`** → setup was finished before but the environment regressed (e.g. `missing_binaries` after an OS change). Run the installer to remediate, then proceed. Don't re-ask preferences.
 
-A missing Whisper key is *encouraged to fix, not required*: on a genuine first run `status` will read `needs_key` even when binaries are present — that's your cue to encourage a key, not a blocker.
+A missing Whisper key is *encouraged to fix, not required*: on a genuine first run `status` will read `needs_key` even when binaries are present — that's your cue to encourage a key, not a blocker. A configured keyless backend (`WATCH_WHISPER_BACKEND=parakeet` or `cli`, or a `WATCH_WHISPER_BASE_URL` server) counts as a transcriber: `status` reads `ready` and you should not ask for a key.
 
 On follow-up `/watch` calls in the same session, use the silent check:
 
@@ -82,7 +82,9 @@ python3 "${SKILL_DIR}/scripts/setup.py"
 
 On macOS with Homebrew, it auto-installs `ffmpeg` and `yt-dlp`. On Linux/Windows, it prints the exact install commands for the user to run. It scaffolds `~/.config/watch/.env` with commented placeholders and default watch settings, restricted to `0600` on macOS/Linux (on Windows the file keeps the inherited user-profile ACL — POSIX modes do not apply).
 
-**If an API key is still missing after install:** use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
+**If `whisper_backend` is `parakeet` or `cli` but `has_transcriber` is false**, the backend is configured and its binary is missing: relay the installer's hint (for parakeet, `uv tool install parakeet-mlx`) rather than asking for a key.
+
+**If no transcription backend is set up after install** (`has_transcriber` false, no keyless backend configured): use `AskUserQuestion` to ask the user whether they have a Groq API key (preferred — cheaper, faster) or an OpenAI key. Then write it into `~/.config/watch/.env` — set the matching `GROQ_API_KEY=...` or `OPENAI_API_KEY=...` line. If they don't want to set up Whisper, proceed with `--no-whisper` and tell them videos without native captions will come back frames-only.
 
 **First-run watch preference:** after the installer has scaffolded `~/.config/watch/.env`, use `AskUserQuestion` to ask one question:
 
@@ -100,7 +102,7 @@ WATCH_DETAIL=balanced
 
 Use the user's selected value. If they skip the question, keep the recommended default. Once dependencies, the API-key choice, and this preference are handled, write or update `SETUP_COMPLETE=true` in the same file. Do not ask this preference question again when `SETUP_COMPLETE=true`.
 
-**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, whisper_backend, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. `status` describes the *ideal* state (a key is encouraged, so a keyless first run reads `needs_key`); `can_proceed` is the operational gate (binaries present AND a key is set OR setup was already completed). Branch on `can_proceed`/`first_run` to decide whether to run; use `status` to decide what to encourage.
+**Structured mode (optional):** `python3 "${SKILL_DIR}/scripts/setup.py" --json` emits `{status, can_proceed, first_run, setup_complete, missing_binaries, whisper_backend, has_transcriber, has_api_key, config_file, watch_detail, platform}` where `status` is one of `ready | needs_install | needs_key | needs_install_and_key`. `has_transcriber` is true when the backend `/watch` would use can run: a Groq/OpenAI key, a `WATCH_WHISPER_BASE_URL` server, or an installed `parakeet`/`cli` backend. `has_api_key` is only the Groq/OpenAI key check. `status` describes the *ideal* state (a transcriber is encouraged, so a first run with none reads `needs_key`); `can_proceed` is the operational gate (binaries present AND a transcriber is available OR setup was already completed). Branch on `can_proceed`/`first_run` to decide whether to run; use `status` to decide what to encourage.
 
 Within a single session, you can skip Step 0 on follow-up `/watch` calls — once `--check` returned 0, nothing about the environment changes between turns.
 

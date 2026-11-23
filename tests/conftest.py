@@ -25,7 +25,8 @@ os.environ["HOME"] = str(_ISOLATED_HOME)
 os.environ["USERPROFILE"] = str(_ISOLATED_HOME)  # Windows
 for _var in ("WATCH_DETAIL", "WATCH_WHISPER_BACKEND", "WATCH_YTDLP", "WATCH_MAX_FPS",
              "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE",
-             "WATCH_WHISPER_BASE_URL", "WATCH_COOKIES_FILE", "WATCH_COOKIES_FROM_BROWSER"):
+             "WATCH_WHISPER_BASE_URL", "WATCH_COOKIES_FILE", "WATCH_COOKIES_FROM_BROWSER",
+             "WATCH_PARAKEET_CMD", "WATCH_TRANSCRIBE_CMD"):
     os.environ.pop(_var, None)
 
 
@@ -39,7 +40,8 @@ def isolate_user_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setenv("HOME", str(_ISOLATED_HOME))
     monkeypatch.setenv("USERPROFILE", str(_ISOLATED_HOME))
-    for var in ("WATCH_DETAIL", "WATCH_WHISPER_BACKEND", "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE"):
+    for var in ("WATCH_DETAIL", "WATCH_WHISPER_BACKEND", "GROQ_API_KEY", "OPENAI_API_KEY", "SETUP_COMPLETE",
+                "WATCH_WHISPER_BASE_URL", "WATCH_PARAKEET_CMD", "WATCH_TRANSCRIBE_CMD"):
         monkeypatch.delenv(var, raising=False)
 
 # Make the bundled scripts importable (mirrors watch.py's sys.path insert).
