@@ -14,6 +14,7 @@ DEFAULT_DETAIL = 'balanced'
 DETAILS = {'transcript', 'efficient', 'balanced', 'token-burner'}
 BACKENDS = {'auto', 'groq', 'openai', 'whisperx', 'none'}
 ENGINES = {'auto', 'gemini', 'local'}
+GEMINI_PROVIDERS = {'auto', 'google', 'openrouter'}
 DEFAULT_GEMINI_MODEL = 'gemini-3.7-flash'
 
 
@@ -109,22 +110,36 @@ def load_api_key(preferred: str | None = None) -> tuple[str | None, str | None]:
     return None, None
 
 
-def load_gemini_key() -> str | None:
+def _lookup_key(name: str) -> str | None:
     """Environment, then the user config, then a project .env; never logged."""
-    value = os.environ.get('GEMINI_API_KEY', '').strip()
+    value = os.environ.get(name, '').strip()
     if not value:
         for path in (CONFIG_FILE, Path.cwd() / '.env'):
-            value = read_env_file(path).get('GEMINI_API_KEY', '').strip()
+            value = read_env_file(path).get(name, '').strip()
             if value:
                 break
     return value or None
+
+
+def load_gemini_key() -> str | None:
+    return _lookup_key('GEMINI_API_KEY')
+
+
+def load_gemini_credentials(provider: str = 'auto') -> tuple[str | None, str | None]:
+    """(provider, key) for the gemini engine. auto prefers GEMINI_API_KEY over OPENROUTER_API_KEY."""
+    for name, variable in (('google', 'GEMINI_API_KEY'), ('openrouter', 'OPENROUTER_API_KEY')):
+        if provider in ('auto', name):
+            value = _lookup_key(variable)
+            if value:
+                return name, value
+    return None, None
 
 
 def resolve_engine(choice: str, has_key: bool) -> str:
     if choice not in ENGINES:
         raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
     if choice == 'gemini' and not has_key:
-        raise ConfigError('The gemini engine needs GEMINI_API_KEY in the environment or '
+        raise ConfigError('The gemini engine needs GEMINI_API_KEY (or OPENROUTER_API_KEY) in the environment or '
                           f'{CONFIG_FILE}. Add it, or rerun with --engine local.')
     return 'gemini' if choice == 'gemini' or (choice == 'auto' and has_key) else 'local'
 
@@ -140,11 +155,15 @@ def get_config(*, backend_override: str | None = None) -> dict:
     engine = setting('WATCH_ENGINE', 'auto')
     if engine not in ENGINES:
         raise ConfigError('WATCH_ENGINE must be auto, gemini, or local.')
+    provider = setting('WATCH_GEMINI_PROVIDER', 'auto')
+    if provider not in GEMINI_PROVIDERS:
+        raise ConfigError('WATCH_GEMINI_PROVIDER must be auto, google, or openrouter.')
     return {
         'detail': detail if detail in DETAILS else DEFAULT_DETAIL,
         'config_file': str(CONFIG_FILE),
         'whisper_backend': backend,
         'engine': engine,
+        'gemini_provider': provider,
         'gemini_model': setting('WATCH_GEMINI_MODEL', DEFAULT_GEMINI_MODEL) or DEFAULT_GEMINI_MODEL,
         'gemini_timeout': positive_number(setting('WATCH_GEMINI_TIMEOUT', '600'), 'WATCH_GEMINI_TIMEOUT'),
         'sub_lang': setting('WATCH_SUB_LANG', 'auto'),

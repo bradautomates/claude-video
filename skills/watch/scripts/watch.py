@@ -17,7 +17,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from config import ConfigError, frame_cap, get_config, load_gemini_key, resolve_engine  # noqa: E402
+from config import ConfigError, frame_cap, get_config, load_gemini_credentials, resolve_engine  # noqa: E402
 import gemini  # noqa: E402
 from download import download, fetch_captions, is_url, auth_args  # noqa: E402
 from frames import MAX_FPS, auto_fps, auto_fps_focus, extract_at_timestamps, extract_keyframes, extract_scene_or_uniform, format_time, get_metadata, merge_frames, parse_time, parse_timestamps, validate_controls  # noqa: E402
@@ -30,14 +30,27 @@ LOCAL_ONLY_FLAGS = (("--detail", "detail"), ("--fps", "fps"), ("--max-frames", "
                     ("--timestamps", "timestamps"), ("--whisper", "whisper"), ("--sub-lang", "sub_lang"))
 
 
-def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
+def run_gemini(args, config, key, start_sec, end_sec, auth, provider="google") -> int:
     """Google watches the video. No captions, frames, or Whisper; no fallback on failure."""
+    model = (f"{gemini.openrouter_model(config['gemini_model'])} via OpenRouter" if provider == "openrouter"
+             else config["gemini_model"])
     ignored = [flag for flag, name in LOCAL_ONLY_FLAGS if getattr(args, name) is not None]
     ignored += [flag for flag, on in (("--no-whisper", args.no_whisper), ("--no-dedup", args.no_dedup)) if on]
     clip = (start_sec, end_sec) if start_sec is not None or end_sec is not None else None
     uploaded, warning, result, error, sent, work = None, None, None, None, "URL sent to Google", None
+    video: dict = {}
     try:
-        if gemini.is_youtube(args.source):
+        if provider == "openrouter":
+            if not gemini.is_youtube(args.source):
+                sent = "not sent"
+                raise SystemExit("Gemini rejected: OpenRouter accepts only YouTube URLs for Gemini. Set GEMINI_API_KEY "
+                                 "(WATCH_GEMINI_PROVIDER=google) for other sources. No local fallback was attempted; "
+                                 "rerun with --engine local to use frames + transcript.")
+            sent = "URL sent to OpenRouter and Google"
+            print(f"[watch] asking {model}…", file=sys.stderr)
+            result = gemini.ask_openrouter(args.source, args.question, model=config["gemini_model"], key=key,
+                                           clip=clip, timeout=config["gemini_timeout"])
+        elif gemini.is_youtube(args.source):
             video = {"uri": args.source}
         else:
             parent = Path(args.out_dir).expanduser().resolve() if args.out_dir else None
@@ -52,9 +65,10 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
             uploaded = gemini.upload_file(Path(media["video_path"]), key)
             video = {"uri": uploaded["uri"], "mime_type": uploaded["mime_type"]}
             sent = "video uploaded to Google, deleted after the answer"
-        print(f"[watch] asking {config['gemini_model']}…", file=sys.stderr)
-        result = gemini.ask(video, args.question, model=config["gemini_model"], key=key,
-                            clip=clip, timeout=config["gemini_timeout"])
+        if result is None:
+            print(f"[watch] asking {model}…", file=sys.stderr)
+            result = gemini.ask(video, args.question, model=config["gemini_model"], key=key,
+                                clip=clip, timeout=config["gemini_timeout"])
     except SystemExit as exc:
         error = str(exc)
     finally:
@@ -67,13 +81,15 @@ def run_gemini(args, config, key, start_sec, end_sec, auth) -> int:
     print("# watch: video report")
     print()
     print(f"- **Source:** {args.source} ({sent})")
-    print(f"- **Engine:** {config['gemini_model']} ({result['processing'] if result else 'failed'})")
+    print(f"- **Engine:** {model} ({result['processing'] if result else 'failed'})")
     if clip:
         print(f"- **Focus range:** {format_time(start_sec or 0)} → {format_time(end_sec) if end_sec is not None else 'end'}")
     if ignored:
         print(f"- **Ignored local options:** {', '.join(ignored)} (these only apply with --engine local)")
     if result and result["total_tokens"] is not None:
         print(f"- **Gemini tokens:** {result['total_tokens']}")
+    if result and result.get("cost") is not None:
+        print(f"- **OpenRouter cost:** ${result['cost']:.4f}")
     if warning:
         print(f"- **Cleanup warning:** {warning}")
     print()
@@ -140,7 +156,8 @@ def main() -> int:
     cookies.add_argument("--cookies", default=None, help="Explicit cookie file (yt-dlp may update this jar)")
     cookies.add_argument("--cookies-from-browser", default=None, help="Explicit yt-dlp browser selector")
     ap.add_argument("--engine", choices=["auto", "gemini", "local"], default=None,
-                    help="gemini: Google watches the video and answers (needs GEMINI_API_KEY). "
+                    help="gemini: Google watches the video and answers (needs GEMINI_API_KEY, or OPENROUTER_API_KEY "
+                         "for YouTube URLs). "
                          "local: frames + transcript on this machine. Default auto: gemini when a key exists.")
     ap.add_argument("--question", default=None,
                     help="The user's question. Sent to Gemini on a gemini run; unused by the local engine.")
@@ -161,9 +178,9 @@ def main() -> int:
     auth_args(cookies_file, cookies_browser)  # Validate even before starting network work.
     auth = {"cookies_file": cookies_file, "cookies_from_browser": cookies_browser}
 
-    gemini_key = load_gemini_key()
+    provider, gemini_key = load_gemini_credentials(config["gemini_provider"])
     if resolve_engine(args.engine or config["engine"], bool(gemini_key)) == "gemini":
-        return run_gemini(args, config, gemini_key, start_sec, end_sec, auth)
+        return run_gemini(args, config, gemini_key, start_sec, end_sec, auth, provider)
 
     parent = Path(args.out_dir).expanduser().resolve() if args.out_dir else None
     if parent:

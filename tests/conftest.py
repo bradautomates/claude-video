@@ -22,7 +22,8 @@ def isolated_user(monkeypatch, tmp_path):
     cwd.mkdir()
     for key in list(os.environ):
         if key.startswith("WATCH_") or key in {
-            "GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "SETUP_COMPLETE", "XDG_CONFIG_HOME",
+            "GROQ_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "SETUP_COMPLETE",
+            "XDG_CONFIG_HOME",
         }:
             monkeypatch.delenv(key)
     monkeypatch.setenv("HOME", str(home))

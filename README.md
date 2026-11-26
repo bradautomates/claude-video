@@ -190,8 +190,10 @@ See the official guides for [Claude Code on the web](https://code.claude.com/doc
 
 | Setting | Default and behavior |
 |---|---|
-| `WATCH_ENGINE` / `--engine` | `auto`: Gemini when a `GEMINI_API_KEY` resolves, otherwise `local`. `gemini` without a key is an error before any network call. `local` never contacts Google. |
+| `WATCH_ENGINE` / `--engine` | `auto`: Gemini when a `GEMINI_API_KEY` (or `OPENROUTER_API_KEY`) resolves, otherwise `local`. `gemini` without a key is an error before any network call. `local` never contacts Google. |
 | `GEMINI_API_KEY` | Looked up in the environment, then `~/.config/watch/.env`, then a cwd `.env`. Sent only as a request header; never logged. |
+| `OPENROUTER_API_KEY` | Runs the Gemini engine through [OpenRouter](https://openrouter.ai/keys) when no `GEMINI_API_KEY` resolves. Same lookup order. YouTube URLs only; `--start`/`--end` become a request in the prompt. OpenRouter bills each request, and the report shows the cost. |
+| `WATCH_GEMINI_PROVIDER` | `auto`: `GEMINI_API_KEY` first, then `OPENROUTER_API_KEY`. `google` or `openrouter` uses only that key. |
 | `WATCH_GEMINI_MODEL` | `gemini-3.7-flash`. Free-form, so newer model IDs work without an update. |
 | `WATCH_GEMINI_TIMEOUT` | `600` seconds for the question itself; upload and processing waits are bounded separately. |
 
