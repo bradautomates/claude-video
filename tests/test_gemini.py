@@ -217,3 +217,9 @@ def test_invalid_key_reported_as_http_400_is_still_auth(calls):
     calls.replies = [http_error(400, b'{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}')]
     with pytest.raises(SystemExit, match='^Gemini auth:'):
         gemini.ask({'uri': 'https://youtu.be/abc'}, None, model='m', key=KEY)
+
+
+def test_spent_google_prepayment_is_quota_not_rejected(calls):
+    calls.replies = [http_error(402, b'{"error":{"message":"Your prepayment credits are depleted.","code":402}}')]
+    with pytest.raises(SystemExit, match='^Gemini quota:'):
+        gemini.ask({'uri': 'https://youtu.be/abc'}, None, model='m', key=KEY)

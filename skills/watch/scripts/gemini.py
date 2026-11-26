@@ -70,7 +70,8 @@ def _call(method: str, url: str, key: str, *, data=None, headers=None, timeout: 
     except HTTPError as exc:
         message = _error_message(exc.read())
         # The Files API answers a malformed key with 400 "API key not valid", not 401.
-        category = ('auth' if exc.code in (401, 403) or 'api key' in message.lower() else 'quota' if exc.code == 429
+        # 402 is spent prepaid credit (AI Studio prepayment).
+        category = ('auth' if exc.code in (401, 403) or 'api key' in message.lower() else 'quota' if exc.code in (402, 429)
                     else 'service' if exc.code >= 500 else 'rejected')
         raise _fail(category, f'HTTP {exc.code}: {message}', key) from None
     except (URLError, TimeoutError, OSError) as exc:

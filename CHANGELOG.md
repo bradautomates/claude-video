@@ -2,6 +2,11 @@
 
 All notable changes to `/watch` are documented here.
 
+## [Unreleased]
+
+### Fixed
+- HTTP 402 (spent prepaid credit) is reported as `Gemini quota`, not as `Gemini rejected` with a hint about private or unsupported videos.
+
 ## [0.3.2] — 2026-09-25
 
 ### Changed
