@@ -117,3 +117,21 @@ def test_invalid_engine_and_timeout_rejected(monkeypatch):
     monkeypatch.setenv('WATCH_GEMINI_TIMEOUT', '-5')
     with pytest.raises(config.ConfigError, match='WATCH_GEMINI_TIMEOUT'):
         config.get_config()
+
+
+def test_gemini_credentials_prefer_google_then_openrouter(monkeypatch):
+    assert config.load_gemini_credentials() == (None, None)
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'or-key')
+    assert config.load_gemini_credentials() == ('openrouter', 'or-key')
+    monkeypatch.setenv('GEMINI_API_KEY', 'g-key')
+    assert config.load_gemini_credentials() == ('google', 'g-key')
+    assert config.load_gemini_credentials('openrouter') == ('openrouter', 'or-key')
+    monkeypatch.delenv('OPENROUTER_API_KEY')
+    assert config.load_gemini_credentials('openrouter') == (None, None)
+
+
+def test_gemini_provider_setting(monkeypatch):
+    assert config.get_config()['gemini_provider'] == 'auto'
+    monkeypatch.setenv('WATCH_GEMINI_PROVIDER', 'vertex')
+    with pytest.raises(config.ConfigError, match='WATCH_GEMINI_PROVIDER'):
+        config.get_config()

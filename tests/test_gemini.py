@@ -219,6 +219,59 @@ def test_invalid_key_reported_as_http_400_is_still_auth(calls):
         gemini.ask({'uri': 'https://youtu.be/abc'}, None, model='m', key=KEY)
 
 
+def openrouter_answer(text='At 00:10 it turns blue.'):
+    return json.dumps({'model': 'google/gemini-3.7-flash', 'choices': [{'message': {'role': 'assistant', 'content': text}}],
+                       'usage': {'total_tokens': 135034, 'cost': 0.1074}}).encode()
+
+
+def test_openrouter_payload_bearer_key_and_model_prefix(calls):
+    calls.replies = [FakeResponse(openrouter_answer())]
+    result = gemini.ask_openrouter('https://youtu.be/abc', 'When does it change?', model='gemini-3.7-flash', key=KEY)
+    request = calls[0]
+    assert request.full_url == 'https://openrouter.ai/api/v1/chat/completions'
+    assert request.get_header('Authorization') == f'Bearer {KEY}'
+    assert request.get_header('X-goog-api-key') is None
+    payload = json.loads(request.data)
+    assert payload['model'] == 'google/gemini-3.7-flash'
+    text, video = payload['messages'][0]['content']
+    assert 'When does it change?' in text['text'] and 'MM:SS' in text['text']
+    assert video == {'type': 'video_url', 'video_url': {'url': 'https://youtu.be/abc', 'processing': 'agentic'}}
+    assert result == {'text': 'At 00:10 it turns blue.', 'model': 'google/gemini-3.7-flash',
+                      'processing': 'agentic', 'total_tokens': 135034, 'cost': 0.1074}
+
+
+def test_openrouter_model_keeps_a_slashed_id():
+    assert gemini.openrouter_model('gemini-3.8-flash') == 'google/gemini-3.8-flash'
+    assert gemini.openrouter_model('google/gemini-3.8-flash') == 'google/gemini-3.8-flash'
+
+
+def test_openrouter_clip_is_requested_in_the_prompt(calls):
+    calls.replies = [FakeResponse(openrouter_answer())]
+    result = gemini.ask_openrouter('https://youtu.be/abc', None, model='m', key=KEY, clip=(90.0, None))
+    assert json.loads(calls[0].data)['messages'][0]['content'][0]['text'].startswith(
+        'Only consider the part of the video from 01:30–end.')
+    assert result['processing'] == 'agentic, focus 01:30–end requested in the prompt'
+
+
+@pytest.mark.parametrize('reply,category', [
+    (http_error(401, b'{"error":{"message":"No auth credentials found","code":401}}'), 'auth'),
+    (http_error(402, b'{"error":{"message":"Insufficient credits","code":402}}'), 'quota'),
+    (http_error(429, b'{"error":{"message":"Rate limited","code":429}}'), 'quota'),
+    (http_error(502, b'{"error":{"message":"Provider returned error","code":502}}'), 'service'),
+    (FakeResponse(json.dumps({'error': {'message': 'Provider returned error', 'code': 503}}).encode()), 'service'),
+    (FakeResponse(json.dumps({'choices': []}).encode()), 'response'),
+    (URLError('no route'), 'network'),
+])
+def test_openrouter_failures_are_categorized_and_never_leak_the_key(calls, reply, category):
+    calls.replies = [reply]
+    with pytest.raises(SystemExit) as caught:
+        gemini.ask_openrouter('https://youtu.be/abc', None, model='m', key=KEY)
+    message = str(caught.value)
+    assert message.startswith(f'Gemini {category}:') and KEY not in message and '--engine local' in message
+    if category in ('auth', 'quota', 'network'):
+        assert 'openrouter' in message.lower()
+
+
 def test_spent_google_prepayment_is_quota_not_rejected(calls):
     calls.replies = [http_error(402, b'{"error":{"message":"Your prepayment credits are depleted.","code":402}}')]
     with pytest.raises(SystemExit, match='^Gemini quota:'):

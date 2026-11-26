@@ -284,3 +284,34 @@ def test_failed_upload_is_reported_honestly_and_work_dir_removed(monkeypatch, ca
     assert 'URL sent to Google' not in out and 'upload to Google failed' in out
     assert out_dir.is_dir() and list(out_dir.iterdir()) == [], 'the run-owned work dir must be removed'
     assert static_clip.is_file(), 'the user source file is never deleted'
+
+
+def test_openrouter_key_watches_youtube_through_openrouter(monkeypatch, capsys):
+    import gemini
+    seen = {}
+    def fake(url, question, **kw):
+        seen.update(url=url, question=question, **kw)
+        return {'text': 'At 00:10 it turns blue.', 'model': 'google/' + kw['model'], 'processing': 'agentic',
+                'total_tokens': 10, 'cost': 0.1074}
+    monkeypatch.setattr(gemini, 'ask_openrouter', fake)
+    monkeypatch.setattr(gemini, 'ask', lambda *a, **kw: pytest.fail('the Google endpoint must not be called'))
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'unit-key')
+    monkeypatch.setattr(sys, 'argv', ['watch', 'https://youtu.be/abc', '--question', 'When?'])
+    assert watch.main() == 0
+    out = capsys.readouterr().out
+    assert seen['url'] == 'https://youtu.be/abc' and seen['key'] == 'unit-key' and seen['model'] == 'gemini-3.7-flash'
+    assert '**Engine:** google/gemini-3.7-flash via OpenRouter (agentic)' in out
+    assert 'URL sent to OpenRouter and Google' in out and '**OpenRouter cost:** $0.1074' in out
+    assert 'unit-key' not in out
+
+
+def test_openrouter_rejects_non_youtube_before_sending_anything(monkeypatch, capsys, static_clip):
+    import gemini
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'unit-key')
+    for name in ('ask', 'ask_openrouter', 'upload_file'):
+        monkeypatch.setattr(gemini, name, lambda *a, **kw: pytest.fail('nothing may be sent'))
+    monkeypatch.setattr(watch, 'download', lambda *a, **kw: pytest.fail('must not download'))
+    monkeypatch.setattr(sys, 'argv', ['watch', str(static_clip)])
+    assert watch.main() == 1
+    out = capsys.readouterr().out
+    assert 'only YouTube URLs' in out and '(not sent)' in out and '## Frames' not in out

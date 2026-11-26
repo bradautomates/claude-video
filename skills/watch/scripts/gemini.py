@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Gemini engine: Google watches the video (agentic processing) and answers.
 
-Standard library only. The key travels in the x-goog-api-key header and is
-scrubbed from every diagnostic.
+Standard library only. The key travels in a request header (x-goog-api-key for Google,
+Authorization for OpenRouter) and is scrubbed from every diagnostic.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from runtime import diagnostic
 
 API = 'https://generativelanguage.googleapis.com'
 INTERACTIONS = f'{API}/v1beta/interactions'
+OPENROUTER = 'https://openrouter.ai/api/v1/chat/completions'
 _YOUTUBE = re.compile(
     r'^https?://(?:(?:www\.|m\.|music\.)?youtube\.com/(?:watch\?\S*\bv=|shorts/|live/)|youtu\.be/)\S+$', re.I)
 _HINTS = {
@@ -29,6 +30,12 @@ _HINTS = {
     'network': 'could not reach generativelanguage.googleapis.com; check network, proxy, or egress rules',
     'response': 'Gemini returned something this version cannot read',
     'upload': 'the video could not be uploaded to or processed by the Gemini Files API',
+}
+_OPENROUTER_HINTS = {
+    'auth': 'check OPENROUTER_API_KEY (create one at https://openrouter.ai/keys)',
+    'quota': 'the OpenRouter key is rate-limited or out of credits; wait or add credits',
+    'rejected': 'OpenRouter or Gemini refused this request; the video may be private, unsupported, or too long',
+    'network': 'could not reach openrouter.ai; check network, proxy, or egress rules',
 }
 DEFAULT_QUESTION = ('Give a thorough summary of this video: what is shown, any on-screen text or code, '
                     'and what is said, in chronological order.')
@@ -45,9 +52,10 @@ def build_prompt(question: str | None) -> str:
     return ((question or '').strip() or DEFAULT_QUESTION) + PROMPT_SUFFIX
 
 
-def _fail(category: str, detail: str, key: str) -> SystemExit:
+def _fail(category: str, detail: str, key: str, provider: str = 'google') -> SystemExit:
     detail = diagnostic(detail, 600).replace(key, '[redacted]') if key else diagnostic(detail, 600)
-    return SystemExit(f'Gemini {category}: {_HINTS[category]}. Detail: {detail or "none"}. '
+    hint = (_OPENROUTER_HINTS if provider == 'openrouter' else {}).get(category, _HINTS[category])
+    return SystemExit(f'Gemini {category}: {hint}. Detail: {detail or "none"}. '
                       'No local fallback was attempted; rerun with --engine local to use frames + transcript.')
 
 
@@ -62,20 +70,25 @@ def _error_message(body: bytes) -> str:
         return text
 
 
-def _call(method: str, url: str, key: str, *, data=None, headers=None, timeout: float = 60.0):
-    request = Request(url, data=data, method=method, headers={'x-goog-api-key': key, **(headers or {})})
+def _category(code: int, message: str) -> str:
+    # The Files API answers a malformed key with 400 "API key not valid", not 401.
+    # 402 is spent prepaid credit (AI Studio prepayment, OpenRouter balance).
+    return ('auth' if code in (401, 403) or 'api key' in message.lower() else 'quota' if code in (402, 429)
+            else 'service' if code >= 500 else 'rejected')
+
+
+def _call(method: str, url: str, key: str, *, data=None, headers=None, timeout: float = 60.0,
+          provider: str = 'google'):
+    auth = {'Authorization': f'Bearer {key}'} if provider == 'openrouter' else {'x-goog-api-key': key}
+    request = Request(url, data=data, method=method, headers={**auth, **(headers or {})})
     try:
         with urlopen(request, timeout=timeout) as response:
             return response.status, dict(response.headers), response.read()
     except HTTPError as exc:
         message = _error_message(exc.read())
-        # The Files API answers a malformed key with 400 "API key not valid", not 401.
-        # 402 is spent prepaid credit (AI Studio prepayment).
-        category = ('auth' if exc.code in (401, 403) or 'api key' in message.lower() else 'quota' if exc.code in (402, 429)
-                    else 'service' if exc.code >= 500 else 'rejected')
-        raise _fail(category, f'HTTP {exc.code}: {message}', key) from None
+        raise _fail(_category(exc.code, message), f'HTTP {exc.code}: {message}', key, provider) from None
     except (URLError, TimeoutError, OSError) as exc:
-        raise _fail('network', f'{type(exc).__name__}: {getattr(exc, "reason", exc)}', key) from None
+        raise _fail('network', f'{type(exc).__name__}: {getattr(exc, "reason", exc)}', key, provider) from None
 
 
 def _clock(seconds: int) -> str:
@@ -115,6 +128,45 @@ def ask(video: dict, question: str | None, *, model: str, key: str, clip=None, t
         raise _fail('response', f'no answer text (status {data.get("status")})', key)
     return {'text': '\n'.join(parts).strip(), 'model': model, 'processing': label,
             'total_tokens': tokens if isinstance(tokens, int) else None}
+
+
+def openrouter_model(model: str) -> str:
+    """OpenRouter names Google's models google/<id>; a slashed ID is used as given."""
+    return model if '/' in model else f'google/{model}'
+
+
+def ask_openrouter(url: str, question: str | None, *, model: str, key: str, clip=None,
+                   timeout: float = 600.0) -> dict:
+    """YouTube URL only: OpenRouter's Google AI Studio route accepts no other video URL."""
+    model, prompt, label = openrouter_model(model), build_prompt(question), 'agentic'
+    if clip and not (clip[0] is None and clip[1] is None):
+        # OpenRouter exposes no clip offsets, so the focus range can only be asked for in the prompt.
+        start, end = clip
+        span = f'{_clock(int(math.floor(start or 0)))}–{_clock(int(math.ceil(end))) if end is not None else "end"}'
+        prompt = f'Only consider the part of the video from {span}.\n\n{prompt}'
+        label = f'agentic, focus {span} requested in the prompt'
+    payload = {'model': model, 'messages': [{'role': 'user', 'content': [
+        {'type': 'text', 'text': prompt},
+        {'type': 'video_url', 'video_url': {'url': url, 'processing': 'agentic'}}]}]}
+    _, _, body = _call('POST', OPENROUTER, key, data=json.dumps(payload).encode('utf-8'),
+                       headers={'Content-Type': 'application/json'}, timeout=timeout, provider='openrouter')
+    try:
+        data = json.loads(body)
+        if isinstance(data.get('error'), dict):  # Upstream failures can arrive with HTTP 200.
+            message = str(data['error'].get('message'))
+            code = data['error'].get('code')
+            code = code if isinstance(code, int) else 0
+            raise _fail(_category(code, message), f'{code or "error"}: {message}', key, 'openrouter')
+        text = data['choices'][0]['message']['content']
+        usage = data.get('usage') or {}
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError):
+        raise _fail('response', body[:300].decode('utf-8', errors='replace'), key, 'openrouter') from None
+    if not isinstance(text, str) or not text.strip():
+        raise _fail('response', 'no answer text', key, 'openrouter')
+    tokens, cost = usage.get('total_tokens'), usage.get('cost')
+    return {'text': text.strip(), 'model': model, 'processing': label,
+            'total_tokens': tokens if isinstance(tokens, int) else None,
+            'cost': cost if isinstance(cost, (int, float)) else None}
 
 
 def upload_file(path: Path, key: str, *, poll_seconds: float = 2.0, max_wait: float = 900.0, sleep=time.sleep) -> dict:

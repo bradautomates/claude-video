@@ -4,6 +4,9 @@ All notable changes to `/watch` are documented here.
 
 ## [Unreleased]
 
+### Added
+- **OpenRouter provider for the Gemini engine.** With an `OPENROUTER_API_KEY` (and no `GEMINI_API_KEY`, or with `WATCH_GEMINI_PROVIDER=openrouter`), watch sends YouTube URLs to Gemini through OpenRouter's chat completions API. Other sources fail before anything is sent, because OpenRouter's Google AI Studio route accepts only YouTube video URLs. `WATCH_GEMINI_MODEL` IDs get a `google/` prefix, `--start/--end` become a request in the prompt, and the report shows the OpenRouter cost.
+
 ### Fixed
 - HTTP 402 (spent prepaid credit) is reported as `Gemini quota`, not as `Gemini rejected` with a hint about private or unsupported videos.
 

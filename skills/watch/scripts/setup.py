@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 
 from config import (CONFIG_DIR, CONFIG_FILE, ConfigError, DETAILS, ENGINES, get_config,
-                    load_api_key, load_gemini_key, read_env_file, resolve_engine, write_settings)
+                    load_api_key, load_gemini_credentials, read_env_file, resolve_engine, write_settings)
 from runtime import configure_stdio, diagnostic, run_text
 
 REQUIRED_BINARIES = ['ffmpeg', 'ffprobe', 'yt-dlp']
@@ -25,7 +25,10 @@ ENV_TEMPLATE = '''# /watch configuration. No shell interpolation; last assignmen
 # The first-run skill wizard sets WATCH_DETAIL and WATCH_WHISPER_BACKEND.
 # WATCH_ENGINE=auto|gemini|local. auto uses Gemini when GEMINI_API_KEY is set.
 # With the gemini engine, local videos are uploaded to Google for analysis.
+# OPENROUTER_API_KEY runs the gemini engine through OpenRouter: YouTube URLs only, billed by OpenRouter.
+# WATCH_GEMINI_PROVIDER=auto|google|openrouter. auto prefers GEMINI_API_KEY.
 GEMINI_API_KEY=
+OPENROUTER_API_KEY=
 GROQ_API_KEY=
 OPENAI_API_KEY=
 '''
@@ -145,7 +148,8 @@ def _status(detailed=False):
     missing = _check_binaries()
     _check_file_permissions(CONFIG_FILE)
     cfg = get_config()
-    gemini_key = bool(load_gemini_key())
+    gemini_provider, gemini_secret = load_gemini_credentials(cfg['gemini_provider'])
+    gemini_key = bool(gemini_secret)
     try:
         engine = resolve_engine(cfg['engine'], gemini_key)
     except ConfigError:
@@ -159,6 +163,7 @@ def _status(detailed=False):
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
+              'gemini_provider': gemini_provider,
               'gemini_model': cfg['gemini_model'], 'binaries_required': binaries_required,
               'first_run': is_first_run(), 'setup_complete': not is_first_run(),
               'missing_binaries': missing, 'whisper_backend': backend, 'configured_backend': chosen,
@@ -201,14 +206,17 @@ def cmd_install(backend=None, detail=None, engine=None):
         _scaffold_env()
         write_settings({'WATCH_ENGINE': engine}, CONFIG_FILE)
     if engine == 'gemini':
-        if not load_gemini_key():
+        provider, key = load_gemini_credentials(get_config()['gemini_provider'])
+        if not key:
             print(f'[setup] Add GEMINI_API_KEY privately to {CONFIG_FILE} (free key: https://aistudio.google.com/apikey), '
+                  'or OPENROUTER_API_KEY for YouTube URLs only (https://openrouter.ai/keys), '
                   'then rerun --engine gemini. Local videos will be uploaded to Google for analysis.', file=sys.stderr)
             return 3
         _write_setup_complete()
         missing = _check_binaries()
         note = (f" Optional: install {', '.join(_brew_pkg(missing))} for non-YouTube URLs and --engine local." if missing else '')
-        print(f'[setup] Gemini engine is ready. Configuration: {CONFIG_FILE}.{note}')
+        via = ' via OpenRouter (YouTube URLs only)' if provider == 'openrouter' else ''
+        print(f'[setup] Gemini engine is ready{via}. Configuration: {CONFIG_FILE}.{note}')
         return 0
     missing = _check_binaries()
     if missing:

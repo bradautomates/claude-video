@@ -145,3 +145,13 @@ def test_engine_gemini_with_key_completes_setup_and_preserves_lines(monkeypatch)
     assert '# my notes' in text and 'GROQ_API_KEY=keep-me' in text
     values = config.read_env_file(config.CONFIG_FILE)
     assert values['WATCH_ENGINE'] == 'gemini' and values['SETUP_COMPLETE'] == 'true'
+
+
+def test_engine_gemini_with_only_an_openrouter_key(monkeypatch, capsys):
+    monkeypatch.setattr(setup, '_check_binaries', lambda: list(setup.REQUIRED_BINARIES))
+    monkeypatch.setenv('OPENROUTER_API_KEY', 'unit-key')
+    status = setup._status()
+    assert status['engine'] == 'gemini' and status['gemini_provider'] == 'openrouter'
+    assert status['gemini_key_present'] is True and 'unit-key' not in json.dumps(status)
+    assert setup.cmd_install(engine='gemini') == 0
+    assert 'via OpenRouter' in capsys.readouterr().out
