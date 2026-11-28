@@ -155,7 +155,13 @@ def _status(detailed=False):
     chosen = cfg['whisper_backend']
     backend = detected if chosen == 'auto' else chosen
     local_ready = _whisperx_status(cfg, detailed)
-    backend_ready = local_ready if chosen == 'whisperx' else (bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none')
+    if chosen == 'whisperx':
+        backend_ready = local_ready
+    elif chosen == 'apple':
+        from whisper import apple_speech_available
+        backend_ready = apple_speech_available()
+    else:
+        backend_ready = bool(load_api_key(backend)[1]) if backend in ('groq', 'openai') else chosen == 'none'
     blocked = bool(missing) and binaries_required
     result = {'status': 'needs_install' if blocked else 'ready', 'can_proceed': not blocked,
               'engine': engine, 'configured_engine': cfg['engine'], 'gemini_key_present': gemini_key,
@@ -226,6 +232,12 @@ def cmd_install(backend=None, detail=None, engine=None):
         write_settings({'WATCH_DETAIL': detail}, CONFIG_FILE)
     if backend == 'whisperx':
         return install_whisperx()
+    if backend == 'apple':
+        from whisper import apple_speech_available, apple_speech_binary
+        if not apple_speech_available():
+            print('[setup] The apple backend needs macOS 26+ and swiftc (xcode-select --install).', file=sys.stderr)
+            return 2
+        apple_speech_binary()  # Compile now so the first transcription does not wait for it.
     if backend:
         write_settings({'WATCH_WHISPER_BACKEND': backend}, CONFIG_FILE)
         if backend in ('groq', 'openai') and not load_api_key(backend)[1]:
@@ -318,7 +330,7 @@ def main():
     mode.add_argument('--check', action='store_true')
     mode.add_argument('--json', action='store_true')
     mode.add_argument('--install-whisperx', action='store_true')
-    parser.add_argument('--backend', choices=['auto', 'whisperx', 'groq', 'openai', 'none'])
+    parser.add_argument('--backend', choices=['auto', 'whisperx', 'apple', 'groq', 'openai', 'none'])
     parser.add_argument('--detail', choices=sorted(DETAILS))
     parser.add_argument('--engine', choices=sorted(ENGINES))
     args = parser.parse_args()

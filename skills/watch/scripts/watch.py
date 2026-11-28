@@ -125,7 +125,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--whisper",
-        choices=["groq", "openai", "whisperx"],
+        choices=["groq", "openai", "whisperx", "apple"],
         default=None,
         help="Select the fallback backend for this run; native captions still come first.",
     )
@@ -265,16 +265,23 @@ def main() -> int:
 
     transcript_state = "missing"
     if not track_available and backend_choice != "none" and video_path and meta.get("has_audio"):
-        backend, api_key = ("whisperx", None) if backend_choice == "whisperx" else load_api_key(None if backend_choice == "auto" else backend_choice)
+        backend, api_key = (backend_choice, None) if backend_choice in ("whisperx", "apple") else load_api_key(None if backend_choice == "auto" else backend_choice)
         if backend:
             try:
-                all_segments, used_backend = transcribe_video(video_path, work / "audio.mp3", backend=backend, api_key=api_key)
+                # A local file's title is its file name, which says nothing about the spoken language.
+                source_info = (dl.get("info") or {}) if url_source else {}
+                all_segments, used_backend = transcribe_video(
+                    video_path, work / "audio.mp3", backend=backend, api_key=api_key, language=source_info.get("language"),
+                    text="\n".join(filter(None, (source_info.get("title"), source_info.get("description")))))
                 gaps = getattr(all_segments, "gaps", [])
                 track_available = True
                 transcript_state = "no speech" if not all_segments else "available"
                 if used_backend == "whisperx":
                     language = config["whisperx_language"] or "auto (unverified)"
                     transcript_source = f"whisper (whisperx {config['whisperx_model']}, language {language})"
+                elif used_backend == "apple":
+                    transcript_source = (f"on-device speech (Apple SpeechAnalyzer, language {all_segments.language}, "
+                                         f"{all_segments.language_source})")
                 else:
                     transcript_source = f"whisper ({used_backend})"
             except SystemExit as exc:

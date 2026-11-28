@@ -10,10 +10,13 @@ Pure stdlib — no `pip install groq` or `pip install openai` needed.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
 import mimetypes
+import os
+import platform
 import shutil
 import ssl
 import sys
@@ -23,7 +26,7 @@ import uuid
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from config import load_api_key, ConfigError
+from config import load_api_key, ConfigError, get_config
 from runtime import configure_stdio, run_text
 from transcribe import Segments, normalize_segments
 
@@ -344,14 +347,91 @@ def _transcribe_file(backend: str, api_key: str, audio_path: Path) -> list[dict]
     return _segments_from_response(response)
 
 
+APPLE_SPEECH_SOURCE = Path(__file__).resolve().parent / "apple_speech.swift"
+APPLE_SPEECH_CACHE = Path.home() / ".cache" / "watch" / "apple-speech"
+
+
+def apple_speech_available() -> bool:
+    """SpeechAnalyzer ships with macOS 26; the helper is compiled with swiftc."""
+    if sys.platform != "darwin" or shutil.which("swiftc") is None:
+        return False
+    try:
+        return int(platform.mac_ver()[0].split(".")[0]) >= 26
+    except ValueError:
+        return False
+
+
+def apple_speech_binary() -> Path:
+    """Compile the Swift helper once per source revision; `swift script.swift` recompiles every run (~10 s)."""
+    digest = hashlib.sha256(APPLE_SPEECH_SOURCE.read_bytes()).hexdigest()[:12]
+    binary = APPLE_SPEECH_CACHE / f"apple_speech-{digest}"
+    if binary.is_file():
+        return binary
+    if not apple_speech_available():
+        raise SystemExit("Apple Speech needs macOS 26+ and swiftc (xcode-select --install).")
+    APPLE_SPEECH_CACHE.mkdir(parents=True, exist_ok=True)
+    partial = binary.with_name(f"{binary.name}.{os.getpid()}.partial")
+    print("[watch] compiling the Apple Speech helper (first run only)…", file=sys.stderr)
+    result = run_text(["swiftc", "-O", "-o", str(partial), str(APPLE_SPEECH_SOURCE)], timeout=300)
+    if result.returncode != 0:
+        partial.unlink(missing_ok=True)
+        raise SystemExit(f"Apple Speech helper did not compile: {result.stderr.strip()[-400:]}")
+    partial.replace(binary)
+    # Drop older revisions only; a concurrent run may still be writing its own partial of this one.
+    for stale in APPLE_SPEECH_CACHE.glob("apple_speech-*"):
+        if not stale.name.startswith(binary.name):
+            stale.unlink(missing_ok=True)
+    return binary
+
+
+APPLE_LANGUAGE_SOURCES = {
+    "detected": "detected from title/description",
+    "system": "system default, unverified",
+}
+
+
+def transcribe_apple(audio: Path, language: str | None = None, text: str | None = None) -> tuple[list[dict], str]:
+    """On-device SpeechAnalyzer; it needs the spoken language up front.
+
+    Precedence: WATCH_APPLE_LOCALE, the video's declared language, the language of `text`
+    (title/description), then the system locale. The result carries `language` and `language_source`.
+    """
+    configured = get_config()["apple_locale"]
+    hint = configured or language or ""
+    binary = apple_speech_binary()
+    print("[watch] on-device Apple Speech transcription…", file=sys.stderr)
+    result = run_text([str(binary), str(audio.resolve()), hint, "" if hint else (text or "")[:2000]],
+                      timeout=600 + audio_duration(audio))
+    if result.returncode != 0:
+        raise SystemExit(f"Apple Speech failed: {result.stderr.strip()[-400:]}")
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise SystemExit("Apple Speech returned non-JSON output") from None
+    segments = _segments_from_response(data)
+    segments.language = data.get("language") or "unknown"
+    if configured:
+        segments.language_source = "set by WATCH_APPLE_LOCALE"
+    elif language:
+        segments.language_source = "declared by the video"
+    else:
+        segments.language_source = APPLE_LANGUAGE_SOURCES.get(data.get("language_source"), "unverified")
+    print(f"[watch] transcribed {len(segments)} segments via Apple Speech "
+          f"({segments.language}, {segments.language_source})", file=sys.stderr)
+    return segments, "apple"
+
+
 def transcribe_video(
     video_path: str,
     audio_out: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    language: str | None = None,
+    text: str | None = None,
 ) -> tuple[list[dict], str]:
     """Run the full flow: extract audio → upload → parse segments.
 
+    `language` (declared spoken language) and `text` (title/description) guide the apple backend.
     Returns (segments, backend_used). Raises SystemExit on any failure.
     """
     if api_key is not None and backend is None:
@@ -362,6 +442,10 @@ def transcribe_video(
         from local_whisperx import transcribe_audio
         segments = transcribe_audio(extract_audio(video_path, audio_out))
         return segments, "whisperx"
+    if backend == "apple":
+        if api_key is not None:
+            raise SystemExit("Apple Speech does not accept an API key.")
+        return transcribe_apple(extract_audio(video_path, audio_out), language, text)
     if backend not in (None, "groq", "openai"):
         raise SystemExit("Unknown transcription backend.")
     if backend is None or api_key is None:
@@ -416,7 +500,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Transcribe local media with the selected Whisper backend.")
     parser.add_argument("video")
     parser.add_argument("audio_out", nargs="?", default="audio.mp3", type=Path)
-    parser.add_argument("--backend", choices=["groq", "openai", "whisperx"])
+    parser.add_argument("--backend", choices=["groq", "openai", "whisperx", "apple"])
     args = parser.parse_args()
     try:
         segments, backend = transcribe_video(args.video, Path(args.audio_out), backend=args.backend)
