@@ -204,7 +204,7 @@ The first-run wizard asks for your detail preference and fallback backend. Start
 | Backend | Requirements and behavior |
 |---|---|
 | `whisperx` | Recommended for transcription on a verified local machine. No API key; the skill manages a separate Python 3.12 environment and downloads its models. |
-| `apple` | macOS 26+ only. On-device `SpeechAnalyzer` via a bundled Swift script (needs Xcode Command Line Tools). No download beyond the OS language model; locale follows the system, override with `WATCH_APPLE_LOCALE=hi-IN`. |
+| `apple` | macOS 26+ only. On-device `SpeechAnalyzer`; a bundled Swift helper is compiled once with `swiftc` (Xcode Command Line Tools) into `~/.cache/watch/apple-speech`. No download beyond the OS speech model for the language. Language: `WATCH_APPLE_LOCALE=hi-IN` if set, else the video's declared language from yt-dlp metadata, else the language of the title/description (URLs only), else the system locale; the report says which. |
 | `groq` | Cloud `whisper-large-v3`; needs `GROQ_API_KEY` from [Groq](https://console.groq.com/keys). |
 | `openai` | Cloud `whisper-1`; needs `OPENAI_API_KEY` from [OpenAI](https://platform.openai.com/api-keys). |
 | `none` | Captions only. Local files and captionless URLs can still provide visual evidence. |

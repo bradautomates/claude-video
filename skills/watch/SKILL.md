@@ -65,7 +65,7 @@ If the detail question is skipped, retain `balanced`.
 Then ask: **For videos without captions, how should watch transcribe?** Present:
 
 1. `whisperx` (recommended): local transcription, no API key; audio stays on the machine. One-time download of about 1.5 GB. Requires 3 GB free disk, 8 GB RAM, and a compatible 64-bit CPU. Apple Silicon macOS is verified; Linux/Windows recipes and Intel macOS are untested.
-2. `apple` (macOS 26+ only): on-device Apple SpeechAnalyzer; no package download, audio stays on the machine. Locale follows the system; `WATCH_APPLE_LOCALE=hi-IN` (for example) overrides.
+2. `apple` (macOS 26+ only): on-device Apple SpeechAnalyzer; no package download, audio stays on the machine. Needs `swiftc` (Xcode Command Line Tools).
 3. `groq`: fast cloud transcription, needs a Groq key.
 4. `openai`: cloud transcription, needs an OpenAI key.
 5. `none`: captions only; no speech fallback.
@@ -147,6 +147,8 @@ Full-track caption availability is checked before focus filtering. A silent focu
 `WATCH_WHISPER_BACKEND=auto|groq|openai|whisperx|none` chooses the saved fallback. In `auto`, each provider looks up its key in environment → user config → cwd `.env`, preferring Groq before checking OpenAI. Explicit provider choices never borrow another provider's key.
 
 WhisperX defaults: `WATCH_WHISPERX_MODEL=small`, `WATCH_WHISPERX_DEVICE=cpu`, `WATCH_WHISPERX_COMPUTE_TYPE=int8`, `WATCH_WHISPERX_BATCH_SIZE=8`. No alignment or diarization is run. `WATCH_WHISPERX_LANGUAGE=es` (for example) gives a spoken-language hint; never infer it from `--sub-lang`, which may request a translation. Without a hint, auto-detection is used but reported as unverified because WhisperX 3.8.6 mislabels its JSON language when alignment is disabled.
+
+Apple Speech needs the spoken language up front: `WATCH_APPLE_LOCALE=hi-IN` (for example) if set, else the video's declared language from yt-dlp metadata, else the language of the URL's title/description, else the system locale. The transcript source names the language and where it came from; when it says `system default, unverified` and the transcript reads like garbled words, rerun with `WATCH_APPLE_LOCALE=<the spoken language>` in the command's environment.
 
 If a small-model transcript is nonsense, suggest the actual spoken-language hint or `WATCH_WHISPERX_MODEL=large-v3` (2.9 GB model, about 6 GB peak process RAM in the reference measurement), then rerun the installer to warm that model. CPU inference may take minutes. `WATCH_WHISPERX_TIMEOUT` optionally sets positive seconds; by default it has no deadline. CUDA is configurable but untested; do not promise MPS support.
 

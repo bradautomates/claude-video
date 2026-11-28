@@ -90,7 +90,8 @@ def _read_metadata(path: Path) -> dict:
 
 def _summary(raw: dict, url: str) -> dict:
     return {'title': raw.get('title'), 'uploader': raw.get('uploader') or raw.get('channel'),
-            'duration': raw.get('duration'), 'url': raw.get('webpage_url') or url}
+            'duration': raw.get('duration'), 'url': raw.get('webpage_url') or url,
+            'language': raw.get('language'), 'description': raw.get('description')}
 
 
 def select_caption(info: dict, language: str = 'auto') -> dict | None:

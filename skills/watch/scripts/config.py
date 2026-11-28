@@ -157,6 +157,7 @@ def get_config(*, backend_override: str | None = None) -> dict:
         'whisperx_batch_size': setting('WATCH_WHISPERX_BATCH_SIZE', '8'),
         'whisperx_language': setting('WATCH_WHISPERX_LANGUAGE'),
         'whisperx_timeout': setting('WATCH_WHISPERX_TIMEOUT'),
+        'apple_locale': setting('WATCH_APPLE_LOCALE'),
     }
 
 
